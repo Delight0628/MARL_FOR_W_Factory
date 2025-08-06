@@ -58,36 +58,31 @@ EQUIPMENT_FAILURE = {
 # 产品工艺路线：每个产品的加工步骤和时间
 PRODUCT_ROUTES = {
     "黑胡桃木餐桌": [
-        {"station": "带锯机", "time": 15, "setup_time": 5},
-        {"station": "五轴加工中心", "time": 45, "setup_time": 10},
-        {"station": "砂光机", "time": 20, "setup_time": 3},
-        {"station": "封边机", "time": 12, "setup_time": 2},
-        {"station": "钻孔机", "time": 8, "setup_time": 2},
-        {"station": "组装台", "time": 30, "setup_time": 5},
-        {"station": "包装台", "time": 10, "setup_time": 1},
+        {"station": "带锯机", "time": 8, "setup_time": 2},
+        {"station": "五轴加工中心", "time": 20, "setup_time": 3},
+        {"station": "砂光机", "time": 10, "setup_time": 2},
+        {"station": "组装台", "time": 15, "setup_time": 2},
+        {"station": "包装台", "time": 5, "setup_time": 1},
     ],
     "橡木书柜": [
-        {"station": "带锯机", "time": 25, "setup_time": 5},
-        {"station": "五轴加工中心", "time": 60, "setup_time": 15},
-        {"station": "砂光机", "time": 35, "setup_time": 5},
-        {"station": "封边机", "time": 18, "setup_time": 3},
-        {"station": "钻孔机", "time": 15, "setup_time": 3},
-        {"station": "组装台", "time": 45, "setup_time": 8},
-        {"station": "包装台", "time": 12, "setup_time": 2},
-    ],
-    "松木床架": [
-        {"station": "带锯机", "time": 20, "setup_time": 4},
-        {"station": "砂光机", "time": 25, "setup_time": 4},
-        {"station": "钻孔机", "time": 12, "setup_time": 2},
-        {"station": "组装台", "time": 35, "setup_time": 6},
+        {"station": "带锯机", "time": 12, "setup_time": 2},
+        {"station": "五轴加工中心", "time": 25, "setup_time": 4},
+        {"station": "砂光机", "time": 15, "setup_time": 2},
+        {"station": "组装台", "time": 20, "setup_time": 3},
         {"station": "包装台", "time": 8, "setup_time": 1},
     ],
+    "松木床架": [
+        {"station": "带锯机", "time": 10, "setup_time": 2},
+        {"station": "砂光机", "time": 12, "setup_time": 2},
+        {"station": "组装台", "time": 15, "setup_time": 3},
+        {"station": "包装台", "time": 6, "setup_time": 1},
+    ],
     "樱桃木椅子": [
-        {"station": "带锯机", "time": 10, "setup_time": 3},
-        {"station": "五轴加工中心", "time": 25, "setup_time": 8},
-        {"station": "砂光机", "time": 15, "setup_time": 2},
-        {"station": "组装台", "time": 20, "setup_time": 4},
-        {"station": "包装台", "time": 5, "setup_time": 1},
+        {"station": "带锯机", "time": 6, "setup_time": 1},
+        {"station": "五轴加工中心", "time": 12, "setup_time": 2},
+        {"station": "砂光机", "time": 8, "setup_time": 1},
+        {"station": "组装台", "time": 10, "setup_time": 2},
+        {"station": "包装台", "time": 4, "setup_time": 1},
     ],
 }
 
@@ -148,7 +143,7 @@ REWARD_CONFIG = {
 # PPO/MAPPO算法参数
 TRAINING_CONFIG = {
     "algorithm": "PPO",
-    "framework": "tf2",
+    "framework": "torch",
     "num_workers": 4,                   # 并行工作进程数
     "num_envs_per_worker": 1,           # 每个工作进程的环境数
     "rollout_fragment_length": 200,     # 回滚片段长度
