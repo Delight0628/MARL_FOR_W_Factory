@@ -69,14 +69,14 @@ class PPONetwork:
         """构建Actor-Critic网络"""
         # Actor网络
         actor_input = tf.keras.layers.Input(shape=(self.state_dim,))
-        actor_hidden1 = tf.keras.layers.Dense(256, activation='relu')(actor_input)
+        actor_hidden1 = tf.keras.layers.Dense(512, activation='relu')(actor_input)
         actor_hidden2 = tf.keras.layers.Dense(256, activation='relu')(actor_hidden1)
         actor_output = tf.keras.layers.Dense(self.action_dim, activation='softmax')(actor_hidden2)
         actor = tf.keras.Model(inputs=actor_input, outputs=actor_output)
         
         # Critic网络
         critic_input = tf.keras.layers.Input(shape=(self.state_dim,))
-        critic_hidden1 = tf.keras.layers.Dense(256, activation='relu')(critic_input)
+        critic_hidden1 = tf.keras.layers.Dense(512, activation='relu')(critic_input)
         critic_hidden2 = tf.keras.layers.Dense(256, activation='relu')(critic_hidden1)
         critic_output = tf.keras.layers.Dense(1)(critic_hidden2)
         critic = tf.keras.Model(inputs=critic_input, outputs=critic_output)
@@ -345,11 +345,22 @@ class FullFeaturedMARLTrainer:
         
         # 创建时间戳用于文件命名
         self.timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+        # 🔧 V7 动态探测环境空间
+        temp_env, _ = self.create_environment()
+        state_dim = temp_env.observation_space(temp_env.possible_agents[0]).shape[0]
+        action_dim = temp_env.action_space(temp_env.possible_agents[0]).n
+        self.agent_ids = temp_env.possible_agents
+        temp_env.close()
+
+        print("🔧 环境空间自动检测 (自定义PPO):")
+        print(f"   观测空间维度 (State Dim): {state_dim}")
+        print(f"   动作空间维度 (Action Dim): {action_dim}")
         
         # 共享策略网络
         self.shared_network = PPONetwork(
-            state_dim=2,
-            action_dim=2,
+            state_dim=state_dim,
+            action_dim=action_dim,
             lr=self.config.get('lr', 3e-4)
         )
         
@@ -960,6 +971,15 @@ class FullFeaturedMARLTrainer:
         self.shared_network.actor.save(f"{filepath}_actor.keras")
         self.shared_network.critic.save(f"{filepath}_critic.keras")
         print(f"✅ 模型已保存: {filepath}_actor.keras 和 {filepath}_critic.keras")
+
+    def load_model(self, filepath: str):
+        """加载模型"""
+        try:
+            self.shared_network.actor = tf.keras.models.load_model(f"{filepath}_actor.keras")
+            self.shared_network.critic = tf.keras.models.load_model(f"{filepath}_critic.keras")
+            print(f"✅ 模型已从 {filepath} 加载")
+        except Exception as e:
+            print(f"❌ 加载模型失败: {e}")
 
 def main():
     """主函数"""

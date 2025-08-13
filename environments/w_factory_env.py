@@ -275,7 +275,7 @@ class WFactorySim:
         self.current_time = self.env.now
         
         # 计算奖励
-        rewards = self._calculate_rewards()
+        rewards = self.get_rewards()
         
         # 调试信息
         new_completed = len(self.completed_parts)
@@ -326,6 +326,9 @@ class WFactorySim:
             if part.is_completed():
                 part.completion_time = self.env.now
                 self.completed_parts.append(part)
+                # 🔧 关键修复：从活跃零件列表中移除完成的零件
+                if part in self.active_parts:
+                    self.active_parts.remove(part)
                 self._update_completion_stats(part)
             else:
                 # 移动到下一个工作站
@@ -333,51 +336,152 @@ class WFactorySim:
                 if next_station:
                     yield self.queues[next_station].put(part)
     
-    def _calculate_rewards(self) -> Dict[str, float]:
-        """计算智能体奖励"""
+    def get_rewards(self) -> Dict[str, float]:
+        """计算奖励 - 🔧 修复版：移除过度复杂的时间压力机制"""
         rewards = {}
         
-        # 全局共享奖励
-        global_reward = 0
+        # 🔧 V4修复：大幅提升基础奖励，确保正奖励基础
+        base_reward = REWARD_CONFIG["base_reward"]  # 从0.01提升到0.5
         
         # 完成奖励
-        new_completions = len(self.completed_parts) - self.stats.get('last_completed', 0)
-        completion_reward = new_completions * REWARD_CONFIG["completion_reward"]
-        global_reward += completion_reward
-        self.stats['last_completed'] = len(self.completed_parts)
+        new_completions = len(self.completed_parts) - self.stats.get('last_completed_count', 0)
+        completion_reward = 0
+        if new_completions > 0:
+            completion_reward = new_completions * REWARD_CONFIG["completion_reward"]
+            self.stats['last_completed_count'] = len(self.completed_parts)
+            
+            # 🔧 新增：提前完成奖励
+            if self.current_time < SIMULATION_TIME * 0.8:  # 在80%时间内完成
+                completion_reward += REWARD_CONFIG["early_completion_bonus"]
         
-        # 工序完成奖励（中间奖励）
+        # 🔧 增强工序完成奖励 - 使用新的配置值
         current_total_steps = sum(part.current_step for part in self.active_parts)
         last_total_steps = self.stats.get('last_total_steps', 0)
         step_progress = current_total_steps - last_total_steps
-        step_reward = step_progress * 10.0  # 每完成一个工序给10分奖励
-        global_reward += step_reward
-        self.stats['last_total_steps'] = current_total_steps
+        step_reward = 0
+        if step_progress > 0:
+            step_reward = step_progress * REWARD_CONFIG["step_reward"]  # 🔧 使用配置中的3.0
+            self.stats['last_total_steps'] = current_total_steps
         
-        # 基础存活奖励 - 防止奖励始终为0
-        base_reward = 0.1  # 每步给予小额基础奖励
-        global_reward += base_reward
+        # 🔧 新增：效率奖励 - 基于设备利用率
+        efficiency_reward = 0
+        total_utilization = 0
+        for station_name, status in self.equipment_status.items():
+            if status['busy_count'] > 0:
+                utilization = min(status['busy_count'] / WORKSTATIONS[station_name]['count'], 1.0)
+                total_utilization += utilization
         
-        # 延期惩罚
+        if len(WORKSTATIONS) > 0:
+            avg_utilization = total_utilization / len(WORKSTATIONS)
+            if avg_utilization > 0.6:  # 高利用率奖励
+                efficiency_reward = avg_utilization * REWARD_CONFIG["efficiency_bonus"]
+        
+        # 🔧 V4关键修复：延期惩罚逻辑重构
+        tardiness_penalty = 0
         if self.stats['max_tardiness'] > 0:
-            global_reward += REWARD_CONFIG["tardiness_penalty"]
+            # 只有当延期超过阈值时才惩罚，且不影响所有智能体
+            if REWARD_CONFIG.get("tardiness_penalty_per_agent", True):
+                # 旧逻辑：影响所有智能体
+                tardiness_penalty = REWARD_CONFIG["tardiness_penalty"] * min(self.stats['max_tardiness'] / 60, 2.0)
+            else:
+                # 🔧 新逻辑：延期惩罚只影响相关工作站，且大幅减少
+                tardiness_penalty = REWARD_CONFIG["tardiness_penalty"] * REWARD_CONFIG["penalty_scale_factor"]
         
-        # 为所有智能体分配相同的全局奖励
+        # 🔧 V4关键修复：空闲惩罚频率控制
+        # 初始化空闲计数器
+        if not hasattr(self, 'idle_counters'):
+            self.idle_counters = {station: 0 for station in WORKSTATIONS.keys()}
+        
+        # 🔧 智能奖励分配机制 - V4平衡版
         for station_name in WORKSTATIONS.keys():
             agent_id = f"agent_{station_name}"
-            rewards[agent_id] = global_reward
+            agent_reward = base_reward  # 🔧 所有智能体都有大幅提升的基础奖励
+            
+            # 检查工作站是否活跃
+            is_active = (len(self.queues[station_name].items) > 0 or 
+                        self.equipment_status[station_name]['busy_count'] > 0)
+            
+            if is_active:
+                # 重置空闲计数器
+                self.idle_counters[station_name] = 0
+                
+                # 工序奖励：只给有活动的工作站
+                if step_reward > 0:
+                    agent_reward += step_reward / len(WORKSTATIONS)  # 平均分配工序奖励
+                
+                # 🔧 效率奖励：给活跃的工作站
+                if efficiency_reward > 0:
+                    station_utilization = min(self.equipment_status[station_name]['busy_count'] / WORKSTATIONS[station_name]['count'], 1.0)
+                    agent_reward += efficiency_reward * station_utilization
+            else:
+                # 🔧 V4修复：空闲惩罚频率控制
+                self.idle_counters[station_name] += 1
+                
+                # 只有连续空闲超过阈值才开始惩罚
+                if self.idle_counters[station_name] > REWARD_CONFIG["idle_penalty_threshold"]:
+                    # 应用惩罚缩放因子，大幅减少惩罚
+                    scaled_idle_penalty = REWARD_CONFIG["idle_penalty"] * REWARD_CONFIG["penalty_scale_factor"]
+                    agent_reward += scaled_idle_penalty
+            
+            # 🔧 完成奖励：只给最后完成工序的工作站 (包装台)
+            if completion_reward > 0 and station_name == "包装台":
+                agent_reward += completion_reward  # 只有包装台获得完成奖励
+            
+            # 🔧 V4修复：延期惩罚不再影响所有智能体
+            if not REWARD_CONFIG.get("tardiness_penalty_per_agent", True):
+                # 新逻辑：延期惩罚只影响包装台（最终负责交付的工作站）
+                if station_name == "包装台" and tardiness_penalty != 0:
+                    agent_reward += tardiness_penalty
+            else:
+                # 旧逻辑：所有智能体共同承担（已大幅减少）
+                agent_reward += tardiness_penalty
+            
+            # 🔧 应用整体奖励缩放
+            agent_reward *= REWARD_CONFIG["reward_scale_factor"]
+            
+            rewards[agent_id] = agent_reward
         
-        # 调试信息
-        if self.debug_level == 'DEBUG' and (new_completions > 0 or step_progress > 0):
-            print(f"🏆 奖励详情: 完成奖励={completion_reward}, 工序奖励={step_reward}, 基础奖励={base_reward}, 总奖励={global_reward}")
+        # 🔧 V4调试信息 - 显示平衡效果
+        if self.debug_level == 'DEBUG' and (new_completions > 0 or step_progress > 0 or efficiency_reward > 0):
+            total_positive = base_reward * len(WORKSTATIONS) + completion_reward + step_reward + efficiency_reward
+            total_negative = abs(tardiness_penalty * len(WORKSTATIONS)) + abs(REWARD_CONFIG["idle_penalty"] * REWARD_CONFIG["penalty_scale_factor"])
+            print(f"🏆 V4平衡奖励详情:")
+            print(f"   正奖励: 基础={base_reward:.2f}×{len(WORKSTATIONS)}, 完成={completion_reward:.1f}, 工序={step_reward:.1f}, 效率={efficiency_reward:.1f}")
+            print(f"   负奖励: 延期={tardiness_penalty:.1f}, 空闲惩罚={REWARD_CONFIG['idle_penalty'] * REWARD_CONFIG['penalty_scale_factor']:.3f}")
+            print(f"   平衡比例: 正奖励={total_positive:.1f} vs 负奖励={total_negative:.1f}")
+            if completion_reward > 0:
+                print(f"   🎉 完成奖励只给包装台智能体: {completion_reward:.1f}")
+        
+        # 🔧 V5新增：时间压力奖励机制
         
         return rewards
     
     def is_done(self) -> bool:
-        """检查仿真是否结束"""
-        return (self.simulation_ended or 
-                self.current_time >= SIMULATION_TIME or
-                len(self.completed_parts) >= sum(order.quantity for order in self.orders))
+        """检查仿真是否结束 - 优先任务完成，时间作为备用条件"""
+        # 🔧 修复：优先检查任务完成，而不是时间耗尽
+        
+        # 条件1: 所有订单完成 (主要完成条件)
+        total_required = sum(order.quantity for order in self.orders)
+        if len(self.completed_parts) >= total_required:
+            if not hasattr(self, '_completion_logged'):
+                print(f"🎉 所有订单完成! 完成{len(self.completed_parts)}/{total_required}个零件，用时{self.current_time:.1f}分钟")
+                self._completion_logged = True
+            return True
+        
+        # 条件2: 手动结束仿真
+        if self.simulation_ended:
+            return True
+        
+        # 条件3: 时间耗尽 (备用条件，增加时间限制)
+        # 🔧 增加时间限制，给任务完成更多机会
+        max_time = SIMULATION_TIME * 1.5  # 增加50%时间缓冲
+        if self.current_time >= max_time:
+            if not hasattr(self, '_timeout_logged'):
+                print(f"⏰ 时间耗尽! 完成{len(self.completed_parts)}/{total_required}个零件，用时{self.current_time:.1f}分钟")
+                self._timeout_logged = True
+            return True
+        
+        return False
     
     def get_final_stats(self) -> Dict[str, Any]:
         """获取最终统计结果"""
@@ -388,6 +492,70 @@ class WFactorySim:
                 self.stats['equipment_utilization'][station_name] = utilization
         
         return self.stats
+
+    def get_completion_stats(self) -> Dict[str, Any]:
+        """获取完成统计信息 - V5新增"""
+        total_required = sum(order.quantity for order in self.orders)
+        completed_count = len(self.completed_parts)
+        completion_rate = (completed_count / total_required) * 100 if total_required > 0 else 0
+        
+        # 设备利用率统计
+        utilization_stats = {}
+        for station_name, status in self.equipment_status.items():
+            if self.current_time > 0:
+                utilization = status['total_busy_time'] / self.current_time
+                utilization_stats[station_name] = utilization
+        
+        # 按产品类型统计完成情况
+        product_completion = {}
+        for order in self.orders:
+            product_type = order.product
+            if product_type not in product_completion:
+                product_completion[product_type] = {'required': 0, 'completed': 0}
+            product_completion[product_type]['required'] += order.quantity
+        
+        for part in self.completed_parts:
+            product_type = part.product_type
+            if product_type in product_completion:
+                product_completion[product_type]['completed'] += 1
+        
+        # 🔧 新增：延期分析 (项目核心目标)
+        tardiness_info = {
+            'late_orders': 0,
+            'max_tardiness': 0,
+            'total_tardiness': 0,
+            'on_time_orders': 0
+        }
+        
+        # 分析订单延期情况
+        for order in self.orders:
+            order_completion_time = self.current_time  # 当前时间作为完成时间
+            if order_completion_time > order.due_date:
+                tardiness = order_completion_time - order.due_date
+                tardiness_info['late_orders'] += 1
+                tardiness_info['total_tardiness'] += tardiness
+                tardiness_info['max_tardiness'] = max(tardiness_info['max_tardiness'], tardiness)
+            else:
+                tardiness_info['on_time_orders'] += 1
+        
+        # 计算平均延期时间
+        if tardiness_info['late_orders'] > 0:
+            tardiness_info['avg_tardiness'] = tardiness_info['total_tardiness'] / tardiness_info['late_orders']
+        else:
+            tardiness_info['avg_tardiness'] = 0
+        
+        return {
+            'total_required': total_required,
+            'completed_count': completed_count,
+            'completion_rate': completion_rate,
+            'current_time': self.current_time,
+            'utilization_stats': utilization_stats,
+            'product_completion': product_completion,
+            'is_naturally_done': self.is_done(),
+            'tardiness_info': tardiness_info,  # 🔧 新增延期分析
+            'total_orders': len(self.orders),  # 🔧 新增订单总数
+            'makespan': self.current_time  # 🔧 新增Makespan指标
+        }
 
 # =============================================================================
 # 3. PettingZoo多智能体环境接口 (PettingZoo Multi-Agent Environment)
