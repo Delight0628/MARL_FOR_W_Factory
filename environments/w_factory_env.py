@@ -656,10 +656,6 @@ class WFactorySim:
             # 应用奖励缩放
             agent_reward *= REWARD_CONFIG["reward_scale_factor"]
             
-            # 🔧 V9.1新增：奖励范围限制，避免极端值
-            agent_reward = max(agent_reward, REWARD_CONFIG["min_step_reward"])
-            agent_reward = min(agent_reward, -REWARD_CONFIG["min_step_reward"])  # 正向也有限制
-            
             rewards[agent_id] = agent_reward
         
         # 🔧 V9.1训练模式：完全静默，仅在非训练模式下输出调试信息

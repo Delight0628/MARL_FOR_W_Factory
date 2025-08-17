@@ -41,19 +41,37 @@ class PPONetwork:
         self.critic_optimizer = tf.keras.optimizers.Adam(lr)
         
     def _build_networks(self):
-        """构建Actor-Critic网络"""
-        # Actor网络 - 增强版
+        """🔧 V6 构建Actor-Critic网络 - 内存友好版本"""
+        # 🔧 V6 根据系统资源动态调整网络大小
+        available_gb = getattr(self, 'system_info', {}).get('available_gb', 8.0)
+        
+        if available_gb < 5.0:
+            # 低内存：小网络
+            hidden_sizes = [128, 64]
+            print("🔧 使用小型网络架构（内存优化）")
+        elif available_gb < 8.0:
+            # 中等内存：中型网络
+            hidden_sizes = [256, 128]
+            print("🔧 使用中型网络架构（平衡性能）")
+        else:
+            # 充足内存：大型网络
+            hidden_sizes = [512, 256]
+            print("🔧 使用大型网络架构（高性能）")
+        
+        # Actor网络
         actor_input = tf.keras.layers.Input(shape=(self.state_dim,))
-        actor_hidden1 = tf.keras.layers.Dense(512, activation='relu')(actor_input)
-        actor_hidden2 = tf.keras.layers.Dense(256, activation='relu')(actor_hidden1)
-        actor_output = tf.keras.layers.Dense(self.action_dim, activation='softmax')(actor_hidden2)
+        actor_x = tf.keras.layers.Dense(hidden_sizes[0], activation='relu')(actor_input)
+        actor_x = tf.keras.layers.Dropout(0.1)(actor_x)  # 🔧 V6 添加dropout防过拟合
+        actor_x = tf.keras.layers.Dense(hidden_sizes[1], activation='relu')(actor_x)
+        actor_output = tf.keras.layers.Dense(self.action_dim, activation='softmax')(actor_x)
         actor = tf.keras.Model(inputs=actor_input, outputs=actor_output)
         
-        # Critic网络 - 增强版
+        # Critic网络
         critic_input = tf.keras.layers.Input(shape=(self.state_dim,))
-        critic_hidden1 = tf.keras.layers.Dense(512, activation='relu')(critic_input)
-        critic_hidden2 = tf.keras.layers.Dense(256, activation='relu')(critic_hidden1)
-        critic_output = tf.keras.layers.Dense(1)(critic_hidden2)
+        critic_x = tf.keras.layers.Dense(hidden_sizes[0], activation='relu')(critic_input)
+        critic_x = tf.keras.layers.Dropout(0.1)(critic_x)  # 🔧 V6 添加dropout防过拟合
+        critic_x = tf.keras.layers.Dense(hidden_sizes[1], activation='relu')(critic_x)
+        critic_output = tf.keras.layers.Dense(1)(critic_x)
         critic = tf.keras.Model(inputs=critic_input, outputs=critic_output)
         
         return actor, critic
@@ -297,35 +315,82 @@ class SimplePPOTrainer:
             print("🔧 正常模式: TensorFlow并行度优化")
     
     def _optimize_training_params(self, num_episodes: int, steps_per_episode: int) -> Tuple[int, int]:
-        """🔧 V5 新增：根据系统资源优化训练参数"""
+        """🔧 V6 强化版：根据系统资源优化训练参数，防止卡死"""
         available_gb = self.system_info.get('available_gb', 4.0)
+        total_gb = self.system_info.get('memory_gb', 8.0)
         
-        # 根据可用内存调整训练规模
-        if available_gb < 4.0:
-            # 极低内存：大幅降低参数
+        # 🔧 V6 更保守的内存策略，基于实际可用内存而非总内存
+        if available_gb < 3.0:
+            # 危险内存：极度保守
+            optimized_episodes = min(num_episodes, 40)
+            optimized_steps = min(steps_per_episode, 600)
+            print("🚨 危险内存模式: 训练规模极度缩减（防卡死）")
+        elif available_gb < 5.0:
+            # 低内存：大幅降低参数
             optimized_episodes = min(num_episodes, 60)
             optimized_steps = min(steps_per_episode, 800)
-            print("🚨 极低内存模式: 训练规模大幅缩减")
-        elif available_gb < 6.0:
-            # 低内存：适度降低参数
+            print("⚠️  低内存模式: 训练规模大幅缩减")
+        elif available_gb < 7.0:
+            # 中等内存：适度降低参数 - 🔧 V6 更保守
             optimized_episodes = min(num_episodes, 80)
             optimized_steps = min(steps_per_episode, 1000)
-            print("⚠️  低内存模式: 训练规模适度缩减")
-        elif available_gb < 8.0:
-            # 中等内存：略微降低参数
-            optimized_episodes = min(num_episodes, 100)
-            optimized_steps = min(steps_per_episode, 1200)
-            print("🔧 中等内存模式: 训练规模略微调整")
+            print("🔧 中等内存模式: 训练规模适度缩减")
+        elif available_gb < 10.0:
+            # 较好内存：略微降低参数 - 🔧 V6 新增层级
+            optimized_episodes = min(num_episodes, 90)
+            optimized_steps = min(steps_per_episode, 1100)
+            print("💚 较好内存模式: 训练规模略微调整")
         else:
-            # 充足内存：使用原始参数
-            optimized_episodes = num_episodes
+            # 充足内存：仍然保守一些 - 🔧 V6 即使充足内存也略微保守
+            optimized_episodes = min(num_episodes, 100)
             optimized_steps = steps_per_episode
-            print("✅ 充足内存模式: 使用完整训练规模")
+            print("✅ 充足内存模式: 使用接近完整的训练规模")
+        
+        # 🔧 V6 新增：内存使用率警告
+        memory_usage_percent = ((total_gb - available_gb) / total_gb) * 100
+        if memory_usage_percent > 90:
+            print(f"⚠️  当前内存使用率: {memory_usage_percent:.1f}% - 建议关闭其他程序")
         
         if optimized_episodes != num_episodes or optimized_steps != steps_per_episode:
             print(f"🔧 参数调整: {num_episodes}回合×{steps_per_episode}步 → {optimized_episodes}回合×{optimized_steps}步")
+            print(f"💡 节省内存: 预计减少{((num_episodes*steps_per_episode) - (optimized_episodes*optimized_steps))/(num_episodes*steps_per_episode)*100:.1f}%的内存使用")
         
         return optimized_episodes, optimized_steps
+    
+    def _check_memory_usage(self) -> bool:
+        """🔧 V6 新增：检查内存使用情况，必要时触发垃圾回收"""
+        try:
+            import psutil  # type: ignore
+            import gc
+            
+            memory_info = psutil.virtual_memory()
+            available_gb = memory_info.available / (1024**3)
+            usage_percent = memory_info.percent
+            
+            # 内存使用率过高时触发垃圾回收
+            if usage_percent > 95:
+                print(f"🧹 内存使用率过高 ({usage_percent:.1f}%)，执行垃圾回收...")
+                gc.collect()
+                tf.keras.backend.clear_session()  # 清理TensorFlow会话
+                return False  # 建议暂停训练
+            elif usage_percent > 90:
+                print(f"⚠️  内存使用率较高 ({usage_percent:.1f}%)，建议注意")
+                gc.collect()
+                return True
+            
+            return True
+        except ImportError:
+            return True  # 无法检测时假设正常
+    
+    def _safe_model_update(self, buffers) -> Dict[str, float]:
+        """🔧 V6 新增：安全的模型更新，包含内存检查"""
+        # 更新前检查内存
+        if not self._check_memory_usage():
+            print("⚠️  内存不足，跳过本轮模型更新")
+            return {'actor_loss': 0, 'critic_loss': 0, 'entropy': 0}
+        
+        # 执行正常的策略更新
+        return self.update_policy(buffers)
 
     def create_environment(self):
         """创建环境"""
@@ -337,52 +402,70 @@ class SimplePPOTrainer:
         return env, buffers
     
     def collect_experience(self, env, buffers, num_steps: int = 200) -> float:
-        """收集经验"""
+        """🔧 V6 增强版经验收集，包含内存监控"""
         observations, _ = env.reset()
         episode_rewards = {agent: 0 for agent in env.possible_agents}
         step_count = 0
         
-        for step in range(num_steps):
-            actions = {}
-            values = {}
-            action_probs = {}
+        # 🔧 V6 分批收集，防止内存积累过多
+        batch_size = min(num_steps, 200)  # 每批最多200步
+        total_reward = 0
+        
+        for batch_start in range(0, num_steps, batch_size):
+            batch_end = min(batch_start + batch_size, num_steps)
+            batch_steps = batch_end - batch_start
             
-            # 为每个智能体获取动作
-            for agent in env.agents:
-                if agent in observations:
-                    action, action_prob, value = self.shared_network.get_action_and_value(
-                        observations[agent]
-                    )
-                    actions[agent] = action
-                    values[agent] = value
-                    action_probs[agent] = action_prob
+            # 每批开始前检查内存
+            if not self._check_memory_usage():
+                print(f"⚠️  内存不足，提前结束经验收集（已收集{step_count}步）")
+                break
             
-            # 执行动作
-            next_observations, rewards, terminations, truncations, infos = env.step(actions)
+            for step in range(batch_steps):
+                actions = {}
+                values = {}
+                action_probs = {}
+                
+                # 为每个智能体获取动作
+                for agent in env.agents:
+                    if agent in observations:
+                        action, action_prob, value = self.shared_network.get_action_and_value(
+                            observations[agent]
+                        )
+                        actions[agent] = action
+                        values[agent] = value
+                        action_probs[agent] = action_prob
+                
+                # 执行动作
+                next_observations, rewards, terminations, truncations, infos = env.step(actions)
+                
+                # 存储经验
+                for agent in env.agents:
+                    if agent in observations and agent in actions:
+                        done = terminations.get(agent, False) or truncations.get(agent, False)
+                        reward = rewards.get(agent, 0)
+                        
+                        buffers[agent].store(
+                            state=observations[agent],
+                            action=actions[agent],
+                            reward=reward,
+                            value=values[agent],
+                            action_prob=action_probs[agent],
+                            done=done
+                        )
+                        
+                        episode_rewards[agent] += reward
+                
+                observations = next_observations
+                step_count += 1
+                
+                # 检查结束条件
+                if any(terminations.values()) or any(truncations.values()):
+                    observations, _ = env.reset()
             
-            # 存储经验
-            for agent in env.agents:
-                if agent in observations and agent in actions:
-                    done = terminations.get(agent, False) or truncations.get(agent, False)
-                    reward = rewards.get(agent, 0)
-                    
-                    buffers[agent].store(
-                        state=observations[agent],
-                        action=actions[agent],
-                        reward=reward,
-                        value=values[agent],
-                        action_prob=action_probs[agent],
-                        done=done
-                    )
-                    
-                    episode_rewards[agent] += reward
-            
-            observations = next_observations
-            step_count += 1
-            
-            # 检查结束条件
-            if any(terminations.values()) or any(truncations.values()):
-                observations, _ = env.reset()
+            # 🔧 V6 每批结束后轻度垃圾回收
+            if batch_end < num_steps:
+                import gc
+                gc.collect()
         
         return sum(episode_rewards.values())
     
@@ -631,8 +714,8 @@ class SimplePPOTrainer:
                 # 收集经验
                 episode_reward = self.collect_experience(env, buffers, optimized_steps)
                 
-                # 更新策略
-                losses = self.update_policy(buffers)
+                # 🔧 V6 安全的策略更新（包含内存检查）
+                losses = self._safe_model_update(buffers)
                 
                 # 记录统计
                 iteration_end_time = time.time()
@@ -641,8 +724,14 @@ class SimplePPOTrainer:
                 self.episode_rewards.append(episode_reward)
                 self.training_losses.append(losses)
                 
-                # 🔧 V5 核心：每轮进行快速KPI评估
-                if (episode + 1) % 5 == 0 or episode == 0:  # 每5轮或第一轮评估KPI
+                # 🔧 V6 定期保存和内存检查
+                if (episode + 1) % 10 == 0:
+                    # 定期保存检查点，防止训练中断丢失进度
+                    self.save_model(f"{self.models_dir}/checkpoint_ppo_model_{self.timestamp}_ep{episode+1}")
+                    print(f"💾 检查点已保存 (第{episode+1}回合)")
+                
+                # 🔧 V6 更频繁的KPI评估和内存检查
+                if (episode + 1) % 3 == 0 or episode == 0:  # 每3轮或第一轮评估KPI
                     kpi_results = self.quick_kpi_evaluation(num_episodes=2)
                     self.kpi_history.append(kpi_results)
                     
@@ -776,10 +865,11 @@ class SimplePPOTrainer:
 
 def main():
     """主函数"""
-    print("🏭 W工厂订单思维革命PPO训练系统 V5")
+    print("🏭 W工厂订单思维革命PPO训练系统 V6")
     print("🎯 奖励革命：从零件思维到订单思维的根本性转变")
-    print("🔧 V5新特性: 系统资源优化 + GPU加速 + 详细训练日志 + 实时KPI监控")
+    print("🔧 V6新特性: 防卡死优化 + 智能内存管理 + 分批处理 + 定期保存")
     print("🔧 革命项: 订单奖励5000 vs 零件奖励1 (5000:1压倒性优势) + 严厉遗弃惩罚")
+    print("💾 安全特性: 自动内存监控 + 垃圾回收 + 检查点保存 + 动态网络调整")
     print("=" * 80)
     
     # 设置随机种子
@@ -788,9 +878,9 @@ def main():
     tf.random.set_seed(RANDOM_SEED)
     
     try:
-        # 🔧 V5 系统优化: 根据硬件配置动态调整训练参数
-        num_episodes = 120
-        steps_per_episode = 1200
+        # 🔧 V6 更保守的初始参数，系统会进一步动态调整
+        num_episodes = 80  # 🔧 V6 降低初始值，让系统优化发挥作用
+        steps_per_episode = 1000  # 🔧 V6 降低初始值，减少内存压力
         
         trainer = SimplePPOTrainer(
             initial_lr=1e-4,

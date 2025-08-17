@@ -217,9 +217,9 @@ REWARD_CONFIG = {
     "reward_scale_factor": 1.0,
     "penalty_scale_factor": 0.1,           # 🔧 V9.1修复：从0.2降到0.1，进一步减少惩罚
     
-    # 🔧 V9.1新增：奖励范围控制
-    "max_episode_penalty": -1000.0,        # 单个Episode最大惩罚限制
-    "min_step_reward": -10.0,              # 单步最小奖励限制
+    # 🔧 V9.1新增：奖励范围控制 - [已移除] 奖励削波逻辑已在 env 中被移除
+    # "max_episode_penalty": -1000.0,        # 单个Episode最大惩罚限制
+    # "min_step_reward": -10.0,              # 单步最小奖励限制
 }
 
 # 新增：设备利用率统计配置（文档化口径，不影响ray逻辑）
