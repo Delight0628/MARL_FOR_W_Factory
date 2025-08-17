@@ -145,7 +145,7 @@ class OptimizedWFactoryWrapper(MultiAgentEnv):
             print(f"   最大episode步数: {self.max_episode_steps}")
             print(f"   无进展检测: {self.max_no_progress_steps}步")
             print(f"   奖励阈值: 已完全移除 (面对真实挑战)")
-            print(f"   🎯 使用修复后奖励系统: completion_reward={REWARD_CONFIG['completion_reward']}")
+            print(f"   🎯 使用修复后奖励系统: completion_reward={REWARD_CONFIG['order_completion_reward']}")
             print(f"   🎯 奖励分配: 完成奖励只给包装台智能体")
         
     def reset(self, *, seed=None, options=None):
@@ -342,7 +342,7 @@ def create_ray_config():
                 'show_completion_stats': True  # 🔧 V5新增：显示完成统计
             }
         )
-        .framework("torch")
+        .framework("tf")
         .api_stack(
             # 禁用新API栈，使用旧版本兼容模式
             enable_rl_module_and_learner=False,
@@ -383,7 +383,7 @@ def create_ray_config():
     )
     
     print(f"🔧 Ray配置已更新:")
-    print(f"   🎯 奖励系统: 修复版 (completion_reward={REWARD_CONFIG['completion_reward']})")
+    print(f"   🎯 奖励系统: 修复版 (completion_reward={REWARD_CONFIG['order_completion_reward']})")
     print(f"   🎯 奖励分配: 智能分配机制 (完成奖励只给包装台)")
     print(f"   📊 训练批次: {config.train_batch_size}")
     print(f"   🎮 Episode模式: complete_episodes")
@@ -405,7 +405,7 @@ def get_wsl_training_config():
             env_config={},
             disable_env_checking=True
         )
-        .framework("torch") 
+        .framework("tf") 
         .env_runners(
             # 本地模式配置 (避免环境注册问题)
             num_env_runners=0,  # 本地模式不使用远程runner
@@ -762,18 +762,6 @@ def main():
             print(f"   Ray初始化和算法构建: ~{estimated_ray_init_time}秒")
             print(f"   纯训练时间: ~{estimated_training_time:.1f}秒 ({estimated_training_time/60:.1f}分钟)")
             print(f"   训练效率: {estimated_training_time/total_script_time*100:.1f}%")
-            
-            # 🔧 自动验证已禁用，避免超时问题
-            print(f"\n💡 训练完成，建议手动运行验证:")
-            print(f"   🔍 推理测试: python wsl/test_trained_model_inference.py")
-            print(f"   📊 性能基准: python wsl/test_performance_benchmark.py")
-            
-            # 显示后续步骤
-            print("\n📋 后续步骤:")
-            print("1. 查看训练结果: ls /mnt/d/MPU/毕业论文/MARL_FOR_W_Factory/wsl/ray_result/")
-            print("2. 运行性能基准测试: python wsl/test_performance_benchmark.py")
-            print("3. 手动运行推理测试: python wsl/test_trained_model_inference.py")
-            print("4. 可视化训练曲线")
             
         else:
             print("\n❌ WSL Ray训练失败")

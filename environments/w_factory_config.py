@@ -178,48 +178,47 @@ ACTION_CONFIG_ENHANCED = {
 # 6. 奖励系统配置 (Reward System) - 🔧 V4 平衡修复版
 # =============================================================================
 
-# 🔧 V9.1 奖励平衡修复：解决奖励爆炸问题
+# 🔧 V12 奖励系统重新设计：解决奖励数值过大问题
 REWARD_CONFIG = {
-    # 🔧 V9核心理念：完整订单交付是唯一真正的成功
+    # 🔧 V12核心理念：完整订单交付是唯一真正的成功，但数值要合理
     "base_reward": 0.0,                    # 彻底移除基础奖励
     
-    # 🔧 V10革命：订单思维革命 - 订单完成奖励500:1压倒性优势
-    "order_completion_reward": 5000.0,     # 🔧 V10革命：恢复并加强到5000，订单至上！
-    "part_completion_reward": 1.0,         # 🔧 V10革命：从5降到1，建立5000:1压倒性比例
-    "step_reward": 0.01,                   # 🔧 V10革命：从0.05降到0.01，让过程奖励微不足道
+    # 🔧 V12数值优化：奖励与损失在相似数量级
+    "order_completion_reward": 50.0,       # 🔧 V12：从5000降到50，保持优势但数值合理
+    "part_completion_reward": 0.1,         # 🔧 V12：从1降到0.1，保持50:0.1=500:1的比例
+    "step_reward": 0.001,                  # 🔧 V12：从0.01降到0.001，让过程奖励微不足道
     
-    # 🔧 V10革命：订单里程碑奖励机制，引导向完整订单迈进
-    "order_progress_bonus": 200.0,         # 🔧 V10革命：从20提升到200，里程碑奖励要显著
-    "critical_path_bonus": 10.0,           # 🔧 V9.1修复：从200降到10
-    "bottleneck_priority_bonus": 5.0,      # 🔧 V9.1修复：从150降到5
+    # 🔧 V12数值优化：里程碑奖励机制
+    "order_progress_bonus": 2.0,           # 🔧 V12：从200降到2，里程碑奖励仍然显著
+    "critical_path_bonus": 0.1,            # 🔧 V12：从10降到0.1
+    "bottleneck_priority_bonus": 0.05,     # 🔧 V12：从5降到0.05
     
-    # 🔧 V9重新定义效率概念 (适度调整)
-    "order_efficiency_bonus": 100.0,       # 🔧 V9.1修复：从1000降到100
-    "balanced_utilization_bonus": 50.0,    # 🔧 V9.1修复：从300降到50
+    # 🔧 V12数值优化：效率奖励
+    "order_efficiency_bonus": 1.0,         # 🔧 V12：从100降到1
+    "balanced_utilization_bonus": 0.5,     # 🔧 V12：从50降到0.5
     
-    # 🔧 V9强化全局协调 (大幅减少)
-    "coordination_reward": 50.0,           # 🔧 V9.1修复：从500降到50
-    "flow_optimization_bonus": 30.0,       # 🔧 V9.1修复：从400降到30
+    # 🔧 V12数值优化：全局协调奖励
+    "coordination_reward": 0.5,            # 🔧 V12：从50降到0.5
+    "flow_optimization_bonus": 0.3,        # 🔧 V12：从30降到0.3
     
-    # 🔧 V10革命：严厉的订单遗弃惩罚，迫使完成全部订单
-    "order_tardiness_penalty": -200.0,     # 🔧 V10革命：从-50提升到-200，延期必须付出代价
-    "order_abandonment_penalty": -1000.0,  # 🔧 V10革命：从-10恢复到-1000，遗弃订单=巨大损失！
-    "order_abandonment_threshold": 300,    # 🔧 V10革命：从400降到300，更早触发遗弃检测
-    "incomplete_order_final_penalty": -2000.0,  # 🔧 V10新增：仿真结束时每个未完成订单的巨额惩罚
-    "resource_waste_penalty": -5.0,        # 🔧 V9.1修复：从-50降到-5
+    # 🔧 V12数值优化：惩罚机制（保持与奖励相当的数量级）
+    "order_tardiness_penalty": -2.0,       # 🔧 V12：从-200降到-2，延期仍有惩罚
+    "order_abandonment_penalty": -10.0,    # 🔧 V12：从-1000降到-10，遗弃订单仍有损失
+    "order_abandonment_threshold": 300,    # 保持300分钟的检测阈值
+    "incomplete_order_final_penalty": -20.0,  # 🔧 V12：从-2000降到-20，仍然严厉但数值合理
+    "resource_waste_penalty": -0.05,       # 🔧 V12：从-5降到-0.05
     
-    # 🔧 V9精细化控制参数
-    "idle_penalty": -0.005,                # 🔧 V9.1修复：从-0.01降到-0.005
-    "idle_penalty_threshold": 30,          # 🔧 V9.1修复：从20增加到30
+    # 🔧 V12数值优化：精细化控制参数
+    "idle_penalty": -0.0005,               # 🔧 V12：从-0.005降到-0.0005
+    "idle_penalty_threshold": 30,          # 保持30步的阈值
     "tardiness_penalty_per_agent": False,
     
-    # 🔧 V9系数优化
-    "reward_scale_factor": 1.0,
-    "penalty_scale_factor": 0.1,           # 🔧 V9.1修复：从0.2降到0.1，进一步减少惩罚
+    # 🔧 V12数值优化：系数调整
+    "reward_scale_factor": 10.0,           # 🔧 V12：增加到10，让奖励更加显著
+    "penalty_scale_factor": 1.0,           # 🔧 V12：从0.1恢复到1.0，不再特意缩小惩罚
     
-    # 🔧 V9.1新增：奖励范围控制 - [已移除] 奖励削波逻辑已在 env 中被移除
-    # "max_episode_penalty": -1000.0,        # 单个Episode最大惩罚限制
-    # "min_step_reward": -10.0,              # 单步最小奖励限制
+    # 🔧 V12新增：奖励数值说明
+    # 现在的奖励范围大致在-20到+50之间，与Actor损失(-0.01左右)数量级更加合理
 }
 
 # 新增：设备利用率统计配置（文档化口径，不影响ray逻辑）

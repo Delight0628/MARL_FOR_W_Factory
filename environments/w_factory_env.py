@@ -774,9 +774,15 @@ class WFactorySim:
             'on_time_orders': 0
         }
         
-        # 分析订单延期情况
+        # 🔧 V12修复：分析订单延期情况（使用真实的订单完成时间）
         for order in self.orders:
-            order_completion_time = self.current_time  # 当前时间作为完成时间
+            # 使用订单的实际完成时间，如果未完成则使用当前时间
+            if order.order_id in self.order_completion_times:
+                order_completion_time = self.order_completion_times[order.order_id]
+            else:
+                # 未完成的订单，使用当前时间作为“假想完成时间”
+                order_completion_time = self.current_time
+            
             if order_completion_time > order.due_date:
                 tardiness = order_completion_time - order.due_date
                 tardiness_info['late_orders'] += 1
@@ -830,6 +836,19 @@ class WFactoryEnv(ParallelEnv):
         # 仿真环境
         self.sim = None
         self.episode_count = 0
+    
+    # 🔧 修复PettingZoo警告：重写observation_space和action_space方法
+    def observation_space(self, agent: str = None):
+        """获取观测空间"""
+        if agent is None:
+            return self.observation_spaces
+        return self.observation_spaces.get(agent)
+    
+    def action_space(self, agent: str = None):
+        """获取动作空间"""
+        if agent is None:
+            return self.action_spaces
+        return self.action_spaces.get(agent)
         
     def _get_obs_shape(self) -> Tuple[int,]:
         """🔧 V7 新增：动态计算观测空间维度"""
