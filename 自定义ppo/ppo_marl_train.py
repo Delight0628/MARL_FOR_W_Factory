@@ -166,7 +166,7 @@ class PPONetwork:
     
     def update(self, states: np.ndarray, actions: np.ndarray, 
                old_probs: np.ndarray, advantages: np.ndarray, 
-               returns: np.ndarray, clip_ratio: float = 0.3) -> Dict[str, float]:  # 🔧 V15 紧急修复：提升裁剪范围，允许更大策略变化
+               returns: np.ndarray, clip_ratio: float = 0.4) -> Dict[str, float]:  # 🔧 V16：从0.3提升到0.4，允许更激进的策略更新
         """PPO更新"""
         
         # Actor更新
@@ -183,7 +183,7 @@ class PPONetwork:
             )
             
             entropy = -tf.reduce_sum(action_probs * tf.math.log(action_probs + 1e-8), axis=1)
-            actor_loss -= 0.1 * tf.reduce_mean(entropy)  # 🔧 V15 紧急修复：提升探索性从0.01到0.1
+            actor_loss -= 0.3 * tf.reduce_mean(entropy)  # 🔧 V21：从0.2提升到0.3，进一步增强探索
         
         actor_grads = tape.gradient(actor_loss, self.actor.trainable_variables)
         self.actor_optimizer.apply_gradients(zip(actor_grads, self.actor.trainable_variables))
@@ -204,10 +204,12 @@ class PPONetwork:
 
 # 🔧 V8 新增: 多进程并行工作函数
 def run_simulation_worker(network_weights: Dict[str, List[np.ndarray]],
-                          state_dim: int, action_dim: int, num_steps: int, seed: int) -> Tuple[Dict[str, ExperienceBuffer], float]:
+                          state_dim: int, action_dim: int, num_steps: int, seed: int, 
+                          curriculum_config: Dict[str, Any] = None) -> Tuple[Dict[str, ExperienceBuffer], float]:
     """
     Worker process for collecting experience in parallel.
     Each worker creates its own environment and network.
+    🔧 V17修复：支持课程学习配置传递
     """
     # 1. 设置进程特定的随机种子
     os.environ['CUDA_VISIBLE_DEVICES'] = ''  # 🔧 V10.2 修正: 必须保留，确保子进程不访问GPU
@@ -215,8 +217,8 @@ def run_simulation_worker(network_weights: Dict[str, List[np.ndarray]],
     np.random.seed(seed)
     tf.random.set_seed(seed)
 
-    # 2. 创建本地环境和网络
-    env = make_parallel_env()
+    # 2. 创建本地环境和网络 - 🔧 V17修复：传递课程学习配置
+    env = make_parallel_env(curriculum_config)
     # 学习率是占位符，因为工作进程不进行训练
     local_network = PPONetwork(state_dim, action_dim, lr=1e-4)
     local_network.actor.set_weights(network_weights['actor'])
@@ -322,6 +324,9 @@ class SimplePPOTrainer:
         self.training_losses = []
         self.iteration_times = []  # 🔧 V5 新增：记录每轮训练时间
         self.kpi_history = []      # 🔧 V5 新增：记录每轮KPI历史
+        self.initial_lr = initial_lr  # 🔧 V19 修复: 保存初始学习率
+        self.start_time = time.time()
+        self.start_time_str = datetime.now().strftime("%Y%m%d_%H%M%S")
         
         # 创建保存目录
         self.models_dir = "自定义ppo/ppo_models"
@@ -496,17 +501,27 @@ class SimplePPOTrainer:
         # 执行正常的策略更新
         return self.update_policy(buffers)
 
-    def create_environment(self):
-        """创建环境"""
-        env = make_parallel_env()
+    def create_environment(self, curriculum_stage=None):
+        """创建环境（支持课程学习）"""
+        config = {}
+        
+        # 🔧 V16：实现课程学习的环境配置
+        if curriculum_stage is not None and CURRICULUM_CONFIG.get("enabled", False):
+            stage = CURRICULUM_CONFIG["stages"][curriculum_stage] if curriculum_stage < len(CURRICULUM_CONFIG["stages"]) else CURRICULUM_CONFIG["stages"][-1]
+            config['curriculum_stage'] = stage
+            config['orders_scale'] = stage.get('orders_scale', 1.0)
+            config['time_scale'] = stage.get('time_scale', 1.0)
+            print(f"📚 课程学习阶段 {curriculum_stage+1}: {stage['name']} (订单比例: {stage['orders_scale']}, 时间倍数: {stage['time_scale']})")
+        
+        env = make_parallel_env(config)
         buffers = {
             agent: ExperienceBuffer() 
             for agent in env.possible_agents
         }
         return env, buffers
     
-    def collect_experience_parallel(self, buffers, num_steps: int) -> float:
-        """🔧 V8 新增：使用多进程并行收集经验"""
+    def collect_experience_parallel(self, buffers, num_steps: int, curriculum_config: Dict[str, Any] = None) -> float:
+        """🔧 V17修复：使用多进程并行收集经验，支持课程学习"""
         for buffer in buffers.values():
             buffer.clear()
 
@@ -528,7 +543,8 @@ class SimplePPOTrainer:
                     self.state_dim,
                     self.action_dim,
                     steps_per_worker,
-                    seed
+                    seed,
+                    curriculum_config  # 🔧 V17修复：传递课程学习配置
                 )
                 futures.append(future)
 
@@ -600,9 +616,13 @@ class SimplePPOTrainer:
         
         return losses
     
-    def quick_kpi_evaluation(self, num_episodes: int = 3) -> Dict[str, float]:
-        """🔧 修复版：快速KPI评估（用于每轮监控）"""
-        env, _ = self.create_environment()
+    def quick_kpi_evaluation(self, num_episodes: int = 3, curriculum_config: Dict[str, Any] = None) -> Dict[str, float]:
+        """🔧 V17修复：快速KPI评估（支持课程学习配置）"""
+        # 🔧 V17修复：创建环境时传递课程配置
+        if curriculum_config:
+            env = make_parallel_env(curriculum_config)
+        else:
+            env = self.create_environment()
         
         total_rewards = []
         makespans = []
@@ -710,13 +730,19 @@ class SimplePPOTrainer:
     
     def train(self, num_episodes: int = 100, steps_per_episode: int = 200, 
               eval_frequency: int = 20):
-        """🔧 V5 增强版训练主循环 - 详细日志和KPI监控"""
+        """🔧 V16 课程学习版训练主循环"""
         # 🔧 V5 应用系统优化的参数
         optimized_episodes, optimized_steps = self._optimize_training_params(num_episodes, steps_per_episode)
         
-        print(f"🚀 开始PPO训练 (V5 系统优化版)")
+        print(f"🚀 开始PPO训练 (V16 课程学习增强版)")
         print(f"📊 训练参数: {optimized_episodes}回合, 每回合{optimized_steps}步")
         print(f"💻 系统配置: {self.system_info['memory_gb']:.1f}GB内存, GPU={'✅' if self.system_info['gpu_available'] else '❌'}")
+        
+        # 🔧 V16：显示课程学习配置
+        if CURRICULUM_CONFIG.get("enabled", False):
+            print(f"📚 课程学习已启用，共{len(CURRICULUM_CONFIG['stages'])}个阶段:")
+            for i, stage in enumerate(CURRICULUM_CONFIG["stages"]):
+                print(f"   阶段{i+1}: {stage['name']} - {stage['iterations']}轮，订单{stage['orders_scale']*100:.0f}%")
         print("=" * 80)
         
         if not validate_config():
@@ -728,6 +754,11 @@ class SimplePPOTrainer:
         training_start_datetime = datetime.now()
         print(f"🕐 训练开始时间: {training_start_datetime.strftime('%Y-%m-%d %H:%M:%S')}")
         print("=" * 80)
+        
+        # 🔧 V16：课程学习管理
+        curriculum_enabled = CURRICULUM_CONFIG.get("enabled", False)
+        current_stage = 0
+        stage_episode_count = 0
         
         # 🔧 V8 优化: 不再需要创建主环境，只创建缓冲区
         buffers = {
@@ -742,9 +773,88 @@ class SimplePPOTrainer:
             for episode in range(optimized_episodes):
                 iteration_start_time = time.time()
                 
-                # 收集经验 - 🔧 V8 改为并行收集
+                # 🔧 V17关键修复：课程学习阶段管理
+                current_curriculum_config = None
+                if curriculum_enabled:
+                    stage_config = CURRICULUM_CONFIG["stages"][current_stage]
+                    
+                    # 🔧 V22 毕业考试机制：在进入下一阶段前进行强制评估
+                    if stage_episode_count >= stage_config["iterations"]:
+                        if current_stage < len(CURRICULUM_CONFIG["stages"]) - 1:
+                            print("\n" + "="*60)
+                            print(f"🎓 阶段 '{stage_config['name']}' 训练完成，开始毕业考试...")
+                            
+                            next_stage_data = CURRICULUM_CONFIG["stages"][current_stage + 1]
+                            next_stage_target_parts = int(33 * next_stage_data['orders_scale'])
+                            exam_config = {
+                                'orders_scale': next_stage_data.get('orders_scale', 1.0),
+                                'time_scale': next_stage_data.get('time_scale', 1.0),
+                                'stage_name': f"考试: {next_stage_data.get('name', '')}"
+                            }
+                            
+                            exam_kpi = self.quick_kpi_evaluation(num_episodes=3, curriculum_config=exam_config)
+                            exam_completed_parts = exam_kpi.get('mean_completed_parts', 0)
+                            exam_completion_rate = (exam_completed_parts / next_stage_target_parts) * 100 if next_stage_target_parts > 0 else 0
+                            
+                            # 🔧 V24: 引入动态毕业门槛，确保学习质量
+                            # 早期阶段门槛低，鼓励探索；后期阶段门槛高，确保掌握
+                            graduation_thresholds = [10.0, 20.0, 30.0, 40.0, 50.0] # 对应进入2,3,4,5,6阶段的门槛
+                            current_threshold = graduation_thresholds[current_stage] if current_stage < len(graduation_thresholds) else 50.0
+
+                            print(f"   考试目标: {next_stage_target_parts} 零件 | 实际完成: {exam_completed_parts:.1f} 零件 ({exam_completion_rate:.1f}%) | 通过门槛: {current_threshold:.1f}%")
+                            
+                            if exam_completion_rate >= current_threshold:
+                                print(f"   ✅ 考试通过！进入下一阶段: '{next_stage_data['name']}'")
+                                current_stage += 1
+                                stage_episode_count = 0
+                            else:
+                                print(f"   ❌ 考试未通过。当前阶段延长10轮训练。")
+                                stage_config["iterations"] += 10
+                            
+                            print("="*60 + "\n")
+                        # 如果是最后阶段，则不再切换
+                    
+                    # 获取当前阶段配置 (可能已更新)
+                    stage = CURRICULUM_CONFIG["stages"][current_stage]
+                    current_curriculum_config = {
+                        'orders_scale': stage.get('orders_scale', 1.0),
+                        'time_scale': stage.get('time_scale', 1.0),
+                        'stage_name': stage.get('name', f'Stage {current_stage}')
+                    }
+                    
+                    # 🔧 V17增强：详细的阶段切换和状态日志
+                    if stage_episode_count == 0:
+                        print(f"📚 [回合 {episode+1}] 🔄 课程学习阶段切换!")
+                        print(f"   新阶段: {stage['name']}")
+                        print(f"   订单比例: {stage['orders_scale']} (目标零件数: {int(33 * stage['orders_scale'])})")
+                        print(f"   时间比例: {stage['time_scale']} (时间限制: {int(1200 * stage['time_scale'])}分钟)")
+                        print(f"   计划训练轮数: {stage['iterations']}")
+                        
+                        # 🔧 V25 修复：移除阶段切换时的激进学习率调整，改为依赖全局衰减，以增强学习稳定性
+                        # if current_stage > 0:  # 不是第一个阶段
+                        #     # 🔧 V21：前3个阶段保持高学习率，后期才降低
+                        #     if current_stage <= 2:  # 极简入门、基础练习、稳定训练阶段
+                        #         lr_scale = 1.2  # 提高20%，加强学习
+                        #     else:
+                        #         lr_scale = 1.0 - ((current_stage - 2) * 0.15)  # 从第3阶段开始递减
+                        #     
+                        #     new_lr = self.initial_lr * lr_scale
+                        #     self.shared_network.actor_optimizer.learning_rate = tf.constant(new_lr)
+                        #     self.shared_network.critic_optimizer.learning_rate = tf.constant(new_lr)
+                        #     print(f"   学习率调整: {new_lr:.2e} (适应新难度)")
+                        print("-" * 60)
+                    
+                    # 🔧 V17新增：每10轮显示阶段状态
+                    if episode % 10 == 0:
+                        progress = stage_episode_count / stage['iterations'] * 100
+                        print(f"📚 课程状态: {stage['name']} ({stage_episode_count}/{stage['iterations']}, {progress:.1f}%)")
+                        print(f"   当前难度: {int(33 * stage['orders_scale'])}零件, {stage['time_scale']:.1f}x时间")
+                    
+                    stage_episode_count += 1
+                
+                # 收集经验 - 🔧 V17修复：传递课程学习配置
                 collect_start_time = time.time()
-                episode_reward = self.collect_experience_parallel(buffers, optimized_steps)
+                episode_reward = self.collect_experience_parallel(buffers, optimized_steps, current_curriculum_config)
                 collect_duration = time.time() - collect_start_time
                 
                 # 🔧 V6 安全的策略更新（包含内存检查）
@@ -773,9 +883,55 @@ class SimplePPOTrainer:
                 
                 # 🔧 V11 Checkpoint 优化: 移除定期保存，只保留最佳模型保存
                 
-                # 🔧 V12 合并修复：每轮都进行KPI评估和显示
-                kpi_results = self.quick_kpi_evaluation(num_episodes=2)
+                # 🔧 V17修复：使用当前课程配置进行KPI评估
+                kpi_results = self.quick_kpi_evaluation(num_episodes=2, curriculum_config=current_curriculum_config)
                 self.kpi_history.append(kpi_results)
+                
+                # 🔧 V17新增：课程学习进展验证
+                if curriculum_enabled and episode % 10 == 0:
+                    target_parts = int(33 * current_curriculum_config['orders_scale'])
+                    completed_parts = kpi_results.get('mean_completed_parts', 0)  # 🔧 V17修复：使用正确的键名
+                    completion_rate = completed_parts / target_parts * 100 if target_parts > 0 else 0
+                    print(f"📊 课程目标验证: {completed_parts:.1f}/{target_parts} 零件 ({completion_rate:.1f}%)")
+                    if completion_rate > 80:
+                        print(f"✅ 当前阶段表现优秀，接近完成目标!")
+                    elif completion_rate > 50:
+                        print(f"⚡ 当前阶段有进展，继续努力!")
+                    else:
+                        print(f"⚠️ 当前阶段表现不佳，可能需要调整参数!")
+                
+                # 🔧 V18新增：每30回合进行一次完整难度评估（大考）
+                if episode > 0 and episode % 30 == 0:
+                    print("\n" + "="*60)
+                    print("🎓 进行完整难度评估（100%订单，标准时间）...")
+                    full_config = {
+                        'orders_scale': 1.0,
+                        'time_scale': 1.0,
+                        'stage_name': '完整评估'
+                    }
+                    full_kpi = self.quick_kpi_evaluation(num_episodes=3, curriculum_config=full_config)
+                    
+                    # 计算真实性能指标
+                    real_completion = full_kpi.get('mean_completed_parts', 0)
+                    real_completion_rate = real_completion / 33 * 100
+                    real_makespan = full_kpi.get('mean_makespan', 0)
+                    real_utilization = full_kpi.get('mean_utilization', 0)
+                    
+                    print(f"🎯 完整难度评估结果:")
+                    print(f"   完成零件: {real_completion:.1f}/33 ({real_completion_rate:.1f}%)")
+                    print(f"   总完工时间: {real_makespan:.1f}分钟")
+                    print(f"   设备利用率: {real_utilization:.1f}%")
+                    
+                    # 评估进展
+                    if real_completion_rate > 90:
+                        print(f"🏆 优秀！接近完全掌握任务!")
+                    elif real_completion_rate > 60:
+                        print(f"💪 良好！已具备基本能力!")
+                    elif real_completion_rate > 30:
+                        print(f"📈 进步中！继续努力!")
+                    else:
+                        print(f"📚 仍需更多训练!")
+                    print("="*60 + "\n")
                 
                 # 🔧 V12 TensorBoard KPI记录
                 if self.train_writer is not None:
@@ -799,17 +955,27 @@ class SimplePPOTrainer:
                 utilization = kpi_results['mean_utilization']
                 tardiness = kpi_results['mean_tardiness']
                 
-                makespan_score = max(0, 1 - makespan / 600)
-                utilization_score = utilization
-                tardiness_score = max(0, 1 - tardiness / 1000)
-                completion_score = completed_parts / 33
-                
-                current_score = (
-                    makespan_score * 0.3 +
-                    utilization_score * 0.2 +
-                    tardiness_score * 0.2 +
-                    completion_score * 0.3
-                )
+                # 🔧 V23 修复：对评分逻辑的致命缺陷进行修复
+                # 如果智能体没有完成任何零件，那么它的分数应该为0，以避免“躺平”策略获得高分
+                if completed_parts == 0:
+                    current_score = 0.0
+                else:
+                    makespan_score = max(0, 1 - makespan / 600)
+                    utilization_score = utilization
+                    tardiness_score = max(0, 1 - tardiness / 1000)
+                    # 🔧 V23 修复：完成分应该基于当前课程的目标，而不是固定的33
+                    target_parts = 33
+                    if curriculum_enabled and current_curriculum_config:
+                        target_parts = int(33 * current_curriculum_config.get('orders_scale', 1.0))
+                    
+                    completion_score = completed_parts / target_parts if target_parts > 0 else 0
+                    
+                    current_score = (
+                        makespan_score * 0.3 +
+                        utilization_score * 0.2 +
+                        tardiness_score * 0.2 +
+                        completion_score * 0.3
+                    )
                 
                 if not hasattr(self, 'best_score'):
                     self.best_score = float('-inf')
@@ -948,12 +1114,12 @@ def main():
     tf.random.set_seed(RANDOM_SEED)
     
     try:
-        # 🔧 V13 稳定版：适度调整训练参数，确保稳定性
-        num_episodes = 500   # 适度减少轮数，专注质量而非数量
+        # 🔧 V16 重置训练：打破伪收敛，重新开始学习
+        num_episodes = 300   # 适中的轮数，配合课程学习
         steps_per_episode = 1500  # 与评估保持一致的步数  
         
         trainer = SimplePPOTrainer(
-            initial_lr=2e-4,  # 🔧 V15 紧急修复：大幅提升学习率，强制跳出局部最优
+            initial_lr=2e-4,  # 🔧 V21增强：从1e-4提升到2e-4，在早期阶段加强学习
             total_train_episodes=num_episodes,
             steps_per_episode=steps_per_episode
         )

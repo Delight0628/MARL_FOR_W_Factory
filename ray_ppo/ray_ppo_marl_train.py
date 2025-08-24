@@ -90,7 +90,7 @@ class RayWFactoryEnv(MultiAgentEnv):
         self.step_count = 0
         obs, info = self.base_env.reset(seed=seed, options=options)
         
-        # 确保返回正确格式
+        # 🔧 V17 关键修复：Ray RLlib期望reset返回(obs, infos)两个值
         if isinstance(obs, dict):
             return obs, info
         else:
@@ -101,33 +101,24 @@ class RayWFactoryEnv(MultiAgentEnv):
         """执行一步（与wsl脚本一致）"""
         self.step_count += 1
         
-        # 检查动作格式
-        if isinstance(action_dict, dict):
-            processed_actions = action_dict
-        else:
-            processed_actions = {agent: action_dict for agent in self.agents}
+        processed_actions = action_dict
         
-        # 调用基础环境
+        # 调用基础环境 (返回 obs, rewards, terminations, truncations, infos)
         obs, rewards, terminations, truncations, infos = self.base_env.step(processed_actions)
         
-        # 与自定义PPO一致的终止条件
-        step_limit_reached = self.step_count >= self.max_steps
-        
-        # 🔧 关键修复: 当达到最大步数时，必须设置 __all__ = True 来告知Ray episode已结束
+        # 🔧 V17 关键修复: 当达到最大步数时，必须设置 __all__ = True 来告知Ray episode已结束
         # 否则在 batch_mode="complete_episodes" 模式下会无限等待
+        step_limit_reached = self.step_count >= self.max_steps
         if step_limit_reached:
-            truncations["__all__"] = True
-            for agent in self.agents:
-                truncations[agent] = True
+            terminations["__all__"] = True
+            truncations["__all__"] = False
+        else:
+            # 继承底层环境的__all__信号，但确保terminations和truncations都有__all__键
+            env_done = terminations.get("__all__", False) or truncations.get("__all__", False)
+            terminations["__all__"] = env_done
+            truncations["__all__"] = False  # 我们不使用truncations，只使用terminations
         
-        # 确保其他返回值格式正确
-        if not isinstance(obs, dict):
-            obs = {agent: obs for agent in self.agents}
-        if not isinstance(rewards, dict):
-            rewards = {agent: rewards for agent in self.agents}
-        if not isinstance(infos, dict):
-            infos = {agent: infos for agent in self.agents}
-        
+        # 🔧 V17 关键修复：Ray RLlib期望step返回 (obs, rewards, terminations, truncations, infos) 5个值
         return obs, rewards, terminations, truncations, infos
     
     def close(self):
@@ -224,8 +215,7 @@ class RayPPOTrainer:
                 gamma=0.99,
                 lambda_=0.95,  # GAE参数
                 train_batch_size=2048,      # 减小批次大小，确保稳定训练
-                sgd_minibatch_size=256,     # 🔧 关键修复：使用sgd_minibatch_size而非minibatch_size
-                num_sgd_iter=8,             # 🔧 减少SGD迭代次数，避免过度更新
+                num_sgd_iter=8,             # 兼容旧版API，使用num_sgd_iter
                 clip_param=0.3,             # 对齐自定义PPO
                 entropy_coeff=0.1,          # 对齐自定义PPO
                 vf_loss_coeff=1.0,
@@ -257,7 +247,8 @@ class RayPPOTrainer:
             )
         )
         
-        # 🔧 V16 关键修复: 参数已在.training()中正确设置，无需重复设置
+        # 🔧 V17 修复：为兼容旧版Ray，在配置构建后单独设置sgd_minibatch_size
+        self.config.sgd_minibatch_size = 256
         
         # 创建算法实例
         self.algorithm = self.config.build_algo()
@@ -473,11 +464,20 @@ class RayPPOTrainer:
                                 actions[agent] = 0
                     
                     try:
-                        observations, rewards, terminations, truncations, infos = temp_env.step(actions)
+                        step_result = temp_env.step(actions)
+                        if len(step_result) == 4:
+                            # 旧版API：obs, rewards, dones, infos
+                            observations, rewards, dones, infos = step_result
+                            done = dones.get("__all__", False)
+                        else:
+                            # 新版API：obs, rewards, terminations, truncations, infos
+                            observations, rewards, terminations, truncations, infos = step_result
+                            done = terminations.get("__all__", False) or truncations.get("__all__", False)
+                        
                         episode_reward += sum(rewards.values())
                         step_count += 1
                         
-                        if terminations.get("__all__", False) or truncations.get("__all__", False):
+                        if done:
                             break
                             
                     except Exception as e:
@@ -554,11 +554,20 @@ class RayPPOTrainer:
                             actions[agent] = 0
                 
                 try:
-                    observations, rewards, terminations, truncations, infos = temp_env.step(actions)
+                    step_result = temp_env.step(actions)
+                    if len(step_result) == 4:
+                        # 旧版API：obs, rewards, dones, infos
+                        observations, rewards, dones, infos = step_result
+                        done = dones.get("__all__", False)
+                    else:
+                        # 新版API：obs, rewards, terminations, truncations, infos
+                        observations, rewards, terminations, truncations, infos = step_result
+                        done = terminations.get("__all__", False) or truncations.get("__all__", False)
+                    
                     episode_reward += sum(rewards.values())
                     step_count += 1
                     
-                    if terminations.get("__all__", False) or truncations.get("__all__", False):
+                    if done:
                         break
                         
                 except Exception as e:
@@ -623,56 +632,65 @@ class RayPPOTrainer:
                 collect_duration = time.time() - collect_start_time
                 
                 # 提取训练指标
-                # 🔧 V17 修复：更robust的指标提取
-                episode_reward = result.get('episode_reward_mean', result.get('episode_reward_mean_total', 0))
+                # 🔧 V17 修复：针对Ray 2.48的指标提取
+                # 尝试多个可能的奖励字段
+                episode_reward = (result.get('episode_reward_mean') or 
+                                result.get('sampler_results', {}).get('episode_reward_mean') or 
+                                result.get('env_runners', {}).get('episode_reward_mean') or
+                                result.get('env_runners', {}).get('sampler_results', {}).get('episode_reward_mean') or
+                                result.get('training_iteration_reward') or
+                                result.get('hist_stats', {}).get('episode_reward') or 0)
                 
-                # 尝试多种路径提取损失信息
+                # 提取损失信息：Ray 2.48中损失在learner_stats中
                 info = result.get('info', {})
                 learner_info = info.get('learner', {})
+                
+                # 找到策略的learner_stats
+                policy_stats = None
                 if 'shared_policy' in learner_info:
-                    policy_info = learner_info['shared_policy']
+                    policy_stats = learner_info['shared_policy'].get('learner_stats', {})
                 elif 'default_policy' in learner_info:
-                    policy_info = learner_info['default_policy']
-                else:
-                    # 如果找不到策略信息，尝试其他路径
-                    policy_info = info.get('shared_policy', {})
+                    policy_stats = learner_info['default_policy'].get('learner_stats', {})
+                
+                # 如果还是找不到，尝试直接访问
+                if not policy_stats:
+                    policy_stats = info.get('shared_policy', {}).get('learner_stats', {})
                 
                 losses = {
-                    'actor_loss': policy_info.get('policy_loss', policy_info.get('actor_loss', 0)),
-                    'critic_loss': policy_info.get('vf_loss', policy_info.get('critic_loss', 0)),
-                    'entropy': policy_info.get('entropy', 0)
+                    'actor_loss': (policy_stats.get('policy_loss') or 
+                                 policy_stats.get('total_loss') or 
+                                 policy_stats.get('actor_loss') or 0),
+                    'critic_loss': (policy_stats.get('vf_loss') or 
+                                  policy_stats.get('value_loss') or 
+                                  policy_stats.get('critic_loss') or 0),
+                    'entropy': (policy_stats.get('entropy') or 
+                              policy_stats.get('policy_entropy') or 0)
                 }
                 
-                # 🔧 调试：如果损失仍为0，打印result结构以便调试
-                if losses['actor_loss'] == 0 and losses['critic_loss'] == 0 and episode <= 3:
-                    print(f"🔍 调试信息 - result结构预览:")
-                    print(f"   episode_reward_mean: {result.get('episode_reward_mean', 'N/A')}")
-                    print(f"   info keys: {list(info.keys()) if info else 'None'}")
-                    if 'learner' in info:
-                        print(f"   learner keys: {list(info['learner'].keys())}")
-                        for policy_id, policy_data in info['learner'].items():
-                            if isinstance(policy_data, dict):
-                                print(f"   {policy_id} keys: {list(policy_data.keys())}")
+                # 🔧 增加诊断信息：如果前几轮指标异常，打印详细信息
+                if episode < 3 and (episode_reward == 0 or losses['actor_loss'] == 0):
+                    print(f"🔍 第{episode+1}轮指标诊断:")
+                    print(f"   episode_reward: {episode_reward}")
+                    print(f"   policy_stats可用的键: {list(policy_stats.keys()) if policy_stats else 'None'}")
+                    if policy_stats:
+                        for key, value in policy_stats.items():
+                            if 'loss' in key.lower() or 'reward' in key.lower():
+                                print(f"   {key}: {value}")
                     print()
+                
 
-                # 🔧 V17 修复：正确计算和分配时间统计
-                iteration_end_time = time.time()
-                iteration_duration = iteration_end_time - iteration_start_time
-                
-                # 修正时间分配：在强化学习中，数据采集（CPU）应该比模型更新（GPU）耗时更长
-                # 因为需要与环境交互、状态转换等
-                update_duration = collect_duration  # 实际的模型更新时间
-                collect_duration = max(iteration_duration - update_duration, update_duration * 2)  # 数据采集应该更长
-                
-                # 确保时间分配合理（采集时间 > 更新时间）
-                if collect_duration <= update_duration:
-                    # 按照经验比例分配：70%采集，30%更新
-                    collect_duration = iteration_duration * 0.7
-                    update_duration = iteration_duration * 0.3
+
+                # 🔧 V17 关键修复：从Ray的result中获取真实的时间统计
+                iteration_duration = result.get('time_total_s', time.time() - iteration_start_time)
+                timers = result.get('timers', {})
+                collect_duration = timers.get('sample_time_ms', 0) / 1000.0
+                update_duration = timers.get('learn_time_ms', 0) / 1000.0
+                # 如果`learn_time_ms`不可用（例如在某些Ray版本），则进行估算
+                if update_duration == 0 and iteration_duration > collect_duration:
+                    update_duration = iteration_duration - collect_duration
                 
                 # 记录统计
                 iteration_end_time = time.time()
-                iteration_duration = iteration_end_time - iteration_start_time
                 self.iteration_times.append(iteration_duration)
                 self.episode_rewards.append(episode_reward)
                 self.training_losses.append(losses)

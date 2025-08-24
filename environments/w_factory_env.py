@@ -180,8 +180,36 @@ class WFactorySim:
             self.env.process(self._equipment_process(station_name))
     
     def _initialize_orders(self):
-        """初始化订单"""
-        for i, order_data in enumerate(BASE_ORDERS):
+        """初始化订单（支持课程学习）"""
+        # 🔧 V16：支持课程学习的订单缩放
+        orders_scale = self.config.get('orders_scale', 1.0)
+        time_scale = self.config.get('time_scale', 1.0)
+        
+        # 如果启用课程学习，按比例调整订单
+        actual_orders = []
+        if orders_scale < 1.0:
+            # 计算需要多少个零件
+            total_parts_needed = int(sum(o["quantity"] for o in BASE_ORDERS) * orders_scale)
+            parts_added = 0
+            
+            # 优先选择不同产品类型的订单，保持多样性
+            for order_data in BASE_ORDERS:
+                if parts_added >= total_parts_needed:
+                    break
+                
+                # 调整订单数量
+                adjusted_quantity = min(order_data["quantity"], total_parts_needed - parts_added)
+                if adjusted_quantity > 0:
+                    adjusted_order = order_data.copy()
+                    adjusted_order["quantity"] = adjusted_quantity
+                    adjusted_order["due_date"] = order_data["due_date"] * time_scale  # 放宽时间限制
+                    actual_orders.append(adjusted_order)
+                    parts_added += adjusted_quantity
+        else:
+            actual_orders = BASE_ORDERS
+        
+        # 创建订单对象
+        for i, order_data in enumerate(actual_orders):
             order = Order(
                 order_id=i,
                 product=order_data["product"],
@@ -500,14 +528,17 @@ class WFactorySim:
                     yield self.queues[next_station].put(part)
     
     def get_rewards(self) -> Dict[str, float]:
-        """🔧 V10革命重构：订单思维革命奖励系统"""
+        """🔧 V22 智能奖励重构：恢复核心引导奖励 + 动态放大"""
         rewards = {}
         
-        # 🔧 V10核心：更新订单进度和关键路径分析
+        # 获取课程阶段信息，用于动态调整奖励
+        orders_scale = self.config.get('orders_scale', 1.0)
+        
+        # 核心：更新订单进度和关键路径分析
         self._update_order_progress()
         self._critical_parts = self._identify_critical_parts()
         
-        # 🔧 V10新增：仿真结束时的未完成订单严厉惩罚
+        # 仿真结束时的未完成订单严厉惩罚
         final_incomplete_penalty = 0
         if self.is_done():
             incomplete_orders = 0
@@ -516,8 +547,8 @@ class WFactorySim:
                     incomplete_orders += 1
             if incomplete_orders > 0:
                 final_incomplete_penalty = incomplete_orders * REWARD_CONFIG["incomplete_order_final_penalty"]
-        
-        # 🔧 V9主要奖励计算
+
+        # --- 奖励计算 ---
         
         # 1. 订单完成奖励 (最高优先级)
         new_completed_orders = self.stats['completed_orders'] - self.stats.get('last_completed_orders', 0)
@@ -525,15 +556,19 @@ class WFactorySim:
         if new_completed_orders > 0:
             order_completion_reward = new_completed_orders * REWARD_CONFIG["order_completion_reward"]
             self.stats['last_completed_orders'] = self.stats['completed_orders']
-        
-        # 2. 零件完成奖励 (大幅降低)
+
+        # 2. 零件完成奖励 (V22 核心恢复)
         new_part_completions = len(self.completed_parts) - self.stats.get('last_completed_count', 0)
         part_completion_reward = 0
         if new_part_completions > 0:
             part_completion_reward = new_part_completions * REWARD_CONFIG["part_completion_reward"]
             self.stats['last_completed_count'] = len(self.completed_parts)
-        
-        # 3. 工序进展奖励 (进一步降低)
+            # 🔧 V22 动态奖励放大: 在早期阶段，为关键的“路标”行为提供更强的正反馈
+            if orders_scale <= 0.5:
+                scale_factor = (2.0 - orders_scale * 2) # e.g., scale=0.2 -> x1.6, scale=0.5 -> x1.0
+                part_completion_reward *= scale_factor
+
+        # 3. 工序进展奖励
         current_total_steps = sum(part.current_step for part in self.active_parts)
         last_total_steps = self.stats.get('last_total_steps', 0)
         step_progress = current_total_steps - last_total_steps
@@ -542,37 +577,34 @@ class WFactorySim:
             step_reward = step_progress * REWARD_CONFIG["step_reward"]
             self.stats['last_total_steps'] = current_total_steps
         
-        # 4. 订单进度里程碑奖励
+        # 4. 订单进度里程碑奖励 (V22 核心恢复)
         order_progress_reward = 0
         for order_id, progress in self.order_progress.items():
             last_milestone = self.last_order_progress_milestones.get(order_id, 0)
-            current_milestone = int(progress * 4)  # 0, 1, 2, 3, 4 对应 0%, 25%, 50%, 75%, 100%
+            current_milestone = int(progress * 4)
             
             if current_milestone > last_milestone:
                 milestone_reward = (current_milestone - last_milestone) * REWARD_CONFIG["order_progress_bonus"]
                 order_progress_reward += milestone_reward
                 self.last_order_progress_milestones[order_id] = current_milestone
         
-        # 5. 关键路径和瓶颈奖励
-        critical_path_reward = 0
-        bottleneck_priority_reward = 0
+        # 🔧 V22 动态奖励放大
+        if order_progress_reward > 0 and orders_scale <= 0.5:
+            scale_factor = (2.0 - orders_scale * 2)
+            order_progress_reward *= scale_factor
         
-        # 6. 订单效率奖励
+        # 5. 订单效率奖励
         order_efficiency_reward = 0
         for order_id, completion_time in self.order_completion_times.items():
             if order_id not in self.stats.get('rewarded_orders', set()):
-                # 根据完成时间相对于due_date的效率给奖励
                 order = next((o for o in self.orders if o.order_id == order_id), None)
                 if order and completion_time <= order.due_date:
                     efficiency = max(0, (order.due_date - completion_time) / order.due_date)
                     order_efficiency_reward += efficiency * REWARD_CONFIG["order_efficiency_bonus"]
-                
-                # 标记已奖励
-                if 'rewarded_orders' not in self.stats:
-                    self.stats['rewarded_orders'] = set()
+                if 'rewarded_orders' not in self.stats: self.stats['rewarded_orders'] = set()
                 self.stats['rewarded_orders'].add(order_id)
         
-        # 7. 订单延期惩罚
+        # 6. 订单延期惩罚
         order_tardiness_penalty = 0
         for order in self.orders:
             if order.order_id in self.order_completion_times:
@@ -581,91 +613,120 @@ class WFactorySim:
                     tardiness = completion_time - order.due_date
                     order_tardiness_penalty += REWARD_CONFIG["order_tardiness_penalty"] * (tardiness / 60)
         
-        # 8. 订单遗弃惩罚 (长时间无进展)
+        if orders_scale >= 0.7:
+            efficiency_multiplier = 1.0 + (orders_scale - 0.7) * 3.0
+            order_tardiness_penalty *= efficiency_multiplier
+        
+        # 7. 订单遗弃惩罚
         order_abandonment_penalty = 0
         for order_id, progress in self.order_progress.items():
-            if progress < 1.0:  # 未完成的订单
-                # 检查是否长时间无进展
+            if progress < 1.0:
                 last_progress_time = self.stats.get(f'last_progress_time_{order_id}', 0)
                 if progress > self.stats.get(f'last_progress_{order_id}', 0):
                     self.stats[f'last_progress_time_{order_id}'] = self.current_time
                     self.stats[f'last_progress_{order_id}'] = progress
-                elif self.current_time - last_progress_time > REWARD_CONFIG["order_abandonment_threshold"]:  # 使用配置的阈值
+                elif self.current_time - last_progress_time > REWARD_CONFIG["order_abandonment_threshold"]:
                     order_abandonment_penalty += REWARD_CONFIG["order_abandonment_penalty"]
         
-        # 🔧 V9智能体奖励分配
+        # 8. 塑形奖励
+        shaping_reward = 0
+        if REWARD_CONFIG.get("shaping_enabled", False):
+            # 1. 连续完成同一订单的奖励
+            if not hasattr(self, 'last_completed_order_id'):
+                self.last_completed_order_id = None
+            
+            # 检查最新完成的零件是否属于同一订单
+            if new_part_completions > 0 and len(self.completed_parts) > 0:
+                latest_part = self.completed_parts[-1]
+                if self.last_completed_order_id == latest_part.order_id:
+                    shaping_reward += REWARD_CONFIG["same_order_bonus"] * new_part_completions
+                self.last_completed_order_id = latest_part.order_id
+            
+            # 2. 紧急订单处理奖励
+            for part in self.active_parts:
+                if part.due_date - self.current_time < 100:  # 100分钟内到期
+                    if part.current_step > 0:  # 有进展
+                        shaping_reward += REWARD_CONFIG["urgent_order_bonus"] / len(self.active_parts)
+            
+            # 3. 生产线流畅性奖励
+            active_stations = sum(1 for s in WORKSTATIONS.keys() 
+                                 if self.equipment_status[s]['busy_count'] > 0)
+            if active_stations > len(WORKSTATIONS) * 0.6:  # 60%以上设备在工作
+                shaping_reward += REWARD_CONFIG["flow_smoothness_bonus"]
+            
+            # 4. 队列均衡奖励
+            queue_lengths = [len(self.queues[s].items) for s in WORKSTATIONS.keys()]
+            if len(queue_lengths) > 0:
+                queue_variance = np.var(queue_lengths)
+                if queue_variance < 5:  # 队列长度差异小
+                    shaping_reward += REWARD_CONFIG["queue_balance_bonus"]
+            
+            # 5. 提前完成奖励
+            for order_id, completion_time in self.order_completion_times.items():
+                if order_id not in self.stats.get('shaping_rewarded_orders', set()):
+                    order = next((o for o in self.orders if o.order_id == order_id), None)
+                    if order and completion_time < order.due_date * 0.8:  # 提前20%完成
+                        shaping_reward += REWARD_CONFIG["early_completion_bonus"]
+                        if 'shaping_rewarded_orders' not in self.stats:
+                            self.stats['shaping_rewarded_orders'] = set()
+                        self.stats['shaping_rewarded_orders'].add(order_id)
+        
+        # --- 奖励分配 ---
         if not hasattr(self, 'idle_counters'):
             self.idle_counters = {station: 0 for station in WORKSTATIONS.keys()}
         
         for station_name in WORKSTATIONS.keys():
             agent_id = f"agent_{station_name}"
-            agent_reward = 0.0  # V9: 彻底移除基础奖励
+            agent_reward = 0.0
             
-            # 检查工作站活跃状态
             is_active = (len(self.queues[station_name].items) > 0 or 
                         self.equipment_status[station_name]['busy_count'] > 0)
             
             if is_active:
                 self.idle_counters[station_name] = 0
                 
-                # 分配工序进展奖励
                 if step_reward > 0:
                     agent_reward += step_reward / len(WORKSTATIONS)
                 
-                # 关键路径奖励：处理关键零件的工作站
                 station_critical_parts = [part for part in self.queues[station_name].items 
                                         if part.part_id in self._critical_parts]
                 if station_critical_parts:
                     agent_reward += REWARD_CONFIG["critical_path_bonus"] * len(station_critical_parts) / 10
                 
-                # 瓶颈优先奖励
                 if station_name in self._bottleneck_stations and len(self.queues[station_name].items) > 0:
                     agent_reward += REWARD_CONFIG["bottleneck_priority_bonus"] / 10
-                
             else:
-                # 空闲惩罚 (大幅减少)
                 self.idle_counters[station_name] += 1
                 if self.idle_counters[station_name] > REWARD_CONFIG["idle_penalty_threshold"]:
                     agent_reward += REWARD_CONFIG["idle_penalty"]
             
-            # 订单完成奖励：主要给包装台，但所有参与的工作站都有分配
             if order_completion_reward > 0:
                 if station_name == "包装台":
-                    agent_reward += order_completion_reward * 0.4  # 包装台获得40%
+                    agent_reward += order_completion_reward * 0.4
                 else:
-                    agent_reward += order_completion_reward * 0.6 / (len(WORKSTATIONS) - 1)  # 其他工作站分配60%
+                    agent_reward += order_completion_reward * 0.6 / (len(WORKSTATIONS) - 1)
             
-            # 零件完成奖励：只给完成最后工序的工作站
             if part_completion_reward > 0 and station_name == "包装台":
                 agent_reward += part_completion_reward
             
-            # 订单进度奖励：按参与度分配
             if order_progress_reward > 0:
                 agent_reward += order_progress_reward / len(WORKSTATIONS)
             
-            # 订单效率奖励：所有工作站共享
             if order_efficiency_reward > 0:
                 agent_reward += order_efficiency_reward / len(WORKSTATIONS)
             
-            # 惩罚分配
+            if shaping_reward > 0:
+                agent_reward += shaping_reward / len(WORKSTATIONS)
+            
             agent_reward += order_tardiness_penalty * REWARD_CONFIG["penalty_scale_factor"] / len(WORKSTATIONS)
             agent_reward += order_abandonment_penalty * REWARD_CONFIG["penalty_scale_factor"] / len(WORKSTATIONS)
-            # 🔧 V10新增：分配未完成订单的最终惩罚
             agent_reward += final_incomplete_penalty / len(WORKSTATIONS)
             
-            # 应用奖励缩放
             agent_reward *= REWARD_CONFIG["reward_scale_factor"]
             
             rewards[agent_id] = agent_reward
         
-        # 🔧 V9.1训练模式：完全静默，仅在非训练模式下输出调试信息
-        if not self._training_mode and self.debug_level == 'DEBUG':
-            # 只在非训练模式且DEBUG级别下才显示奖励详情
-            if abs(order_completion_reward) > 0 or abs(order_progress_reward) > 0:
-                print(f"🎯 重要奖励事件 (时间={self.current_time:.1f}分钟):")
-                print(f"   📈 订单完成={order_completion_reward:.1f}, 订单进度={order_progress_reward:.1f}")
-                print(f"   📉 延期={order_tardiness_penalty:.1f}, 遗弃={order_abandonment_penalty:.1f}")
-        
+        # 移除V21的日志，避免干扰
         return rewards
     
     def is_done(self) -> bool:
@@ -1117,6 +1178,12 @@ class WFactoryGymEnv(MultiAgentEnv):
 
 def make_parallel_env(config: Dict[str, Any] = None):
     """创建并行环境（用于训练）"""
+    # 🔧 V17优化：仅在主进程中显示环境创建日志，避免worker重复输出
+    import os
+    if config and any(key in config for key in ['orders_scale', 'time_scale', 'stage_name']) and os.getpid() == os.getppid():
+        print(f"🏭 创建环境 - 课程学习配置: {config.get('stage_name', 'Unknown')}")
+        print(f"   订单比例: {config.get('orders_scale', 1.0)}, 时间比例: {config.get('time_scale', 1.0)}")
+    
     # 检查是否需要Ray RLlib兼容的环境
     import inspect
     frame = inspect.currentframe()

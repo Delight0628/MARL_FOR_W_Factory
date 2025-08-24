@@ -33,13 +33,16 @@ TERMINATION_CONFIG = {
     "early_termination": True,        # 所有订单完成时立即终止
 }
 
-# 🔧 V8新增：课程学习配置 - 渐进式难度提升
+# 🔧 V21优化：课程学习配置 - 更渐进的难度递增
 CURRICULUM_CONFIG = {
-    "enabled": False,                 # 当前版本先禁用，专注于核心能力
+    "enabled": True,                  # 启用课程学习，从简单到复杂
     "stages": [
-        {"name": "基础学习", "orders_scale": 0.6, "time_scale": 1.5, "iterations": 15},
-        {"name": "中级挑战", "orders_scale": 0.8, "time_scale": 1.2, "iterations": 15}, 
-        {"name": "完整挑战", "orders_scale": 1.0, "time_scale": 1.0, "iterations": 10},
+        {"name": "效率入门", "orders_scale": 0.2, "time_scale": 1.8, "iterations": 50},  # 6个零件，1.8倍时间
+        {"name": "效率基础", "orders_scale": 0.3, "time_scale": 1.6, "iterations": 40},  # 9个零件，1.6倍时间
+        {"name": "效率强化", "orders_scale": 0.5, "time_scale": 1.4, "iterations": 30},
+        {"name": "中级挑战", "orders_scale": 0.7, "time_scale": 1.2, "iterations": 25},
+        {"name": "高级训练", "orders_scale": 0.85, "time_scale": 1.1, "iterations": 20}, # 🔧 V23：平滑过渡
+        {"name": "完整挑战", "orders_scale": 1.0, "time_scale": 1.0, "iterations": 15},
     ]
 }
 
@@ -178,30 +181,30 @@ ACTION_CONFIG_ENHANCED = {
 # 6. 奖励系统配置 (Reward System) - 🔧 V4 平衡修复版
 # =============================================================================
 
-# 🔧 V12 奖励系统重新设计：解决奖励数值过大问题
+# 🔧 V16 奖励系统深度重构：解决"伪收敛"和奖励鸿沟问题
 REWARD_CONFIG = {
-    # 🔧 V12核心理念：完整订单交付是唯一真正的成功，但数值要合理
-    "base_reward": 0.0,                    # 彻底移除基础奖励
+    # 🔧 V16核心修复：缩小奖励鸿沟，增强过程引导
+    "base_reward": 0.0,                    # 保持无基础奖励
     
-    # 🔧 V12数值优化：奖励与损失在相似数量级
-    "order_completion_reward": 50.0,       # 🔧 V12：从5000降到50，保持优势但数值合理
-    "part_completion_reward": 0.1,         # 🔧 V12：从1降到0.1，保持50:0.1=500:1的比例
-    "step_reward": -0.01,                 # 🔧 V15 关键修复：负的step_reward，惩罚无效行为
+    # 🔧 V17进一步优化：基于专家建议进一步增强过程奖励
+    "order_completion_reward": 500.0,      # 🔧 V23: 恢复高奖励，提供强信号
+    "part_completion_reward": 5.0,         # 🔧 V23: 恢复并增强零件奖励
+    "step_reward": -0.01,                  # 🔧 V23: 引入轻微的时间惩罚，鼓励效率
     
     # 🔧 V12数值优化：里程碑奖励机制
-    "order_progress_bonus": 2.0,           # 🔧 V12：从200降到2，里程碑奖励仍然显著
-    "critical_path_bonus": 0.1,            # 🔧 V12：从10降到0.1
-    "bottleneck_priority_bonus": 0.05,     # 🔧 V12：从5降到0.05
+    "order_progress_bonus": 20.0,          # 🔧 V23: 大幅增强进度奖励，搭建桥梁
+    "critical_path_bonus": 0.5,            # 🔧 V23: 适度恢复
+    "bottleneck_priority_bonus": 0.2,      # 🔧 V23: 适度恢复
     
     # 🔧 V12数值优化：效率奖励
-    "order_efficiency_bonus": 1.0,         # 🔧 V12：从100降到1
+    "order_efficiency_bonus": 10.0,        # 🔧 V23: 增强效率奖励
     "balanced_utilization_bonus": 0.5,     # 🔧 V12：从50降到0.5
     
     # 🔧 V12数值优化：全局协调奖励
     "coordination_reward": 0.0,            # 🔧 V15 关键修复：禁用协调奖励（可能在无生产时发放）
     "flow_optimization_bonus": 0.0,        # 🔧 V15 关键修复：禁用流程优化奖励
     
-    # 🔧 V12数值优化：惩罚机制（保持与奖励相当的数量级）
+    # 🔧 V16调整：惩罚机制与新奖励体系匹配
     "order_tardiness_penalty": -2.0,       # 🔧 V12：从-200降到-2，延期仍有惩罚
     "order_abandonment_penalty": -10.0,    # 🔧 V12：从-1000降到-10，遗弃订单仍有损失
     "order_abandonment_threshold": 300,    # 保持300分钟的检测阈值
@@ -214,11 +217,19 @@ REWARD_CONFIG = {
     "tardiness_penalty_per_agent": False,
     
     # 🔧 V12数值优化：系数调整
-    "reward_scale_factor": 10.0,           # 🔧 V12：增加到10，让奖励更加显著
+    "reward_scale_factor": 1.0,            # 🔧 V23：恢复到1.0，因为基础奖励已足够大
     "penalty_scale_factor": 1.0,           # 🔧 V12：从0.1恢复到1.0，不再特意缩小惩罚
     
-    # 🔧 V12新增：奖励数值说明
-    # 现在的奖励范围大致在-20到+50之间，与Actor损失(-0.01左右)数量级更加合理
+    # 🔧 修复后：奖励数值说明
+    # 现在的奖励范围大致在-20到+50之间，没有额外的10倍缩放，数值更加合理
+    
+    # 🔧 V16新增：塑形奖励（Reward Shaping）
+    "shaping_enabled": True,                # 启用塑形奖励
+    "same_order_bonus": 0.3,               # 连续完成同一订单零件的奖励
+    "urgent_order_bonus": 0.5,             # 处理紧急订单的额外奖励
+    "flow_smoothness_bonus": 0.2,          # 保持生产线流畅的奖励
+    "queue_balance_bonus": 0.1,            # 队列均衡奖励
+    "early_completion_bonus": 1.0,         # 提前完成订单的奖励
 }
 
 # 新增：设备利用率统计配置（文档化口径，不影响ray逻辑）
