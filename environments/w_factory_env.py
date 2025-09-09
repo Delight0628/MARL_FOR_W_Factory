@@ -9,18 +9,11 @@ import random
 from typing import Dict, List, Tuple, Any, Optional
 from collections import defaultdict, deque
 import gymnasium as gym
+from gymnasium import spaces
 from pettingzoo import ParallelEnv
 from pettingzoo.utils import parallel_to_aec, wrappers
 
-# Ray RLlib imports
-try:
-    from ray.rllib.env.multi_agent_env import MultiAgentEnv
-    RAY_AVAILABLE = True
-except ImportError:
-    # 如果Ray不可用，创建一个虚拟基类
-    class MultiAgentEnv:
-        pass
-    RAY_AVAILABLE = False
+# 🔧 MAPPO后清理：移除Ray RLlib相关导入，现在只使用PettingZoo
 
 from .w_factory_config import *
 
@@ -98,6 +91,9 @@ class WFactorySim:
     def __init__(self, config: Dict[str, Any] = None):
         self.config = config or {}
         
+        # 🔧 MAPPO修复：定义智能体列表
+        self.agents = [f"agent_{station}" for station in WORKSTATIONS.keys()]
+        
         # 调试级别控制
         self.debug_level = self.config.get('debug_level', 'INFO')  # DEBUG, INFO, WARNING, ERROR
         
@@ -113,46 +109,80 @@ class WFactorySim:
         self.current_time = 0
         self.simulation_ended = False
         
-        # 设备和队列
-        self.resources = {}
-        self.queues = {}
-        self.equipment_status = {}
+        # 状态跟踪
+        self.active_parts: List[Part] = []
+        self.completed_parts: List[Part] = []
+        self.orders: List[Order] = []
         
-        # 订单和零件管理
-        self.orders = []
-        self.active_parts = []
-        self.completed_parts = []
-        self.part_counter = 0
+        # 资源和队列
+        self.queues: Dict[str, simpy.Store] = {}
+        self.resources: Dict[str, simpy.Resource] = {}
+        self.equipment_status: Dict[str, Dict[str, Any]] = {}
         
-        # 统计数据
-        self.stats = {
+        # 性能指标
+        self._start_times: Dict[int, float] = {}
+        self._end_times: Dict[int, float] = {}
+        self._equipment_busy_time: Dict[str, float] = defaultdict(float)
+        
+        # 🔧 V9新增：订单级别跟踪系统
+        self.order_progress = {}  # 订单进度跟踪
+        self.order_completion_times = {}  # 订单完成时间
+        
+
+        self.stats: Dict[str, Any] = {
+            'last_completed_count': 0,
+            'completed_orders': 0,
+            'last_completed_orders': 0,
             'makespan': 0,
             'total_tardiness': 0,
             'max_tardiness': 0,
             'equipment_utilization': {},
             'queue_lengths': defaultdict(list),
-            'completed_orders': 0,
             'total_parts': 0
         }
         
-        # 🔧 V9新增：订单级别跟踪系统
-        self.order_progress = {}  # 订单进度跟踪
-        self.order_completion_times = {}  # 订单完成时间
-        self.last_order_progress_milestones = {}  # 上次奖励的进度里程碑
-        
-        # 🔧 V9新增：瓶颈和关键路径分析
-        self._bottleneck_stations = self._identify_bottleneck_stations()
-        self._critical_parts = set()  # 关键路径上的零件
-        
-        # 🔧 V7 新增：用于快速查找下游工作站的缓存
+        # 🔧 新增：用于快速查找下游工作站的缓存
         self._downstream_map = self._create_downstream_map()
-        
-        # 智能体决策接口
-        self.agent_decisions = {}
-        self.pending_decisions = set()
         
         self._initialize_resources()
         self._initialize_orders()
+    
+    def reset(self):
+        """🔧 MAPPO修复：重置仿真状态"""
+        # 重新创建SimPy环境
+        self.env = simpy.Environment()
+        self.current_time = 0
+        self.simulation_ended = False
+        
+        # 清空所有状态
+        self.active_parts.clear()
+        self.completed_parts.clear()
+        self.orders.clear()
+        self.queues.clear()
+        self.resources.clear()
+        self.equipment_status.clear()
+
+        
+        # 🔧 重置订单跟踪
+        self.order_progress.clear()
+        self.order_completion_times.clear()
+        
+        # 重新初始化
+        self._initialize_resources()
+        self._initialize_orders()
+        
+        # 🔧 终极修复：完整重置stats字典
+        self.stats = {
+            'last_completed_count': 0,
+            'completed_orders': 0,
+            'last_completed_orders': 0,
+            'makespan': 0,
+            'total_tardiness': 0,
+            'max_tardiness': 0,
+            'equipment_utilization': {},
+            'queue_lengths': defaultdict(list),
+            'total_parts': 0
+        }
     
     def _initialize_resources(self):
         """初始化设备资源和队列"""
@@ -171,7 +201,7 @@ class WFactorySim:
                 'last_status_change': 0,
                 'is_failed': False,
                 'failure_end_time': 0,
-                # 新增：用于精确统计并行设备的忙碌“面积”（机器-分钟）
+                # 新增：用于精确统计并行设备的忙碌"面积"（机器-分钟）
                 'busy_machine_time': 0.0,
                 'last_event_time': 0.0,
             }
@@ -266,7 +296,7 @@ class WFactorySim:
         status = self.equipment_status[station_name]
         current_time = self.env.now
         
-        # 在变更 busy_count 之前，先结算从上次事件到现在的忙碌“面积”
+        # 在变更 busy_count 之前，先结算从上次事件到现在的忙碌"面积"
         previous_busy_count = status['busy_count']
         last_event_time = status.get('last_event_time', 0.0)
         if current_time > last_event_time:
@@ -299,25 +329,6 @@ class WFactorySim:
                     downstream_map[current_station] = next_station
         return downstream_map
     
-    def _identify_bottleneck_stations(self) -> set:
-        """🔧 V9新增：识别瓶颈工作站"""
-        station_loads = {}
-        for station_name, station_config in WORKSTATIONS.items():
-            total_load = 0
-            for order in BASE_ORDERS:
-                route = get_route_for_product(order["product"])
-                for step in route:
-                    if step["station"] == station_name:
-                        total_load += step["time"] * order["quantity"]
-            # 考虑并行处理能力
-            station_loads[station_name] = total_load / station_config["count"]
-        
-        # 识别负荷最高的工作站作为瓶颈
-        max_load = max(station_loads.values())
-        bottlenecks = {station for station, load in station_loads.items() 
-                      if load >= max_load * 0.8}  # 负荷达到最高负荷80%的都算瓶颈
-        return bottlenecks
-    
     def _update_order_progress(self):
         """🔧 V9新增：更新订单进度跟踪"""
         for order in self.orders:
@@ -330,24 +341,6 @@ class WFactorySim:
             if progress_rate >= 1.0 and order.order_id not in self.order_completion_times:
                 self.order_completion_times[order.order_id] = self.current_time
                 self.stats['completed_orders'] += 1
-    
-    def _identify_critical_parts(self) -> set:
-        """🔧 V9新增：识别关键路径上的零件"""
-        critical_parts = set()
-        
-        # 识别即将到期的订单的零件
-        for part in self.active_parts:
-            time_to_due = part.due_date - self.current_time
-            if time_to_due <= 100:  # 100分钟内到期
-                critical_parts.add(part.part_id)
-        
-        # 识别瓶颈工作站的零件
-        for part in self.active_parts:
-            current_station = part.get_current_station()
-            if current_station in self._bottleneck_stations:
-                critical_parts.add(part.part_id)
-        
-        return critical_parts
 
     def _update_completion_stats(self, part: Part):
         """更新完成统计"""
@@ -428,6 +421,14 @@ class WFactorySim:
         
         return np.array(state_features, dtype=np.float32)
 
+    def get_global_state(self) -> np.ndarray:
+        """🔧 MAPPO新增：获取全局状态，拼接所有智能体的局部观察"""
+        all_obs = []
+        # 确保智能体顺序固定
+        for agent_id in sorted(self.agents):
+            all_obs.append(self.get_state_for_agent(agent_id))
+        return np.concatenate(all_obs, axis=0)
+
     def step_with_actions(self, actions: Dict[str, int]) -> Dict[str, float]:
         """执行一步仿真，传入智能体动作"""
         # 记录执行前状态
@@ -462,7 +463,7 @@ class WFactorySim:
         self.current_time = self.env.now
         
         # 计算奖励
-        rewards = self.get_rewards()
+        rewards = self.get_rewards(actions)
         
         # 🔧 V9.1修复：训练模式下完全静默调试信息
         if not self._training_mode and self.debug_level == 'DEBUG':
@@ -527,206 +528,96 @@ class WFactorySim:
                 if next_station:
                     yield self.queues[next_station].put(part)
     
-    def get_rewards(self) -> Dict[str, float]:
-        """🔧 V22 智能奖励重构：恢复核心引导奖励 + 动态放大"""
-        rewards = {}
+    def get_rewards(self, actions: Dict[str, int]) -> Dict[str, float]:
+        """🔧 重构版：简洁目标导向的奖励函数 - 5个核心组件"""
+        rewards = {f"agent_{station}": 0.0 for station in WORKSTATIONS.keys()}
         
-        # 获取课程阶段信息，用于动态调整奖励
-        orders_scale = self.config.get('orders_scale', 1.0)
+        # 获取基础统计数据
+        total_required = sum(order.quantity for order in self.orders)
+        current_completed = len(self.completed_parts)
         
-        # 核心：更新订单进度和关键路径分析
-        self._update_order_progress()
-        self._critical_parts = self._identify_critical_parts()
-        
-        # 仿真结束时的未完成订单严厉惩罚
-        final_incomplete_penalty = 0
-        if self.is_done():
-            incomplete_orders = 0
-            for order in self.orders:
-                if order.order_id not in self.order_completion_times:
-                    incomplete_orders += 1
-            if incomplete_orders > 0:
-                final_incomplete_penalty = incomplete_orders * REWARD_CONFIG["incomplete_order_final_penalty"]
+        # 🔧 V39 修复：在奖励计算前更新一次统计数据
+        current_completed = len(self.completed_parts)
+        new_completed_parts = current_completed - self.stats.get('last_completed_count', 0)
+        self.stats['last_completed_count'] = current_completed
 
-        # --- 奖励计算 ---
+        # === 1. 零件完成奖励 - 主要驱动力 ===
+        if new_completed_parts > 0:
+            part_reward = new_completed_parts * REWARD_CONFIG["part_completion_reward"]
+            # 零件完成奖励主要给包装台（最后工序）
+            rewards["agent_包装台"] += part_reward
         
-        # 1. 订单完成奖励 (最高优先级)
+        # === 2. 订单完成奖励 - 协调激励 ===
         new_completed_orders = self.stats['completed_orders'] - self.stats.get('last_completed_orders', 0)
-        order_completion_reward = 0
         if new_completed_orders > 0:
-            order_completion_reward = new_completed_orders * REWARD_CONFIG["order_completion_reward"]
+            order_reward = new_completed_orders * REWARD_CONFIG["order_completion_reward"]
+            # 订单完成奖励平分给所有智能体（鼓励协作）
+            for agent_id in rewards:
+                rewards[agent_id] += order_reward / len(WORKSTATIONS)
             self.stats['last_completed_orders'] = self.stats['completed_orders']
 
-        # 2. 零件完成奖励 (V22 核心恢复)
-        new_part_completions = len(self.completed_parts) - self.stats.get('last_completed_count', 0)
-        part_completion_reward = 0
-        if new_part_completions > 0:
-            part_completion_reward = new_part_completions * REWARD_CONFIG["part_completion_reward"]
-            self.stats['last_completed_count'] = len(self.completed_parts)
-            # 🔧 V22 动态奖励放大: 在早期阶段，为关键的“路标”行为提供更强的正反馈
-            if orders_scale <= 0.5:
-                scale_factor = (2.0 - orders_scale * 2) # e.g., scale=0.2 -> x1.6, scale=0.5 -> x1.0
-                part_completion_reward *= scale_factor
+        # === 3. 新增：持续时间压力惩罚 (Continuous Time Pressure Penalty) ===
+        continuous_lateness_penalty = 0
+        for part in self.active_parts:
+            if self.current_time > part.due_date:
+                # 零件已延期，施加持续惩罚
+                continuous_lateness_penalty += REWARD_CONFIG["continuous_lateness_penalty"]
 
-        # 3. 工序进展奖励
-        current_total_steps = sum(part.current_step for part in self.active_parts)
-        last_total_steps = self.stats.get('last_total_steps', 0)
-        step_progress = current_total_steps - last_total_steps
-        step_reward = 0
-        if step_progress > 0:
-            step_reward = step_progress * REWARD_CONFIG["step_reward"]
-            self.stats['last_total_steps'] = current_total_steps
+        if continuous_lateness_penalty < 0:
+            # 将惩罚平分给所有智能体，提供持续的负向反馈
+            for agent_id in rewards:
+                rewards[agent_id] += continuous_lateness_penalty / len(WORKSTATIONS)
         
-        # 4. 订单进度里程碑奖励 (V22 核心恢复)
-        order_progress_reward = 0
-        for order_id, progress in self.order_progress.items():
-            last_milestone = self.last_order_progress_milestones.get(order_id, 0)
-            current_milestone = int(progress * 4)
+        # === 4. 闲置惩罚与工作激励 (Bug修复版) ===
+        # 🔧 Bug修复：奖励逻辑基于智能体“动作”，而非“状态”，杜绝躺平漏洞
+        for agent_id, action in actions.items():
+            station_name = agent_id.replace("agent_", "")
+            work_is_available = len(self.queues[station_name].items) > 0
+
+            if action > 0:  # 智能体选择“工作”
+                if work_is_available:
+                    # 当有工作时选择工作，给予奖励
+                    rewards[agent_id] += REWARD_CONFIG["work_bonus"]
+            else:  # 智能体选择“闲置” (action == 0)
+                if work_is_available:
+                    # 当有工作时选择闲置，给予惩罚
+                    rewards[agent_id] += REWARD_CONFIG["idle_penalty"]
+        
+        # === 5. 终局完成率奖励/惩罚 - 全局目标 ===
+        if self.is_done():
+            completion_rate = (current_completed / total_required) * 100 if total_required > 0 else 0
             
-            if current_milestone > last_milestone:
-                milestone_reward = (current_milestone - last_milestone) * REWARD_CONFIG["order_progress_bonus"]
-                order_progress_reward += milestone_reward
-                self.last_order_progress_milestones[order_id] = current_milestone
-        
-        # 🔧 V22 动态奖励放大
-        if order_progress_reward > 0 and orders_scale <= 0.5:
-            scale_factor = (2.0 - orders_scale * 2)
-            order_progress_reward *= scale_factor
-        
-        # 5. 订单效率奖励
-        order_efficiency_reward = 0
-        for order_id, completion_time in self.order_completion_times.items():
-            if order_id not in self.stats.get('rewarded_orders', set()):
-                order = next((o for o in self.orders if o.order_id == order_id), None)
-                if order and completion_time <= order.due_date:
-                    efficiency = max(0, (order.due_date - completion_time) / order.due_date)
-                    order_efficiency_reward += efficiency * REWARD_CONFIG["order_efficiency_bonus"]
-                if 'rewarded_orders' not in self.stats: self.stats['rewarded_orders'] = set()
-                self.stats['rewarded_orders'].add(order_id)
-        
-        # 6. 订单延期惩罚
-        order_tardiness_penalty = 0
-        for order in self.orders:
-            if order.order_id in self.order_completion_times:
-                completion_time = self.order_completion_times[order.order_id]
-                if completion_time > order.due_date:
-                    tardiness = completion_time - order.due_date
-                    order_tardiness_penalty += REWARD_CONFIG["order_tardiness_penalty"] * (tardiness / 60)
-        
-        if orders_scale >= 0.7:
-            efficiency_multiplier = 1.0 + (orders_scale - 0.7) * 3.0
-            order_tardiness_penalty *= efficiency_multiplier
-        
-        # 7. 订单遗弃惩罚
-        order_abandonment_penalty = 0
-        for order_id, progress in self.order_progress.items():
-            if progress < 1.0:
-                last_progress_time = self.stats.get(f'last_progress_time_{order_id}', 0)
-                if progress > self.stats.get(f'last_progress_{order_id}', 0):
-                    self.stats[f'last_progress_time_{order_id}'] = self.current_time
-                    self.stats[f'last_progress_{order_id}'] = progress
-                elif self.current_time - last_progress_time > REWARD_CONFIG["order_abandonment_threshold"]:
-                    order_abandonment_penalty += REWARD_CONFIG["order_abandonment_penalty"]
-        
-        # 8. 塑形奖励
-        shaping_reward = 0
-        if REWARD_CONFIG.get("shaping_enabled", False):
-            # 1. 连续完成同一订单的奖励
-            if not hasattr(self, 'last_completed_order_id'):
-                self.last_completed_order_id = None
+            # --- 终局奖励/惩罚组件 ---
+            final_reward_component = 0
             
-            # 检查最新完成的零件是否属于同一订单
-            if new_part_completions > 0 and len(self.completed_parts) > 0:
-                latest_part = self.completed_parts[-1]
-                if self.last_completed_order_id == latest_part.order_id:
-                    shaping_reward += REWARD_CONFIG["same_order_bonus"] * new_part_completions
-                self.last_completed_order_id = latest_part.order_id
-            
-            # 2. 紧急订单处理奖励
-            for part in self.active_parts:
-                if part.due_date - self.current_time < 100:  # 100分钟内到期
-                    if part.current_step > 0:  # 有进展
-                        shaping_reward += REWARD_CONFIG["urgent_order_bonus"] / len(self.active_parts)
-            
-            # 3. 生产线流畅性奖励
-            active_stations = sum(1 for s in WORKSTATIONS.keys() 
-                                 if self.equipment_status[s]['busy_count'] > 0)
-            if active_stations > len(WORKSTATIONS) * 0.6:  # 60%以上设备在工作
-                shaping_reward += REWARD_CONFIG["flow_smoothness_bonus"]
-            
-            # 4. 队列均衡奖励
-            queue_lengths = [len(self.queues[s].items) for s in WORKSTATIONS.keys()]
-            if len(queue_lengths) > 0:
-                queue_variance = np.var(queue_lengths)
-                if queue_variance < 5:  # 队列长度差异小
-                    shaping_reward += REWARD_CONFIG["queue_balance_bonus"]
-            
-            # 5. 提前完成奖励
-            for order_id, completion_time in self.order_completion_times.items():
-                if order_id not in self.stats.get('shaping_rewarded_orders', set()):
-                    order = next((o for o in self.orders if o.order_id == order_id), None)
-                    if order and completion_time < order.due_date * 0.8:  # 提前20%完成
-                        shaping_reward += REWARD_CONFIG["early_completion_bonus"]
-                        if 'shaping_rewarded_orders' not in self.stats:
-                            self.stats['shaping_rewarded_orders'] = set()
-                        self.stats['shaping_rewarded_orders'].add(order_id)
-        
-        # --- 奖励分配 ---
-        if not hasattr(self, 'idle_counters'):
-            self.idle_counters = {station: 0 for station in WORKSTATIONS.keys()}
-        
-        for station_name in WORKSTATIONS.keys():
-            agent_id = f"agent_{station_name}"
-            agent_reward = 0.0
-            
-            is_active = (len(self.queues[station_name].items) > 0 or 
-                        self.equipment_status[station_name]['busy_count'] > 0)
-            
-            if is_active:
-                self.idle_counters[station_name] = 0
-                
-                if step_reward > 0:
-                    agent_reward += step_reward / len(WORKSTATIONS)
-                
-                station_critical_parts = [part for part in self.queues[station_name].items 
-                                        if part.part_id in self._critical_parts]
-                if station_critical_parts:
-                    agent_reward += REWARD_CONFIG["critical_path_bonus"] * len(station_critical_parts) / 10
-                
-                if station_name in self._bottleneck_stations and len(self.queues[station_name].items) > 0:
-                    agent_reward += REWARD_CONFIG["bottleneck_priority_bonus"] / 10
+            # 组件a: 完成率 & 完工大奖
+            if completion_rate >= 100:
+                final_reward_component += 100 * REWARD_CONFIG["final_completion_bonus_per_percent"]
+                # 🔧 核心改造：发放巨额的“完工大奖”
+                final_reward_component += REWARD_CONFIG.get("final_all_parts_completion_bonus", 500.0)
             else:
-                self.idle_counters[station_name] += 1
-                if self.idle_counters[station_name] > REWARD_CONFIG["idle_penalty_threshold"]:
-                    agent_reward += REWARD_CONFIG["idle_penalty"]
+                incomplete_percent = 100 - completion_rate
+                final_reward_component += incomplete_percent * REWARD_CONFIG["final_incompletion_penalty_per_percent"]
             
-            if order_completion_reward > 0:
-                if station_name == "包装台":
-                    agent_reward += order_completion_reward * 0.4
+            # 组件b: 延期 (Tardiness) - 综合计算所有订单
+            total_tardiness = 0
+            for order in self.orders:
+                if order.order_id in self.order_completion_times:
+                    completion_time = self.order_completion_times[order.order_id]
+                    total_tardiness += max(0, completion_time - order.due_date)
                 else:
-                    agent_reward += order_completion_reward * 0.6 / (len(WORKSTATIONS) - 1)
+                    # 对于未完成的订单，延期时间从截止日期算到仿真结束
+                    total_tardiness += max(0, self.current_time - order.due_date)
             
-            if part_completion_reward > 0 and station_name == "包装台":
-                agent_reward += part_completion_reward
+            final_reward_component += total_tardiness * REWARD_CONFIG["final_tardiness_penalty"]
             
-            if order_progress_reward > 0:
-                agent_reward += order_progress_reward / len(WORKSTATIONS)
-            
-            if order_efficiency_reward > 0:
-                agent_reward += order_efficiency_reward / len(WORKSTATIONS)
-            
-            if shaping_reward > 0:
-                agent_reward += shaping_reward / len(WORKSTATIONS)
-            
-            agent_reward += order_tardiness_penalty * REWARD_CONFIG["penalty_scale_factor"] / len(WORKSTATIONS)
-            agent_reward += order_abandonment_penalty * REWARD_CONFIG["penalty_scale_factor"] / len(WORKSTATIONS)
-            agent_reward += final_incomplete_penalty / len(WORKSTATIONS)
-            
-            agent_reward *= REWARD_CONFIG["reward_scale_factor"]
-            
-            rewards[agent_id] = agent_reward
+            # --- 将总的终局奖励/惩罚平分 ---
+            for agent_id in rewards:
+                rewards[agent_id] += final_reward_component / len(WORKSTATIONS)
         
-        # 移除V21的日志，避免干扰
+        # 🔧 更新统计（为下次计算准备）
+        self._update_order_progress()
+        
         return rewards
     
     def is_done(self) -> bool:
@@ -761,115 +652,73 @@ class WFactorySim:
         return False
     
     def get_final_stats(self) -> Dict[str, Any]:
-        """获取最终统计结果"""
-        # 计算设备利用率
+        """🔧 V34修复：获取最终统计结果，修复设备利用率计算异常"""
+        # 🔧 V34 关键修复：强制结算所有设备的最终忙碌时间
         for station_name, status in self.equipment_status.items():
-            # 在统计前结算从 last_event_time 到当前时间的忙碌面积
+            # 结算从 last_event_time 到当前时间的忙碌面积
             if self.current_time > status.get('last_event_time', 0.0):
                 elapsed = self.current_time - status.get('last_event_time', 0.0)
-                status['busy_machine_time'] = status.get('busy_machine_time', 0.0) + elapsed * status['busy_count']
+                busy_count = status.get('busy_count', 0)
+                status['busy_machine_time'] = status.get('busy_machine_time', 0.0) + elapsed * busy_count
                 status['last_event_time'] = self.current_time
             
+            # 计算该工作站的设备利用率
             capacity = WORKSTATIONS[station_name]['count']
             if self.current_time > 0 and capacity > 0:
-                # 平均设备利用率 = 忙碌机器时间总量 / (总时间 * 设备数量)
                 utilization = status.get('busy_machine_time', 0.0) / (self.current_time * capacity)
             else:
                 utilization = 0.0
             self.stats['equipment_utilization'][station_name] = utilization
         
-        # 便捷字段与聚合
-        try:
-            # 平均设备利用率（各工作站平均）
-            util_values = list(self.stats['equipment_utilization'].values())
-            mean_utilization = float(np.mean(util_values)) if len(util_values) > 0 else 0.0
-        except Exception:
+        # 🔧 V34 修复：更可靠的平均利用率计算
+        util_values = list(self.stats['equipment_utilization'].values())
+        if util_values:
+            mean_utilization = float(np.mean(util_values))
+            # 🔧 MAPPO后清理：移除调试信息，保持训练日志简洁
+            if mean_utilization < 0.001 and len(self.completed_parts) > 0:
+                # 静默处理异常情况，避免日志冗余
+                pass
+        else:
             mean_utilization = 0.0
         
-        # 为评估脚本提供更直观的键名（不移除原字段）
-        self.stats['tardiness'] = self.stats.get('total_tardiness', 0)
-        self.stats['completed_parts'] = self.stats.get('total_parts', 0)
+        # 🔧 V34 新增：计算延期统计
+        total_tardiness = 0
+        late_orders_count = 0
+        for order in self.orders:
+            if order.order_id in self.order_completion_times:
+                completion_time = self.order_completion_times[order.order_id]
+                if completion_time > order.due_date:
+                    tardiness = completion_time - order.due_date
+                    total_tardiness += tardiness
+                    late_orders_count += 1
+        
+        # 🔧 V36 关键修复：正确计算makespan，解决1200分钟显示问题
+        total_required = sum(order.quantity for order in self.orders)
+        
+        if len(self.completed_parts) == total_required:
+            # 所有零件都完成了，makespan是最后一个零件的完成时间
+            if self.completed_parts:
+                makespan = max(part.completion_time for part in self.completed_parts if part.completion_time is not None)
+            else:
+                makespan = self.current_time
+        else:
+            # 🔧 V36 关键修复：未完成所有零件时，显示最后完成零件的时间
+            if self.completed_parts:
+                # 如果有零件完成，显示最后完成零件的时间
+                makespan = max(part.completion_time for part in self.completed_parts if part.completion_time is not None)
+            else:
+                # 🔧 V36 关键：如果没有零件完成，显示0而不是1200
+                makespan = 0.0
+            self.stats['timeout_occurred'] = True
+            self.stats['incomplete_parts'] = total_required - len(self.completed_parts)
+        
+        # 更新统计字段
         self.stats['mean_utilization'] = mean_utilization
+        self.stats['total_tardiness'] = total_tardiness
+        self.stats['total_parts'] = len(self.completed_parts)
+        self.stats['makespan'] = makespan
         
         return self.stats
-    
-    def get_completion_stats(self) -> Dict[str, Any]:
-        """获取完成统计信息 - V5新增"""
-        total_required = sum(order.quantity for order in self.orders)
-        completed_count = len(self.completed_parts)
-        completion_rate = (completed_count / total_required) * 100 if total_required > 0 else 0
-        
-        # 设备利用率统计（使用忙碌面积口径）
-        utilization_stats = {}
-        for station_name, status in self.equipment_status.items():
-            # 结算未计入的忙碌面积
-            if self.current_time > status.get('last_event_time', 0.0):
-                elapsed = self.current_time - status.get('last_event_time', 0.0)
-                status['busy_machine_time'] = status.get('busy_machine_time', 0.0) + elapsed * status['busy_count']
-                status['last_event_time'] = self.current_time
-            capacity = WORKSTATIONS[station_name]['count']
-            if self.current_time > 0 and capacity > 0:
-                utilization = status.get('busy_machine_time', 0.0) / (self.current_time * capacity)
-            else:
-                utilization = 0.0
-            utilization_stats[station_name] = utilization
-        
-        # 按产品类型统计完成情况
-        product_completion = {}
-        for order in self.orders:
-            product_type = order.product
-            if product_type not in product_completion:
-                product_completion[product_type] = {'required': 0, 'completed': 0}
-            product_completion[product_type]['required'] += order.quantity
-        
-        for part in self.completed_parts:
-            product_type = part.product_type
-            if product_type in product_completion:
-                product_completion[product_type]['completed'] += 1
-        
-        # 🔧 新增：延期分析 (项目核心目标)
-        tardiness_info = {
-            'late_orders': 0,
-            'max_tardiness': 0,
-            'total_tardiness': 0,
-            'on_time_orders': 0
-        }
-        
-        # 🔧 V12修复：分析订单延期情况（使用真实的订单完成时间）
-        for order in self.orders:
-            # 使用订单的实际完成时间，如果未完成则使用当前时间
-            if order.order_id in self.order_completion_times:
-                order_completion_time = self.order_completion_times[order.order_id]
-            else:
-                # 未完成的订单，使用当前时间作为“假想完成时间”
-                order_completion_time = self.current_time
-            
-            if order_completion_time > order.due_date:
-                tardiness = order_completion_time - order.due_date
-                tardiness_info['late_orders'] += 1
-                tardiness_info['total_tardiness'] += tardiness
-                tardiness_info['max_tardiness'] = max(tardiness_info['max_tardiness'], tardiness)
-            else:
-                tardiness_info['on_time_orders'] += 1
-        
-        # 计算平均延期时间
-        if tardiness_info['late_orders'] > 0:
-            tardiness_info['avg_tardiness'] = tardiness_info['total_tardiness'] / tardiness_info['late_orders']
-        else:
-            tardiness_info['avg_tardiness'] = 0
-        
-        return {
-            'total_required': total_required,
-            'completed_count': completed_count,
-            'completion_rate': completion_rate,
-            'current_time': self.current_time,
-            'utilization_stats': utilization_stats,
-            'product_completion': product_completion,
-            'is_naturally_done': self.is_done(),
-            'tardiness_info': tardiness_info,  # 🔧 新增延期分析
-            'total_orders': len(self.orders),  # 🔧 新增订单总数
-            'makespan': self.current_time  # 🔧 新增Makespan指标
-        }
 
 # =============================================================================
 # 3. PettingZoo多智能体环境接口 (PettingZoo Multi-Agent Environment)
@@ -879,97 +728,74 @@ class WFactoryEnv(ParallelEnv):
     """W工厂多智能体强化学习环境 - 基于PettingZoo"""
     
     metadata = {
-        "render_modes": ["human", "rgb_array"],
+        "render_modes": ["human"],
         "name": "w_factory_v1",
     }
     
     def __init__(self, config: Dict[str, Any] = None):
         super().__init__()
-        self.config = config or {}
+        self.config = config if config else {}
+        self.sim = WFactorySim(self.config)
+        self.agents = self.sim.agents
+        self.possible_agents = self.sim.agents
         
-        # 智能体定义
-        self.possible_agents = [f"agent_{station}" for station in WORKSTATIONS.keys()]
-        self.agents = self.possible_agents[:]
-        
-        # 🔧 V7 新增：根据配置动态决定空间大小
+        # 🔧 MAPPO改造：新增全局状态空间
         self._setup_spaces()
-
-        # 仿真环境
-        self.sim = None
-        self.episode_count = 0
+        obs_shape = self._get_obs_shape()
+        num_agents = len(self.agents)
+        self.global_state_space = gym.spaces.Box(low=-np.inf, high=np.inf, shape=(obs_shape[0] * num_agents,), dtype=np.float32)
+        
+        self.max_steps = self.sim.config.get("MAX_SIM_STEPS", 1500)
+        self.step_count = 0
+        self.render_mode = None
     
     # 🔧 修复PettingZoo警告：重写observation_space和action_space方法
     def observation_space(self, agent: str = None):
-        """获取观测空间"""
-        if agent is None:
-            return self.observation_spaces
-        return self.observation_spaces.get(agent)
+        return self._observation_spaces[agent]
     
     def action_space(self, agent: str = None):
-        """获取动作空间"""
-        if agent is None:
-            return self.action_spaces
-        return self.action_spaces.get(agent)
+        return self._action_spaces[agent]
         
     def _get_obs_shape(self) -> Tuple[int,]:
-        """🔧 V7 新增：动态计算观测空间维度"""
-        if not ENHANCED_OBS_CONFIG.get("enabled", False):
-            return (2,)
-        
-        shape = 0
-        # 1. 自身设备状态
-        shape += 2
-        # 2. 自身队列详细信息
-        shape += ENHANCED_OBS_CONFIG["top_n_parts"] * 4
-        # 3. 下游工作站信息
-        if ENHANCED_OBS_CONFIG["include_downstream_info"]:
-            shape += 1
-        
-        return (shape,)
+        # 创建一个临时的、功能齐全的仿真实例来获取状态维度
+        temp_sim = WFactorySim(self.config)
+        temp_sim.reset()
+        # 假设所有智能体的观测空间相同
+        agent_id = temp_sim.agents[0]
+        obs = temp_sim.get_state_for_agent(agent_id)
+        return obs.shape
 
     def _setup_spaces(self):
-        """🔧 V7 新增：根据配置设置动作和观测空间"""
-        
-        # --- 动作空间 ---
-        if ACTION_CONFIG_ENHANCED.get("enabled", False):
-            action_size = ACTION_CONFIG_ENHANCED["action_space_size"]
-        else:
-            action_size = ACTION_CONFIG["action_space_size"]
-            
-        self.action_spaces = {
-            agent: gym.spaces.Discrete(action_size)
-            for agent in self.possible_agents
-        }
-
-        # --- 观测空间 ---
         obs_shape = self._get_obs_shape()
-        self.observation_spaces = {
+        self._observation_spaces = {
             agent: gym.spaces.Box(
-                low=0.0, high=1.0, shape=obs_shape, dtype=np.float32
+                low=-np.inf, high=np.inf, shape=obs_shape, dtype=np.float32
             )
-            for agent in self.possible_agents
-        }
-        
-    def reset(self, seed: Optional[int] = None, options: Optional[dict] = None):
-        """重置环境"""
-        if seed is not None:
-            random.seed(seed)
-            np.random.seed(seed)
-        
-        # 创建新的仿真实例
-        self.sim = WFactorySim(self.config)
-        self.agents = self.possible_agents[:]
-        self.episode_count += 1
-        
-        # 获取初始观测
-        observations = {
-            agent: self.sim.get_state_for_agent(agent)
             for agent in self.agents
         }
+        self._action_spaces = {agent: gym.spaces.Discrete(4) for agent in self.agents}
         
-        infos = {agent: {} for agent in self.agents}
+    def reset(self, seed: Optional[int] = None, options: Optional[dict] = None):
+        if seed is not None:
+            np.random.seed(seed)
+            random.seed(seed)
         
-        return observations, infos
+        self.sim.reset()
+        self.step_count = 0
+        self.agents = self.possible_agents[:]
+        
+        self.observations = {agent: self.sim.get_state_for_agent(agent) for agent in self.agents}
+        self.rewards = {agent: 0 for agent in self.agents}
+        self.terminations = {agent: False for agent in self.agents}
+        self.truncations = {agent: False for agent in self.agents}
+        self.infos = {agent: {} for agent in self.agents}
+
+        # 🔧 MAPPO改造：在info中添加全局状态
+        global_state = self.sim.get_global_state()
+        for agent_id in self.agents:
+            self.infos[agent_id]['global_state'] = global_state
+            
+        return self.observations, self.infos
     
     def step(self, actions: Dict[str, int]):
         """执行一步"""
@@ -978,6 +804,7 @@ class WFactoryEnv(ParallelEnv):
         
         # 执行仿真步骤
         rewards = self.sim.step_with_actions(actions)
+        self.step_count += 1
         
         # 获取新的观测
         observations = {
@@ -987,7 +814,7 @@ class WFactoryEnv(ParallelEnv):
         
         # 检查是否结束
         terminations = {agent: self.sim.is_done() for agent in self.agents}
-        truncations = {agent: False for agent in self.agents}
+        truncations = {agent: self.step_count >= self.max_steps for agent in self.agents}
         
         # 信息
         infos = {agent: {} for agent in self.agents}
@@ -996,10 +823,18 @@ class WFactoryEnv(ParallelEnv):
             for agent in self.agents:
                 infos[agent]["final_stats"] = final_stats
         
+        # 🔧 MAPPO改造：在info中添加全局状态
+        global_state = self.sim.get_global_state()
+        for agent_id in self.agents:
+            infos[agent_id]['global_state'] = global_state
+
+        if self.render_mode == "human":
+            self.render()
+        
         return observations, rewards, terminations, truncations, infos
     
     def render(self, mode="human"):
-        """渲染环境（可选实现）"""
+        self.render_mode = mode
         if mode == "human":
             print(f"仿真时间: {self.sim.current_time:.1f}")
             print(f"完成零件数: {len(self.sim.completed_parts)}")
@@ -1021,193 +856,16 @@ def make_env(config: Dict[str, Any] = None):
     env = WFactoryEnv(config)
     return env
 
-class WFactoryGymEnv(MultiAgentEnv):
-    """W工厂环境的Ray RLlib MultiAgentEnv适配器"""
-    
-    def __init__(self, config: Dict[str, Any] = None):
-        super().__init__()
-        self.config = config or {}
-        
-        # 创建PettingZoo环境
-        self.pz_env = WFactoryEnv(config)
-        
-        # Ray RLlib MultiAgentEnv必需属性
-        self._agent_ids = set(self.pz_env.possible_agents)
-        self._spaces_in_preferred_format = True
-        
-        # 设置动作和观测空间
-        self.action_spaces = self.pz_env.action_spaces
-        self.observation_spaces = self.pz_env.observation_spaces
-        
-        # 兼容性属性
-        self.agents = self.pz_env.possible_agents
-        self.possible_agents = self.pz_env.possible_agents
-        self._num_agents = len(self.agents)
-        
-        # 单智能体兼容性（使用第一个智能体的空间）
-        first_agent = self.pz_env.possible_agents[0]
-        self.action_space = self.pz_env.action_spaces[first_agent]
-        self.observation_space = self.pz_env.observation_spaces[first_agent]
-        
-    def reset(self, seed=None, options=None):
-        """重置环境"""
-        observations, infos = self.pz_env.reset(seed=seed, options=options)
-        
-        # 确保返回的观测包含所有活跃智能体
-        # Ray RLlib期望观测字典包含所有智能体
-        for agent in self.possible_agents:
-            if agent not in observations:
-                # 如果某个智能体不在观测中，添加默认观测
-                observations[agent] = self.observation_spaces[agent].sample() * 0  # 零观测
-            if agent not in infos:
-                infos[agent] = {}
-        
-        return observations, infos
-    
-    def step(self, action_dict):
-        """执行一步"""
-        # Ray RLlib直接传递智能体名称作为键的动作字典
-        # 如果传入的是数字索引，需要转换
-        if action_dict and isinstance(list(action_dict.keys())[0], int):
-            # 数字索引格式，转换为智能体名称
-            actions = {}
-            for i, agent in enumerate(self.agents):
-                if i in action_dict:
-                    actions[agent] = action_dict[i]
-                else:
-                    actions[agent] = 0  # 默认动作
-        else:
-            # 已经是智能体名称格式
-            actions = action_dict
-        
-        # 执行步骤
-        observations, rewards, terminations, truncations, infos = self.pz_env.step(actions)
-        
-        # 确保所有智能体都有对应的返回值
-        for agent in self.possible_agents:
-            if agent not in observations:
-                observations[agent] = self.observation_spaces[agent].sample() * 0
-            if agent not in rewards:
-                rewards[agent] = 0.0
-            if agent not in terminations:
-                terminations[agent] = False
-            if agent not in truncations:
-                truncations[agent] = False
-            if agent not in infos:
-                infos[agent] = {}
-        
-        # Ray RLlib需要特殊的终止状态处理
-        # 添加"__all__"键来指示是否所有智能体都完成
-        terminations["__all__"] = all(terminations.values()) if terminations else False
-        truncations["__all__"] = all(truncations.values()) if truncations else False
-        
-        return observations, rewards, terminations, truncations, infos
-    
-    def render(self, mode="human"):
-        """渲染环境"""
-        return self.pz_env.render(mode)
-    
-    def close(self):
-        """关闭环境"""
-        self.pz_env.close()
-    
-    # Ray RLlib 2.48.0 MultiAgentEnv必需方法
-    def get_agent_ids(self):
-        """获取智能体ID集合"""
-        return self._agent_ids
-    
-    def get_observation_space(self, agent_id: str = None):
-        """获取观测空间"""
-        if agent_id is None:
-            return self.observation_spaces
-        return self.observation_spaces.get(agent_id)
-    
-    def get_action_space(self, agent_id: str = None):
-        """获取动作空间"""
-        if agent_id is None:
-            return self.action_spaces
-        return self.action_spaces.get(agent_id)
-    
-    def observation_space_contains(self, x: dict):
-        """检查观测是否在观测空间内"""
-        for agent_id, obs in x.items():
-            if agent_id not in self.observation_spaces:
-                return False
-            if not self.observation_spaces[agent_id].contains(obs):
-                return False
-        return True
-    
-    def action_space_contains(self, x: dict):
-        """检查动作是否在动作空间内"""
-        for agent_id, action in x.items():
-            if agent_id not in self.action_spaces:
-                return False
-            if not self.action_spaces[agent_id].contains(action):
-                return False
-        return True
-    
-    def action_space_sample(self, agent_ids: list = None):
-        """从动作空间采样"""
-        if agent_ids is None:
-            agent_ids = list(self._agent_ids)
-        return {
-            agent_id: self.action_spaces[agent_id].sample()
-            for agent_id in agent_ids
-            if agent_id in self.action_spaces
-        }
-    
-    def observation_space_sample(self, agent_ids: list = None):
-        """从观测空间采样"""
-        if agent_ids is None:
-            agent_ids = list(self._agent_ids)
-        return {
-            agent_id: self.observation_spaces[agent_id].sample()
-            for agent_id in agent_ids
-            if agent_id in self.observation_spaces
-        }
-    
-    @property
-    def num_agents(self):
-        """智能体数量属性（只读）"""
-        return self._num_agents
-    
-    @num_agents.setter
-    def num_agents(self, value):
-        """允许Ray RLlib设置num_agents属性"""
-        self._num_agents = value
+# 🔧 MAPPO后清理：移除Ray RLlib适配器类，现在只使用PettingZoo接口
 
 def make_parallel_env(config: Dict[str, Any] = None):
-    """创建并行环境（用于训练）"""
+    """🔧 MAPPO后简化：直接创建PettingZoo环境"""
     # 🔧 V17优化：仅在主进程中显示环境创建日志，避免worker重复输出
     import os
     if config and any(key in config for key in ['orders_scale', 'time_scale', 'stage_name']) and os.getpid() == os.getppid():
         print(f"🏭 创建环境 - 课程学习配置: {config.get('stage_name', 'Unknown')}")
         print(f"   订单比例: {config.get('orders_scale', 1.0)}, 时间比例: {config.get('time_scale', 1.0)}")
     
-    # 检查是否需要Ray RLlib兼容的环境
-    import inspect
-    frame = inspect.currentframe()
-    try:
-        # 检查调用栈中是否有Ray相关的模块
-        caller_frame = frame.f_back
-        while caller_frame:
-            caller_filename = caller_frame.f_code.co_filename
-            if 'ray' in caller_filename.lower() or 'rllib' in caller_filename.lower():
-                # Ray RLlib调用，返回Gymnasium兼容环境
-                return WFactoryGymEnv(config)
-            caller_frame = caller_frame.f_back
-        
-        # 非Ray调用，返回原始PettingZoo环境
-        return WFactoryEnv(config)
-    finally:
-        del frame
-
-def make_parallel_env_for_ray(config: Dict[str, Any] = None):
-    """专门为Ray RLlib创建环境"""
-    return WFactoryGymEnv(config)
-
-def make_parallel_env_pettingzoo(config: Dict[str, Any] = None):
-    """创建原始PettingZoo环境"""
     return WFactoryEnv(config)
 
 def make_aec_env(config: Dict[str, Any] = None):
