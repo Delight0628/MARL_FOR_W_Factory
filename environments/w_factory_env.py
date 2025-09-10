@@ -12,12 +12,9 @@ import gymnasium as gym
 from gymnasium import spaces
 from pettingzoo import ParallelEnv
 from pettingzoo.utils import parallel_to_aec, wrappers
-
-# 🔧 MAPPO后清理：移除Ray RLlib相关导入，现在只使用PettingZoo
-
 from .w_factory_config import *
 
-# 🔧 V9.1强化：全局静默模式控制 - 训练时完全静默
+
 SILENT_MODE = True  # 设置为True时，完全禁用调试输出
 
 # =============================================================================
@@ -91,16 +88,16 @@ class WFactorySim:
     def __init__(self, config: Dict[str, Any] = None):
         self.config = config or {}
         
-        # 🔧 MAPPO修复：定义智能体列表
+        # 定义智能体列表
         self.agents = [f"agent_{station}" for station in WORKSTATIONS.keys()]
         
         # 调试级别控制
         self.debug_level = self.config.get('debug_level', 'INFO')  # DEBUG, INFO, WARNING, ERROR
         
-        # 🔧 新增：训练模式标志，控制输出冗余度
+        # 训练模式标志，控制输出冗余度
         self._training_mode = self.config.get('training_mode', False)
         
-        # 🔧 V9.1修复：训练模式下强制使用WARNING级别，减少输出冗余
+        # 减少输出冗余
         if self._training_mode:
             self.debug_level = 'WARNING'
         
@@ -124,7 +121,7 @@ class WFactorySim:
         self._end_times: Dict[int, float] = {}
         self._equipment_busy_time: Dict[str, float] = defaultdict(float)
         
-        # 🔧 V9新增：订单级别跟踪系统
+        # 订单级别跟踪系统
         self.order_progress = {}  # 订单进度跟踪
         self.order_completion_times = {}  # 订单完成时间
         
@@ -141,15 +138,14 @@ class WFactorySim:
             'total_parts': 0
         }
         
-        # 🔧 新增：用于快速查找下游工作站的缓存
+        # 用于快速查找下游工作站的缓存
         self._downstream_map = self._create_downstream_map()
         
         self._initialize_resources()
         self._initialize_orders()
     
     def reset(self):
-        """🔧 MAPPO修复：重置仿真状态"""
-        # 重新创建SimPy环境
+        """重置仿真状态"""
         self.env = simpy.Environment()
         self.current_time = 0
         self.simulation_ended = False
@@ -163,7 +159,7 @@ class WFactorySim:
         self.equipment_status.clear()
 
         
-        # 🔧 重置订单跟踪
+        # 重置订单跟踪
         self.order_progress.clear()
         self.order_completion_times.clear()
         
@@ -171,7 +167,7 @@ class WFactorySim:
         self._initialize_resources()
         self._initialize_orders()
         
-        # 🔧 终极修复：完整重置stats字典
+        # 完整重置stats字典
         self.stats = {
             'last_completed_count': 0,
             'completed_orders': 0,
@@ -211,7 +207,7 @@ class WFactorySim:
     
     def _initialize_orders(self):
         """初始化订单（支持课程学习）"""
-        # 🔧 V16：支持课程学习的订单缩放
+        # 支持课程学习的订单缩放
         orders_scale = self.config.get('orders_scale', 1.0)
         time_scale = self.config.get('time_scale', 1.0)
         
@@ -318,7 +314,7 @@ class WFactorySim:
         status['last_status_change'] = current_time
     
     def _create_downstream_map(self) -> Dict[str, str]:
-        """🔧 V7 新增：创建下游工作站映射，用于快速查询"""
+        """创建下游工作站映射，用于快速查询"""
         downstream_map = {}
         routes = list(PRODUCT_ROUTES.values())
         for route in routes:
@@ -330,7 +326,7 @@ class WFactorySim:
         return downstream_map
     
     def _update_order_progress(self):
-        """🔧 V9新增：更新订单进度跟踪"""
+        """更新订单进度跟踪"""
         for order in self.orders:
             completed_parts = sum(1 for part in self.completed_parts 
                                 if part.order_id == order.order_id)
@@ -356,22 +352,13 @@ class WFactorySim:
     
     def get_state_for_agent(self, agent_id: str) -> np.ndarray:
         """
-        获取智能体的观测状态 - 🔧 V7 全面增强版
+        获取智能体的观测状态 - 全面增强版
         - 包含自身队列中前N个零件的详细信息
         - 包含下游工作站的队列信息
         """
         station_name = agent_id.replace("agent_", "")
 
-        # 如果不启用增强观测，则返回旧版状态
-        if not ENHANCED_OBS_CONFIG.get("enabled", False):
-            # 队列长度（归一化）
-            queue_length = len(self.queues[station_name].items)
-            normalized_queue_length = min(queue_length / QUEUE_CAPACITY, 1.0)
-            # 设备状态（0=空闲，1=忙碌）
-            equipment_busy = float(self.equipment_status[station_name]['busy_count'] > 0)
-            return np.array([normalized_queue_length, equipment_busy], dtype=np.float32)
-
-        # --- V7 增强状态特征 ---
+        # --- 增强状态特征 ---
         state_features = []
         
         # 1. 自身设备状态 (1-2个特征)
@@ -422,7 +409,7 @@ class WFactorySim:
         return np.array(state_features, dtype=np.float32)
 
     def get_global_state(self) -> np.ndarray:
-        """🔧 MAPPO新增：获取全局状态，拼接所有智能体的局部观察"""
+        """获取全局状态，拼接所有智能体的局部观察"""
         all_obs = []
         # 确保智能体顺序固定
         for agent_id in sorted(self.agents):
@@ -440,19 +427,12 @@ class WFactorySim:
         for agent_id, action in actions.items():
             station_name = agent_id.replace("agent_", "")
 
-            # 兼容旧版动作空间 (0=IDLE, 1=PROCESS)
-            if not ACTION_CONFIG_ENHANCED.get("enabled", False):
-                if action == 1 and len(self.queues[station_name].items) > 0:
-                    # 处理队列中的第一个零件
-                    self._process_part_at_station(station_name, part_index=0)
+            # V7 扩展动作空间 (0=IDLE, 1=处理第1个, 2=处理第2个, ...)
+            if action > 0:
+                part_index = action - 1
+                if part_index < len(self.queues[station_name].items):
+                    self._process_part_at_station(station_name, part_index=part_index)
                     actions_executed += 1
-            else:
-                # V7 扩展动作空间 (0=IDLE, 1=处理第1个, 2=处理第2个, ...)
-                if action > 0:
-                    part_index = action - 1
-                    if part_index < len(self.queues[station_name].items):
-                        self._process_part_at_station(station_name, part_index=part_index)
-                        actions_executed += 1
         
         # 推进仿真 - 减少步长以获得更精细的控制
         try:
@@ -465,7 +445,7 @@ class WFactorySim:
         # 计算奖励
         rewards = self.get_rewards(actions)
         
-        # 🔧 V9.1修复：训练模式下完全静默调试信息
+        # 训练模式下完全静默调试信息
         if not self._training_mode and self.debug_level == 'DEBUG':
             new_completed = len(self.completed_parts)
             new_total_steps = sum(part.current_step for part in self.active_parts)
@@ -478,7 +458,7 @@ class WFactorySim:
     
     def _process_part_at_station(self, station_name: str, part_index: int = 0):
         """
-        在指定工作站处理零件 - 🔧 V7 增强版
+        在指定工作站处理零件 - 增强版
         - 可以选择处理队列中的特定零件
         """
         if part_index >= len(self.queues[station_name].items):
@@ -529,14 +509,14 @@ class WFactorySim:
                     yield self.queues[next_station].put(part)
     
     def get_rewards(self, actions: Dict[str, int]) -> Dict[str, float]:
-        """🔧 重构版：简洁目标导向的奖励函数 - 5个核心组件"""
+        """简洁目标导向的奖励函数 - 5个核心组件"""
         rewards = {f"agent_{station}": 0.0 for station in WORKSTATIONS.keys()}
         
         # 获取基础统计数据
         total_required = sum(order.quantity for order in self.orders)
         current_completed = len(self.completed_parts)
         
-        # 🔧 V39 修复：在奖励计算前更新一次统计数据
+        # 在奖励计算前更新一次统计数据
         current_completed = len(self.completed_parts)
         new_completed_parts = current_completed - self.stats.get('last_completed_count', 0)
         self.stats['last_completed_count'] = current_completed
@@ -569,7 +549,7 @@ class WFactorySim:
                 rewards[agent_id] += continuous_lateness_penalty / len(WORKSTATIONS)
         
         # === 4. 闲置惩罚与工作激励 (Bug修复版) ===
-        # 🔧 Bug修复：奖励逻辑基于智能体“动作”，而非“状态”，杜绝躺平漏洞
+        # 奖励逻辑基于智能体“动作”，而非“状态”，杜绝躺平漏洞
         for agent_id, action in actions.items():
             station_name = agent_id.replace("agent_", "")
             work_is_available = len(self.queues[station_name].items) > 0
@@ -593,7 +573,7 @@ class WFactorySim:
             # 组件a: 完成率 & 完工大奖
             if completion_rate >= 100:
                 final_reward_component += 100 * REWARD_CONFIG["final_completion_bonus_per_percent"]
-                # 🔧 核心改造：发放巨额的“完工大奖”
+                # 发放巨额的“完工大奖”
                 final_reward_component += REWARD_CONFIG.get("final_all_parts_completion_bonus", 500.0)
             else:
                 incomplete_percent = 100 - completion_rate
@@ -622,13 +602,13 @@ class WFactorySim:
     
     def is_done(self) -> bool:
         """检查仿真是否结束 - 优先任务完成，时间作为备用条件"""
-        # 🔧 修复：优先检查任务完成，而不是时间耗尽
+        # 优先检查任务完成，而不是时间耗尽
         
         # 条件1: 所有订单完成 (主要完成条件)
         total_required = sum(order.quantity for order in self.orders)
         if len(self.completed_parts) >= total_required:
             if not hasattr(self, '_completion_logged'):
-                # 🔧 V9.1强化：训练模式下完全静默
+                # 训练模式下完全静默
                 if not SILENT_MODE and not self._training_mode:
                     print(f"🎉 所有订单完成! 完成{len(self.completed_parts)}/{total_required}个零件，用时{self.current_time:.1f}分钟")
                 self._completion_logged = True
@@ -639,11 +619,11 @@ class WFactorySim:
             return True
         
         # 条件3: 时间耗尽 (备用条件，增加时间限制)
-        # 🔧 V8修复：给智能体更多时间完成任务，避免总是超时截断
-        max_time = SIMULATION_TIME * 2.0  # 🔧 V8修复：从1.5增加到2.0，给更充足的时间
+        # 给智能体更多时间完成任务，避免总是超时截断
+        max_time = SIMULATION_TIME * 2.0  # 从1.5增加到2.0，给更充足的时间
         if self.current_time >= max_time:
             if not hasattr(self, '_timeout_logged'):
-                # 🔧 V9.1强化：训练模式下完全静默
+                # 训练模式下完全静默
                 if not SILENT_MODE and not self._training_mode:
                     print(f"⏰ 时间耗尽! 完成{len(self.completed_parts)}/{total_required}个零件，用时{self.current_time:.1f}分钟")
                 self._timeout_logged = True
@@ -652,8 +632,8 @@ class WFactorySim:
         return False
     
     def get_final_stats(self) -> Dict[str, Any]:
-        """🔧 V34修复：获取最终统计结果，修复设备利用率计算异常"""
-        # 🔧 V34 关键修复：强制结算所有设备的最终忙碌时间
+        """获取最终统计结果，修复设备利用率计算异常"""
+        # 关键修复：强制结算所有设备的最终忙碌时间
         for station_name, status in self.equipment_status.items():
             # 结算从 last_event_time 到当前时间的忙碌面积
             if self.current_time > status.get('last_event_time', 0.0):
@@ -670,18 +650,18 @@ class WFactorySim:
                 utilization = 0.0
             self.stats['equipment_utilization'][station_name] = utilization
         
-        # 🔧 V34 修复：更可靠的平均利用率计算
+        # 更可靠的平均利用率计算
         util_values = list(self.stats['equipment_utilization'].values())
         if util_values:
             mean_utilization = float(np.mean(util_values))
-            # 🔧 MAPPO后清理：移除调试信息，保持训练日志简洁
+                # 移除调试信息，保持训练日志简洁
             if mean_utilization < 0.001 and len(self.completed_parts) > 0:
                 # 静默处理异常情况，避免日志冗余
                 pass
         else:
             mean_utilization = 0.0
         
-        # 🔧 V34 新增：计算延期统计
+        # 新增：计算延期统计
         total_tardiness = 0
         late_orders_count = 0
         for order in self.orders:
@@ -692,7 +672,7 @@ class WFactorySim:
                     total_tardiness += tardiness
                     late_orders_count += 1
         
-        # 🔧 V36 关键修复：正确计算makespan，解决1200分钟显示问题
+        # 关键修复：正确计算makespan，解决1200分钟显示问题
         total_required = sum(order.quantity for order in self.orders)
         
         if len(self.completed_parts) == total_required:
@@ -702,12 +682,12 @@ class WFactorySim:
             else:
                 makespan = self.current_time
         else:
-            # 🔧 V36 关键修复：未完成所有零件时，显示最后完成零件的时间
+            # 关键修复：未完成所有零件时，显示最后完成零件的时间
             if self.completed_parts:
                 # 如果有零件完成，显示最后完成零件的时间
                 makespan = max(part.completion_time for part in self.completed_parts if part.completion_time is not None)
             else:
-                # 🔧 V36 关键：如果没有零件完成，显示0而不是1200
+                # 关键：如果没有零件完成，显示0而不是1200
                 makespan = 0.0
             self.stats['timeout_occurred'] = True
             self.stats['incomplete_parts'] = total_required - len(self.completed_parts)
@@ -739,7 +719,7 @@ class WFactoryEnv(ParallelEnv):
         self.agents = self.sim.agents
         self.possible_agents = self.sim.agents
         
-        # 🔧 MAPPO改造：新增全局状态空间
+        # 新增全局状态空间
         self._setup_spaces()
         obs_shape = self._get_obs_shape()
         num_agents = len(self.agents)
@@ -749,7 +729,7 @@ class WFactoryEnv(ParallelEnv):
         self.step_count = 0
         self.render_mode = None
     
-    # 🔧 修复PettingZoo警告：重写observation_space和action_space方法
+    # 重写observation_space和action_space方法
     def observation_space(self, agent: str = None):
         return self._observation_spaces[agent]
     
@@ -773,7 +753,8 @@ class WFactoryEnv(ParallelEnv):
             )
             for agent in self.agents
         }
-        self._action_spaces = {agent: gym.spaces.Discrete(4) for agent in self.agents}
+        action_size = ACTION_CONFIG_ENHANCED["action_space_size"]
+        self._action_spaces = {agent: gym.spaces.Discrete(action_size) for agent in self.agents}
         
     def reset(self, seed: Optional[int] = None, options: Optional[dict] = None):
         if seed is not None:
@@ -790,7 +771,7 @@ class WFactoryEnv(ParallelEnv):
         self.truncations = {agent: False for agent in self.agents}
         self.infos = {agent: {} for agent in self.agents}
 
-        # 🔧 MAPPO改造：在info中添加全局状态
+        # 在info中添加全局状态
         global_state = self.sim.get_global_state()
         for agent_id in self.agents:
             self.infos[agent_id]['global_state'] = global_state
@@ -823,7 +804,7 @@ class WFactoryEnv(ParallelEnv):
             for agent in self.agents:
                 infos[agent]["final_stats"] = final_stats
         
-        # 🔧 MAPPO改造：在info中添加全局状态
+        # 在info中添加全局状态
         global_state = self.sim.get_global_state()
         for agent_id in self.agents:
             infos[agent_id]['global_state'] = global_state
@@ -851,25 +832,12 @@ class WFactoryEnv(ParallelEnv):
 # 4. 环境工厂函数 (Environment Factory Functions)
 # =============================================================================
 
-def make_env(config: Dict[str, Any] = None):
-    """创建W工厂环境实例"""
-    env = WFactoryEnv(config)
-    return env
-
-# 🔧 MAPPO后清理：移除Ray RLlib适配器类，现在只使用PettingZoo接口
-
 def make_parallel_env(config: Dict[str, Any] = None):
-    """🔧 MAPPO后简化：直接创建PettingZoo环境"""
-    # 🔧 V17优化：仅在主进程中显示环境创建日志，避免worker重复输出
+    """直接创建PettingZoo环境"""
+    # 仅在主进程中显示环境创建日志，避免worker重复输出
     import os
     if config and any(key in config for key in ['orders_scale', 'time_scale', 'stage_name']) and os.getpid() == os.getppid():
         print(f"🏭 创建环境 - 课程学习配置: {config.get('stage_name', 'Unknown')}")
         print(f"   订单比例: {config.get('orders_scale', 1.0)}, 时间比例: {config.get('time_scale', 1.0)}")
     
-    return WFactoryEnv(config)
-
-def make_aec_env(config: Dict[str, Any] = None):
-    """创建AEC环境（Agent-Environment-Cycle）"""
-    env = make_env(config)
-    env = parallel_to_aec(env)
-    return env 
+    return WFactoryEnv(config) 
