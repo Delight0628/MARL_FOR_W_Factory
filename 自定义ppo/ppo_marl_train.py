@@ -102,9 +102,12 @@ class ExperienceBuffer:
             adv_std = np.std(advantages)
             # 避免标准差过小导致的数值不稳定
             if adv_std > 1e-8:
-                advantages = (advantages - adv_mean) / adv_std
+                advantages = (advantages - adv_mean) / (adv_std + 1e-8)
             else:
                 advantages = advantages - adv_mean
+        
+        # 🔧 新增：优势裁剪，防止极端值（但保留足够的动态范围）
+        advantages = np.clip(advantages, -5, 5)
         
         return states, global_states, actions, action_probs, advantages, returns
     
@@ -262,7 +265,7 @@ class PPONetwork:
             
         actor_grads = tape.gradient(actor_loss, self.actor.trainable_variables)
         # 🔧 新增：梯度裁剪以提高训练稳定性
-        actor_grads, _ = tf.clip_by_global_norm(actor_grads, 0.5)
+        actor_grads, _ = tf.clip_by_global_norm(actor_grads, 1.0)  # 增加到1.0，允许更大梯度
         self.actor_optimizer.apply_gradients(zip(actor_grads, self.actor.trainable_variables))
         
         # Critic更新 (使用全局状态)
@@ -271,7 +274,7 @@ class PPONetwork:
             critic_loss = tf.reduce_mean(tf.square(returns - values))
         critic_grads = tape.gradient(critic_loss, self.critic.trainable_variables)
         # 🔧 新增：梯度裁剪
-        critic_grads, _ = tf.clip_by_global_norm(critic_grads, 0.5)
+        critic_grads, _ = tf.clip_by_global_norm(critic_grads, 1.0)  # 与actor保持一致
         self.critic_optimizer.apply_gradients(zip(critic_grads, self.critic.trainable_variables))
         
         return {
@@ -387,12 +390,12 @@ class SimplePPOTrainer:
         
         # 🔧 V32 使用配置文件的系统资源配置
         self.num_workers = SYSTEM_CONFIG["num_parallel_workers"]
-        print(f"🔧 V32 统一配置: 将使用 {self.num_workers} 个并行环境进行数据采集")
+        print(f"🔧 使用 {self.num_workers} 个并行环境进行数据采集")
         
         # 🔧 V32 使用配置文件的TensorFlow线程配置
         tf.config.threading.set_inter_op_parallelism_threads(SYSTEM_CONFIG["tf_inter_op_threads"])
         tf.config.threading.set_intra_op_parallelism_threads(SYSTEM_CONFIG["tf_intra_op_threads"])
-        print(f"🔧 V32 统一配置: TensorFlow将使用 {SYSTEM_CONFIG['tf_inter_op_threads']}个inter线程, {SYSTEM_CONFIG['tf_intra_op_threads']}个intra线程")
+        print(f"🔧 TensorFlow将使用 {SYSTEM_CONFIG['tf_inter_op_threads']}个inter线程, {SYSTEM_CONFIG['tf_intra_op_threads']}个intra线程")
         
         # 环境探测
         # 之前的代码依赖动态配置，现在我们直接创建
@@ -469,6 +472,10 @@ class SimplePPOTrainer:
         self.current_entropy_coeff = PPO_NETWORK_CONFIG["entropy_coeff"] # 初始化动态熵系数
         self.current_learning_rate = LEARNING_RATE_CONFIG["initial_lr"] # 🔧 V34 修复：使用正确的学习率配置
         
+        # 🔧 新增：熵系数退火计划（改进版）
+        self.entropy_decay_rate = 0.999  # 更慢的衰减率
+        self.min_entropy_coeff = 0.02    # 更高的最小熵系数，保持基本探索
+        
         
         # 🔧 V40 新增：回合事件日志记录器
         self.episode_events = []
@@ -485,8 +492,7 @@ class SimplePPOTrainer:
         if TENSORBOARD_AVAILABLE:
             self.train_writer = None
             self.current_tensorboard_run_name = None
-            print(f"📊 TensorBoard日志已启用: {self.tensorboard_dir}")
-            print(f"    使用命令: tensorboard --logdir=\"{self.tensorboard_dir}\"")
+            print(f"📊 TensorBoard命令: tensorboard --logdir=\"{self.tensorboard_dir}\"")
         else:
             self.train_writer = None
             print("⚠️  TensorBoard不可用")
@@ -673,7 +679,7 @@ class SimplePPOTrainer:
                 losses[key] += batch_losses[key] / num_updates
             
             # 🔧 新增：如果KL散度过大，提前停止更新
-            if batch_losses['approx_kl'] > 0.015:  # KL阈值
+            if batch_losses['approx_kl'] > 0.02:  # 稍微提高KL阈值
                 if epoch > 0:  # 至少更新一次
                     break
         
@@ -697,8 +703,8 @@ class SimplePPOTrainer:
                 if agent in observations:
                     state = tf.expand_dims(observations[agent], 0)
                     action_probs = self.shared_network.actor(state)
-                    # 🔧 V33 关键：引入轻微随机性避免完全确定性
-                    if random.random() < 0.1:  # 10%概率随机探索
+                    # 🔧 使用确定性评估，但保留少量探索
+                    if random.random() < 0.1:  # 10%概率探索，避免完全卡死
                         action = int(tf.random.categorical(tf.math.log(action_probs + 1e-8), 1)[0])
                     else:
                         action = int(tf.argmax(action_probs[0]))
@@ -844,15 +850,7 @@ class SimplePPOTrainer:
               eval_frequency: int = 20, adaptive_mode: bool = True):
         """🔧 V31 自适应训练主循环：根据性能自动调整训练策略和轮数"""
         # 🔧 V31 自适应模式：最大轮数作为上限，实际轮数根据性能动态决定
-        if adaptive_mode:
-            print(f"🚀 开始自适应PPO训练 (V31 智能训练版)")
-            print(f"📊 自适应参数: 最大{max_episodes}回合, 目标分数 {self.training_targets['target_score']:.2f}")
-            print(f"🎯 训练目标: 连续{self.training_targets['target_consistency']}次达到目标即可提前结束")
-        else:
-            print(f"🚀 开始固定轮数PPO训练 (V31 传统模式)")
-            print(f"📊 训练参数: {max_episodes}回合, 每回合{steps_per_episode}步")
-        
-        # 更新训练器的最大轮数设置
+
         if adaptive_mode:
             self.training_targets["max_episodes"] = max_episodes
         
@@ -1038,6 +1036,21 @@ class SimplePPOTrainer:
 
                 # 🔧 核心改造：计算当前回合的综合评分
                 current_score = self._calculate_score(kpi_results, current_curriculum_config)
+                
+                # 🔧 新增：智能熵系数调整（基于性能）
+                completion_rate_kpi = (kpi_results.get('mean_completed_parts', 0) / get_total_parts_count()) * 100
+                if episode > 100:  # 前100轮保持高探索
+                    # 如果完成率高，可以降低探索；否则保持探索
+                    if completion_rate_kpi >= 95:  # 高完成率时才降低熵
+                        self.current_entropy_coeff = max(
+                            self.min_entropy_coeff,
+                            self.current_entropy_coeff * self.entropy_decay_rate
+                        )
+                    elif completion_rate_kpi < 80:  # 完成率低时增加探索
+                        self.current_entropy_coeff = min(
+                            PPO_NETWORK_CONFIG["entropy_coeff"],
+                            self.current_entropy_coeff * 1.01  # 缓慢增加
+                        )
 
                 # 🔧 V36 统一TensorBoard日志记录，并根据课程阶段动态切换run
                 if TENSORBOARD_AVAILABLE:
@@ -1222,11 +1235,25 @@ class SimplePPOTrainer:
                             model_update_info = f" ⭐双达标最佳!模型保存至: {dual_objective_best_path}"
 
                 else: # 非课程学习模式
-                    if current_score > self.best_score:
-                        self.final_stage_best_kpi = kpi_results.copy() # 在非课程模式下，全局最佳就是最终最佳
-                        model_path = self.save_model(f"{self.models_dir}/best_model")
-                        if model_path:
-                           model_update_info = f"✅ 模型已更新: {model_path}"
+                    # 在非课程学习模式下，我们将训练视为一个单一的"最终挑战"阶段
+                    # 1. 更新"最终挑战"最佳模型 (等同于全局最佳)
+                    if current_score > self.final_stage_best_score:
+                        self.final_stage_best_score = current_score
+                        self.final_stage_best_kpi = kpi_results.copy()
+                        self.final_stage_best_episode = episode + 1 # 记录最佳KPI的回合数
+                        final_model_path = self.save_model(f"{self.models_dir}/final_challenge_best")
+                        if final_model_path:
+                            model_update_info = f" 🏆全局最佳! 模型保存至: {final_model_path}"
+                    
+                    # 2. 检查并更新"双达标"最佳模型
+                    completion_rate_kpi = (kpi_results.get('mean_completed_parts', 0) / get_total_parts_count()) * 100
+                    if completion_rate_kpi >= 100 and current_score > self.best_score_dual_objective:
+                        self.best_score_dual_objective = current_score
+                        self.best_kpi_dual_objective = kpi_results.copy()
+                        self.best_episode_dual_objective = episode + 1
+                        dual_objective_best_path = self.save_model(f"{self.models_dir}/dual_objective_best")
+                        if dual_objective_best_path:
+                            model_update_info = f" ⭐双达标最佳!模型保存至: {dual_objective_best_path}"
                 
                 # 🔧 V33 优化：严格按照用户要求的日志格式
                 # 第一行：回合信息和性能数据
@@ -1386,6 +1413,21 @@ def main():
         print(f"📊 轮数上限: {training_targets['max_episodes']}轮 (完整挑战阶段完成后开始早停评估)")
         print(f"🔄 早停耐心: {training_targets['early_stop_patience']}轮无改进")
         print("=" * 80)
+        print("🔧 核心配置:")
+        print("  工作站:")
+        for station, config in WORKSTATIONS.items():
+            print(f"    - {station}: 数量={config['count']}, 容量={config['capacity']}")
+        
+        grad_config = CURRICULUM_CONFIG.get("graduation_config", {})
+        print("  毕业考试:")
+        print(f"    - 考试轮数: {grad_config.get('exam_episodes', 'N/A')}")
+        print(f"    - 稳定要求: {grad_config.get('stability_requirement', 'N/A')}次通过")
+        print(f"    - 最大重试: {grad_config.get('max_retries', 'N/A')}次")
+        print(f"    - 补课轮数: {grad_config.get('retry_extension', 'N/A')}轮")
+        
+        print(f"  设备故障: {'启用' if EQUIPMENT_FAILURE.get('enabled', False) else '禁用'}")
+        print(f"  紧急插单: {'启用' if EMERGENCY_ORDERS.get('enabled', False) else '禁用'}")
+        print("-" * 40)
         
         trainer = SimplePPOTrainer(
             initial_lr=LEARNING_RATE_CONFIG["initial_lr"],  # 🔧 V32：使用配置文件的学习率

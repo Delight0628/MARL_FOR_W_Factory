@@ -2,11 +2,6 @@
 W工厂生产调度系统配置文件
 这是项目的唯一真理来源 (Single Source of Truth)
 包含所有工厂参数、设备信息、产品工艺路线和订单数据
-
-当前配置：静态训练模式
-- 禁用设备故障 (EQUIPMENT_FAILURE["enabled"] = False)
-- 禁用紧急插单 (EMERGENCY_ORDERS["enabled"] = False)
-- 使用TensorFlow框架 (framework = "tf2")
 """
 
 import numpy as np
@@ -20,7 +15,7 @@ TIME_UNIT = "minutes"  # 时间单位：分钟
 
 # 课程学习配置
 CURRICULUM_CONFIG = {
-    "enabled": True, # 启用课程学习，从简单到复杂
+    "enabled": False, # 启用课程学习，从简单到复杂
     "stages": [
         {"name": "基础入门", "orders_scale": 0.4, "time_scale": 1.6, "iterations": 30, "graduation_thresholds": 95},
         {"name": "能力提升", "orders_scale": 0.8, "time_scale": 1.2, "iterations": 50, "graduation_thresholds": 90},
@@ -53,7 +48,7 @@ WORKSTATIONS = {
 
 # 设备故障参数
 EQUIPMENT_FAILURE = {
-    "enabled": True,                   # 是否启用设备故障 - 静态训练阶段禁用
+    "enabled": False,                   # 是否启用设备故障 - 静态训练阶段禁用
     "mtbf_hours": 24,                  # 平均故障间隔时间（小时）
     "mttr_minutes": 30,                # 平均修复时间（分钟）
     "failure_probability": 0.02,       # 每小时故障概率
@@ -115,7 +110,7 @@ QUEUE_CAPACITY = sum(order["quantity"] for order in BASE_ORDERS)
 
 # 紧急插单配置
 EMERGENCY_ORDERS = {
-    "enabled": True,                  # 是否启用紧急插单 - 静态训练阶段禁用
+    "enabled": False,                  # 是否启用紧急插单 - 静态训练阶段禁用
     "arrival_rate": 0.1,               # 每小时紧急订单到达率
     "priority_boost": 0,               # 紧急订单优先级提升
     "due_date_reduction": 0.7,         # 交期缩短比例
@@ -150,26 +145,26 @@ REWARD_CONFIG = {
     # === 核心奖励组件 (6个) ===
     
     # 1. 零件完成奖励 - 主要驱动力
-    "part_completion_reward": 10.0,        # 每完成一个零件获得10分
+    "part_completion_reward": 20.0,        # 增加到20分，强化主要激励
     
     # 2. 订单完成奖励 - 协调激励  
-    "order_completion_reward": 50.0,       # 每完成一个订单额外获得50分
+    "order_completion_reward": 100.0,      # 增加到100分，强化订单完成
     
     # 3. 延期惩罚 - 质量约束 (重构版)
-    "continuous_lateness_penalty": -0.1,  # 持续惩罚：每个late的零件，每分钟扣0.1分
-    "final_tardiness_penalty": -1.0,      # 终局惩罚：最终总延期时间，每分钟扣1分
+    "continuous_lateness_penalty": -0.2,   # 持续惩罚：加强延期压力
+    "final_tardiness_penalty": -0.5,       # 终局惩罚：适度降低
     
-    # 4. 闲置惩罚与工作激励 - 效率约束 (基于日志分析加强)
-    "idle_penalty": -2.0,                  # 从-0.1加强到-2.0，严厉惩罚闲置
-    "idle_penalty_threshold": 5,           # 从10步降到5步，更快触发惩罚
-    "work_bonus": 0.5,                     # 每步积极工作的基础奖励
+    # 4. 闲置惩罚与工作激励 - 效率约束
+    "idle_penalty": -1.0,                  # 适度的闲置惩罚
+    "idle_penalty_threshold": 5,           # 触发阈值
+    "work_bonus": 1.0,                     # 增加工作奖励
     
     # 5. 终局完成率奖励/惩罚 - 全局目标
-    "final_completion_bonus_per_percent": 2.0,  # 每完成1%额外获得2分 (100%完成可获200分)
-    "final_incompletion_penalty_per_percent": -3.0,  # 每未完成1%扣3分
+    "final_completion_bonus_per_percent": 5.0,    # 每完成1%获得5分，强化激励
+    "final_incompletion_penalty_per_percent": -5.0,  # 每未完成1%扣5分
     
-    # 6. 为100%完成率设置巨额“完工大奖”
-    "final_all_parts_completion_bonus": 500.0, # 必须完成所有零件才能获得的大奖
+    # 6. 为100%完成率设置巨额"完工大奖"
+    "final_all_parts_completion_bonus": 1000.0, # 增加到1000分的超级大奖
 }
 
 
@@ -180,27 +175,27 @@ REWARD_CONFIG = {
 
 # 自适应训练配置
 ADAPTIVE_TRAINING_CONFIG = {
-    "target_score": 0.70,                # 核心目标：综合评分达到0.70（难度增加后提升目标）
-    "target_consistency": 8,             # 核心目标：连续8次达标
-    "max_episodes": 800,                 # 降低最大轮数，避免过度训练
-    "early_stop_patience": 60,           # 适当延长耐心
-    "performance_window": 10,            # 缩短性能窗口
+    "target_score": 0.68,                # 合理的目标分数
+    "target_consistency": 6,             # 合理的一致性要求
+    "max_episodes": 1000,                # 充分的训练轮数
+    "early_stop_patience": 100,          # 更长的耐心，防止过早停止
+    "performance_window": 15,            # 适中的性能窗口
 }
 
 # PPO网络架构配置
 PPO_NETWORK_CONFIG = {
-    "hidden_sizes": [1024, 512],         # 神经网络隐藏层大小
-    "dropout_rate": 0.1,                 # Dropout率防过拟合
-    "clip_ratio": 0.4,                   # PPO裁剪比例
-    "entropy_coeff": 0.3,                # 熵系数，增强探索
-    "num_policy_updates": 10,            # 每轮策略更新次数
+    "hidden_sizes": [768, 384],          # 适中的网络规模，平衡能力和泛化
+    "dropout_rate": 0.15,                # 适度的Dropout
+    "clip_ratio": 0.3,                   # 适中的裁剪比例
+    "entropy_coeff": 0.1,                # 恢复适中的熵系数，保持探索能力
+    "num_policy_updates": 8,             # 适度的更新次数
 }
 
 # 学习率调度配置
 LEARNING_RATE_CONFIG = {
-    "initial_lr": 2e-4,                  # 初始学习率
-    "end_lr": 1e-5,                      # 最终学习率
-    "decay_power": 1.0,                  # 衰减指数（1.0=线性衰减）
+    "initial_lr": 3e-4,                  # 恢复合理的初始学习率
+    "end_lr": 1e-5,                      # 合理的最终学习率
+    "decay_power": 0.8,                  # 更平滑的衰减曲线
 }
 
 # 系统资源配置

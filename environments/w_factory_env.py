@@ -206,33 +206,38 @@ class WFactorySim:
             self.env.process(self._equipment_process(station_name))
     
     def _initialize_orders(self):
-        """初始化订单（支持课程学习）"""
-        # 支持课程学习的订单缩放
-        orders_scale = self.config.get('orders_scale', 1.0)
-        time_scale = self.config.get('time_scale', 1.0)
-        
-        # 如果启用课程学习，按比例调整订单
-        actual_orders = []
-        if orders_scale < 1.0:
-            # 计算需要多少个零件
-            total_parts_needed = int(sum(o["quantity"] for o in BASE_ORDERS) * orders_scale)
-            parts_added = 0
-            
-            # 优先选择不同产品类型的订单，保持多样性
-            for order_data in BASE_ORDERS:
-                if parts_added >= total_parts_needed:
-                    break
-                
-                # 调整订单数量
-                adjusted_quantity = min(order_data["quantity"], total_parts_needed - parts_added)
-                if adjusted_quantity > 0:
-                    adjusted_order = order_data.copy()
-                    adjusted_order["quantity"] = adjusted_quantity
-                    adjusted_order["due_date"] = order_data["due_date"] * time_scale  # 放宽时间限制
-                    actual_orders.append(adjusted_order)
-                    parts_added += adjusted_quantity
+        """初始化订单（支持课程学习和自定义订单）"""
+        # 🔧 修复：优先使用自定义订单配置
+        if 'custom_orders' in self.config:
+            # 使用自定义订单，忽略课程学习缩放
+            actual_orders = self.config['custom_orders']
         else:
-            actual_orders = BASE_ORDERS
+            # 支持课程学习的订单缩放
+            orders_scale = self.config.get('orders_scale', 1.0)
+            time_scale = self.config.get('time_scale', 1.0)
+            
+            # 如果启用课程学习，按比例调整订单
+            actual_orders = []
+            if orders_scale < 1.0:
+                # 计算需要多少个零件
+                total_parts_needed = int(sum(o["quantity"] for o in BASE_ORDERS) * orders_scale)
+                parts_added = 0
+                
+                # 优先选择不同产品类型的订单，保持多样性
+                for order_data in BASE_ORDERS:
+                    if parts_added >= total_parts_needed:
+                        break
+                    
+                    # 调整订单数量
+                    adjusted_quantity = min(order_data["quantity"], total_parts_needed - parts_added)
+                    if adjusted_quantity > 0:
+                        adjusted_order = order_data.copy()
+                        adjusted_order["quantity"] = adjusted_quantity
+                        adjusted_order["due_date"] = order_data["due_date"] * time_scale  # 放宽时间限制
+                        actual_orders.append(adjusted_order)
+                        parts_added += adjusted_quantity
+            else:
+                actual_orders = BASE_ORDERS
         
         # 创建订单对象
         for i, order_data in enumerate(actual_orders):
@@ -524,8 +529,13 @@ class WFactorySim:
         # === 1. 零件完成奖励 - 主要驱动力 ===
         if new_completed_parts > 0:
             part_reward = new_completed_parts * REWARD_CONFIG["part_completion_reward"]
-            # 零件完成奖励主要给包装台（最后工序）
-            rewards["agent_包装台"] += part_reward
+            # 奖励分配：60%给包装台（最终工序），40%平分给其他工作的智能体
+            rewards["agent_包装台"] += part_reward * 0.6
+            working_agents = [agent_id for agent_id, action in actions.items() 
+                            if action > 0 and agent_id != "agent_包装台"]
+            if working_agents:
+                for agent_id in working_agents:
+                    rewards[agent_id] += (part_reward * 0.4) / len(working_agents)
         
         # === 2. 订单完成奖励 - 协调激励 ===
         new_completed_orders = self.stats['completed_orders'] - self.stats.get('last_completed_orders', 0)
@@ -548,20 +558,33 @@ class WFactorySim:
             for agent_id in rewards:
                 rewards[agent_id] += continuous_lateness_penalty / len(WORKSTATIONS)
         
-        # === 4. 闲置惩罚与工作激励 (Bug修复版) ===
-        # 奖励逻辑基于智能体“动作”，而非“状态”，杜绝躺平漏洞
+        # === 4. 闲置惩罚与工作激励 ===
+        # 奖励逻辑基于智能体"动作"，而非"状态"
         for agent_id, action in actions.items():
             station_name = agent_id.replace("agent_", "")
-            work_is_available = len(self.queues[station_name].items) > 0
+            queue_items = self.queues[station_name].items
+            work_is_available=len(queue_items)>0
 
-            if action > 0:  # 智能体选择“工作”
+            if action > 0:  # 智能体选择"工作"
                 if work_is_available:
                     # 当有工作时选择工作，给予奖励
                     rewards[agent_id] += REWARD_CONFIG["work_bonus"]
-            else:  # 智能体选择“闲置” (action == 0)
+                    
+                    # 额外奖励：处理高优先级零件
+                    if action - 1 < len(queue_items):
+                        part = queue_items[action - 1]
+                        if part.priority <= 2:  # 高优先级
+                            rewards[agent_id] += 1.0
+                        # 处理即将延期的零件
+                        if self.current_time > part.due_date - 50:
+                            rewards[agent_id] += 2.0
+            else:  # 智能体选择"闲置" (action == 0)
                 if work_is_available:
                     # 当有工作时选择闲置，给予惩罚
                     rewards[agent_id] += REWARD_CONFIG["idle_penalty"]
+                    # 如果队列很长还闲置，额外惩罚
+                    if len(queue_items) > 2:
+                        rewards[agent_id] -= 1.0
         
         # === 5. 终局完成率奖励/惩罚 - 全局目标 ===
         if self.is_done():
