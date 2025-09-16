@@ -3,7 +3,7 @@ import pandas as pd
 from typing import List, Dict, Any
 import os
 
-def generate_gantt_chart(history: List[Dict[str, Any]], method_name: str, config_name: str, output_dir: str = None):
+def generate_gantt_chart(history: List[Dict[str, Any]], method_name: str, config_name: str, output_dir: str = None, run_name: str = None):
     """
     根据加工历史生成交互式甘特图。
 
@@ -80,7 +80,15 @@ def generate_gantt_chart(history: List[Dict[str, Any]], method_name: str, config
     fig.update_yaxes(categoryorder="category ascending")
 
     # 保存为HTML文件
-    filename = f"gantt_{method_name.replace(' ', '_').replace('(', '').replace(')', '')}_{config_name}.html"
+    safe_method = method_name.replace(' ', '_').replace('(', '').replace(')', '')
+    safe_config = config_name.replace(' ', '_').replace('/', '-') # 替换/防止路径问题
+    
+    if run_name:
+        safe_run = run_name.replace(" ", "_").replace("/", "-")
+        filename = f"{safe_run}_{safe_method}_{safe_config}.html"
+    else:
+        # 如果没有提供run_name，则回退到旧的命名方式
+        filename = f"gantt_{safe_method}_{safe_config}.html"
     
     # 如果指定了输出目录，则保存到该目录下
     if output_dir:

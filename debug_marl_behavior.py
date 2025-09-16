@@ -16,7 +16,7 @@ from evaluation import (
     GENERALIZATION_CONFIG_1, GENERALIZATION_CONFIG_2, GENERALIZATION_CONFIG_3
 )
 
-def debug_marl_actions(model_path: str, config: dict, max_steps: int = 100, deterministic: bool = False):
+def debug_marl_actions(model_path: str, config: dict, max_steps: int = 600, deterministic: bool = False):
     """
     调试MARL模型的动作输出模式。
     
@@ -137,7 +137,7 @@ def main():
     parser.add_argument(
         "--max_steps",
         type=int,
-        default=100,
+        default=600,
         help="每个环境回合的最大仿真步数。"
     )
     parser.add_argument(

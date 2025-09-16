@@ -116,6 +116,9 @@ class WFactorySim:
         self.resources: Dict[str, simpy.Resource] = {}
         self.equipment_status: Dict[str, Dict[str, Any]] = {}
         
+        # 新增：用于生成甘特图的加工历史记录
+        self.gantt_chart_history: List[Dict[str, Any]] = []
+        
         # 性能指标
         self._start_times: Dict[int, float] = {}
         self._end_times: Dict[int, float] = {}
@@ -157,7 +160,9 @@ class WFactorySim:
         self.queues.clear()
         self.resources.clear()
         self.equipment_status.clear()
-
+        
+        # 新增：清空甘特图历史
+        self.gantt_chart_history.clear()
         
         # 重置订单跟踪
         self.order_progress.clear()
@@ -357,23 +362,31 @@ class WFactorySim:
     
     def get_state_for_agent(self, agent_id: str) -> np.ndarray:
         """
-        获取智能体的观测状态 - 全面增强版
+        获取智能体的观测状态 - 修复版：加入智能体身份信息
+        - 包含智能体身份编码（关键修复）
         - 包含自身队列中前N个零件的详细信息
-        - 包含下游工作站的队列信息
+        - 包含工作站特性信息
         """
         station_name = agent_id.replace("agent_", "")
 
         # --- 增强状态特征 ---
         state_features = []
         
-        # 1. 自身设备状态 (1-2个特征)
-        # 归一化设备忙碌数
-        busy_ratio = self.equipment_status[station_name]['busy_count'] / WORKSTATIONS[station_name]['count']
+        # 🔧 关键修复1：添加智能体身份编码 (one-hot encoding)
+        station_types = list(WORKSTATIONS.keys())
+        station_index = station_types.index(station_name)
+        state_features.extend([1.0 if i == station_index else 0.0 for i in range(len(station_types))])
+
+        # 🔧 关键修复2：添加工作站能力特性
+        capacity = WORKSTATIONS[station_name]['count']
+        state_features.append(capacity / 5.0)  # 归一化（假设最大5台同类设备）
+        
+        # 3. 自身设备状态 (2个特征)
+        busy_ratio = self.equipment_status[station_name]['busy_count'] / capacity
         state_features.append(busy_ratio)
-        # 设备是否故障
         state_features.append(1.0 if self.equipment_status[station_name]['is_failed'] else 0.0)
 
-        # 2. 自身队列的详细信息 (N * 4个特征)
+        # 4. 自身队列的详细信息 (N * 5个特征)
         queue = self.queues[station_name].items
         num_parts_to_observe = ENHANCED_OBS_CONFIG["top_n_parts"]
         
@@ -388,28 +401,34 @@ class WFactorySim:
                 # 特征b: 归一化延期紧迫性
                 time_to_due = part.due_date - self.env.now
                 urgency = max(0, -time_to_due) / (ENHANCED_OBS_CONFIG["time_feature_normalization"] + 1e-6)
-                state_features.append(min(urgency, 1.0))
-
+                state_features.append(min(urgency, 5.0)) # 允许超过1.0，传递更强的紧急信号
                 # 特征c: 优先级
                 state_features.append(part.priority / 5.0) # 假设优先级最大为5
-
                 # 特征d: 下一站是否是终点
                 state_features.append(1.0 if part.current_step + 1 >= len(get_route_for_product(part.product_type)) else 0.0)
-
+                # 🔧 新增特征e: 零件类型编码
+                product_types = list(PRODUCT_ROUTES.keys())
+                product_index = product_types.index(part.product_type) if part.product_type in product_types else -1
+                state_features.append((product_index + 1) / len(product_types)) # +1避免-1
             else:
-                # 如果队列中没有足够的零件，用0填充
-                state_features.extend([0.0] * 4)
-
-        # 3. 下游工作站信息 (1个特征)
+                state_features.extend([0.0] * 5)
+        
+        # 5. 下游工作站信息 (1个特征)
         if ENHANCED_OBS_CONFIG["include_downstream_info"]:
             downstream_station = self._downstream_map.get(station_name)
             if downstream_station:
                 downstream_queue_len = len(self.queues[downstream_station].items)
-                normalized_downstream_queue = min(downstream_queue_len / QUEUE_CAPACITY, 1.0)
+                normalized_downstream_queue = min(downstream_queue_len / (QUEUE_CAPACITY + 1e-6), 1.0)
                 state_features.append(normalized_downstream_queue)
             else:
-                # 如果没有下游（如包装台），则用0填充
                 state_features.append(0.0)
+        
+        # 🔧 新增：全局信息
+        time_progress = self.env.now / SIMULATION_TIME
+        state_features.append(time_progress)
+        
+        completion_rate = len(self.completed_parts) / (sum(o.quantity for o in self.orders) + 1e-6)
+        state_features.append(completion_rate)
         
         return np.array(state_features, dtype=np.float32)
 
@@ -490,8 +509,22 @@ class WFactorySim:
             self._update_equipment_status(station_name, busy=True)
             
             # 执行加工
+            start_time = self.env.now
             processing_time = part.get_processing_time()
             yield self.env.timeout(processing_time)
+            finish_time = self.env.now
+            
+            # 新增：记录加工历史用于生成甘特图
+            self.gantt_chart_history.append({
+                "Task": f"Part-{part.part_id}",
+                "Start": start_time,
+                "Finish": finish_time,
+                "Duration": finish_time - start_time,
+                "Resource": station_name,
+                "Product": part.product_type,
+                "Part ID": part.part_id,
+                "Order ID": part.order_id
+            })
             
             # 更新设备状态
             self._update_equipment_status(station_name, busy=False)
@@ -529,64 +562,55 @@ class WFactorySim:
         # === 1. 零件完成奖励 - 主要驱动力 ===
         if new_completed_parts > 0:
             part_reward = new_completed_parts * REWARD_CONFIG["part_completion_reward"]
-            # 奖励分配：60%给包装台（最终工序），40%平分给其他工作的智能体
-            rewards["agent_包装台"] += part_reward * 0.6
-            working_agents = [agent_id for agent_id, action in actions.items() 
-                            if action > 0 and agent_id != "agent_包装台"]
-            if working_agents:
-                for agent_id in working_agents:
-                    rewards[agent_id] += (part_reward * 0.4) / len(working_agents)
-        
+            # 奖励平分给所有智能体，鼓励全局协作
+            for agent_id in rewards:
+                rewards[agent_id] += part_reward / len(rewards)
+
         # === 2. 订单完成奖励 - 协调激励 ===
         new_completed_orders = self.stats['completed_orders'] - self.stats.get('last_completed_orders', 0)
         if new_completed_orders > 0:
             order_reward = new_completed_orders * REWARD_CONFIG["order_completion_reward"]
-            # 订单完成奖励平分给所有智能体（鼓励协作）
             for agent_id in rewards:
-                rewards[agent_id] += order_reward / len(WORKSTATIONS)
+                rewards[agent_id] += order_reward / len(rewards)
             self.stats['last_completed_orders'] = self.stats['completed_orders']
 
-        # === 3. 新增：持续时间压力惩罚 (Continuous Time Pressure Penalty) ===
-        continuous_lateness_penalty = 0
-        for part in self.active_parts:
-            if self.current_time > part.due_date:
-                # 零件已延期，施加持续惩罚
-                continuous_lateness_penalty += REWARD_CONFIG["continuous_lateness_penalty"]
-
-        if continuous_lateness_penalty < 0:
-            # 将惩罚平分给所有智能体，提供持续的负向反馈
-            for agent_id in rewards:
-                rewards[agent_id] += continuous_lateness_penalty / len(WORKSTATIONS)
+        # === 3. 延期惩罚 (针对每个智能体) ===
+        for agent_id, action in actions.items():
+            station_name = agent_id.replace("agent_", "")
+            # 惩罚持有即将延期或已延期零件的智能体
+            for part in self.queues[station_name].items:
+                if self.current_time > part.due_date - 30: # 30分钟预警
+                    rewards[agent_id] += REWARD_CONFIG["continuous_lateness_penalty"]
         
         # === 4. 闲置惩罚与工作激励 ===
-        # 奖励逻辑基于智能体"动作"，而非"状态"
         for agent_id, action in actions.items():
             station_name = agent_id.replace("agent_", "")
             queue_items = self.queues[station_name].items
-            work_is_available=len(queue_items)>0
+            work_is_available = len(queue_items) > 0
 
-            if action > 0:  # 智能体选择"工作"
+            if action > 0:  # 工作
                 if work_is_available:
-                    # 当有工作时选择工作，给予奖励
                     rewards[agent_id] += REWARD_CONFIG["work_bonus"]
-                    
-                    # 额外奖励：处理高优先级零件
+                    # 🔧 BUG修复：将“按交期”奖励逻辑移入此循环
                     if action - 1 < len(queue_items):
-                        part = queue_items[action - 1]
-                        if part.priority <= 2:  # 高优先级
-                            rewards[agent_id] += 1.0
-                        # 处理即将延期的零件
-                        if self.current_time > part.due_date - 50:
-                            rewards[agent_id] += 2.0
-            else:  # 智能体选择"闲置" (action == 0)
+                        chosen = queue_items[action - 1]
+                        # 计算候选的slack并与前三个做对比
+                        candidates = queue_items[:3]
+                        if candidates: # 确保队列不为空
+                            def slack(p):
+                                rem = sum(get_route_for_product(p.product_type)[i]['time'] 
+                                          for i in range(p.current_step, len(get_route_for_product(p.product_type))))
+                                return (p.due_date - self.current_time) - rem
+                            
+                            chosen_slack = slack(chosen)
+                            best_slack = min(slack(p) for p in candidates)
+                            if abs(chosen_slack - best_slack) < 1e-6 or chosen_slack <= best_slack:
+                                rewards[agent_id] += 0.5  # 小额奖励，引导优先级敏感
+            else:  # 闲置
                 if work_is_available:
-                    # 当有工作时选择闲置，给予惩罚
                     rewards[agent_id] += REWARD_CONFIG["idle_penalty"]
-                    # 如果队列很长还闲置，额外惩罚
-                    if len(queue_items) > 2:
-                        rewards[agent_id] -= 1.0
         
-        # === 5. 终局完成率奖励/惩罚 - 全局目标 ===
+        # === 5. 终局奖励/惩罚 (保持不变) ===
         if self.is_done():
             completion_rate = (current_completed / total_required) * 100 if total_required > 0 else 0
             
@@ -620,7 +644,7 @@ class WFactorySim:
         
         # 🔧 更新统计（为下次计算准备）
         self._update_order_progress()
-        
+
         return rewards
     
     def is_done(self) -> bool:

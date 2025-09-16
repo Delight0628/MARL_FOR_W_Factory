@@ -14,7 +14,7 @@ import time
 import random
 import numpy as np
 import tensorflow as tf
-from typing import Dict, List, Tuple, Any
+from typing import Dict, List, Tuple, Any, Optional
 from datetime import datetime
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import multiprocessing
@@ -125,11 +125,12 @@ class PPONetwork:
     """🔧 MAPPO网络实现 - 包含集中式Critic"""
     
     # 🔧 V3 修复: lr参数现在可以是学习率调度器
-    def __init__(self, state_dim: int, action_dim: int, lr: Any, global_state_dim: int):
+    def __init__(self, state_dim: int, action_dim: int, lr: Any, global_state_dim: int, network_config: Optional[Dict[str, Any]] = None):
         self.state_dim = state_dim
         self.action_dim = action_dim
         self.global_state_dim = global_state_dim # 🔧 新增
         self.lr = lr
+        self.network_config_override = network_config
         
         # 构建网络
         self.actor, self.critic = self._build_networks()
@@ -145,22 +146,37 @@ class PPONetwork:
     def _build_networks(self):
         """🔧 MAPPO优化：使用配置文件参数构建网络"""
         # 导入配置
-        from environments.w_factory_config import PPO_NETWORK_CONFIG
-        hidden_sizes = PPO_NETWORK_CONFIG["hidden_sizes"]
-        dropout_rate = PPO_NETWORK_CONFIG["dropout_rate"]
+        if self.network_config_override:
+            config = self.network_config_override
+        else:
+            from environments.w_factory_config import PPO_NETWORK_CONFIG
+            config = PPO_NETWORK_CONFIG
+
+        hidden_sizes = config["hidden_sizes"]
+        dropout_rate = config.get("dropout_rate", 0.1) # Use .get for safety
         
         # Actor网络 (去中心化) - 使用局部观测
         state_input = tf.keras.layers.Input(shape=(self.state_dim,))
-        # 🔧 修复：添加正确的权重初始化
+        
+        # 🔧 关键修复：添加层归一化，稳定训练
+        actor_x = tf.keras.layers.LayerNormalization()(state_input)
+        
         actor_x = tf.keras.layers.Dense(
             hidden_sizes[0], 
             activation='relu',
             kernel_initializer=tf.keras.initializers.Orthogonal(gain=np.sqrt(2)),
             bias_initializer=tf.keras.initializers.Constant(0.0)
-        )(state_input)
+        )(actor_x)
         actor_x = tf.keras.layers.Dropout(dropout_rate)(actor_x)
         actor_x = tf.keras.layers.Dense(
             hidden_sizes[1], 
+            activation='relu',
+            kernel_initializer=tf.keras.initializers.Orthogonal(gain=np.sqrt(2)),
+            bias_initializer=tf.keras.initializers.Constant(0.0)
+        )(actor_x)
+        actor_x = tf.keras.layers.Dropout(dropout_rate)(actor_x)
+        actor_x = tf.keras.layers.Dense(
+            hidden_sizes[2], 
             activation='relu',
             kernel_initializer=tf.keras.initializers.Orthogonal(gain=np.sqrt(2)),
             bias_initializer=tf.keras.initializers.Constant(0.0)
@@ -174,16 +190,18 @@ class PPONetwork:
         )(actor_x)
         actor = tf.keras.Model(inputs=state_input, outputs=action_probs)
 
-        # Critic网络 (中心化) - 🔧 修复：网络大小应该与Actor平衡
-        # 全局状态本身已经包含了更多信息，不需要过度增大网络
+        # Critic网络 (中心化) - 使用全局状态
         global_state_input = tf.keras.layers.Input(shape=(self.global_state_dim,))
-        # 🔧 修复：使用正确的权重初始化
+        
+        # 🔧 关键修复：Critic也加层归一化
+        critic_x = tf.keras.layers.LayerNormalization()(global_state_input)
+        
         critic_x = tf.keras.layers.Dense(
             hidden_sizes[0],
             activation='relu',
             kernel_initializer=tf.keras.initializers.Orthogonal(gain=np.sqrt(2)),
             bias_initializer=tf.keras.initializers.Constant(0.0)
-        )(global_state_input)
+        )(critic_x)
         critic_x = tf.keras.layers.Dropout(dropout_rate)(critic_x)
         critic_x = tf.keras.layers.Dense(
             hidden_sizes[1],
@@ -192,7 +210,13 @@ class PPONetwork:
             bias_initializer=tf.keras.initializers.Constant(0.0)
         )(critic_x)
         critic_x = tf.keras.layers.Dropout(dropout_rate)(critic_x)
-        # 🔧 Value输出层使用标准初始化
+        critic_x = tf.keras.layers.Dense(
+            hidden_sizes[2],
+            activation='relu',
+            kernel_initializer=tf.keras.initializers.Orthogonal(gain=np.sqrt(2)),
+            bias_initializer=tf.keras.initializers.Constant(0.0)
+        )(critic_x)
+        # Value输出层
         value_output = tf.keras.layers.Dense(
             1,
             activation=None,
@@ -288,7 +312,7 @@ class PPONetwork:
 # 🔧 V8 新增: 多进程并行工作函数
 def run_simulation_worker(network_weights: Dict[str, List[np.ndarray]],
                           state_dim: int, action_dim: int, num_steps: int, seed: int, 
-                          global_state_dim: int, curriculum_config: Dict[str, Any] = None) -> Tuple[Dict[str, ExperienceBuffer], float]:
+                          global_state_dim: int, network_config: Dict[str, Any], curriculum_config: Dict[str, Any] = None) -> Tuple[Dict[str, ExperienceBuffer], float]:
     """并行仿真工作进程 - 🔧 MAPPO改造：收集全局状态"""
     
     # 🔧 终极修复：将tf导入移至顶部，解决UnboundLocalError
@@ -298,14 +322,12 @@ def run_simulation_worker(network_weights: Dict[str, List[np.ndarray]],
     
     # 1. 初始化
     os.environ['CUDA_VISIBLE_DEVICES'] = '-1'  # 禁用GPU
-    tf.config.threading.set_inter_op_parallelism_threads(1)
-    tf.config.threading.set_intra_op_parallelism_threads(1)
     
     tf.random.set_seed(seed)
     env = make_parallel_env(curriculum_config)
     # 🔧 修复：使用动态学习率而非固定值
     # 注意：worker不需要学习率，只做推理
-    network = PPONetwork(state_dim, action_dim, None, global_state_dim) # Worker不需要优化器
+    network = PPONetwork(state_dim, action_dim, None, global_state_dim, network_config=network_config) # Worker不需要优化器
     network.actor.set_weights(network_weights['actor'])
     network.critic.set_weights(network_weights['critic']) # 🔧 Critic权重也需要同步
     
@@ -410,6 +432,7 @@ class SimplePPOTrainer:
         print(f"   观测维度: {self.state_dim}")
         print(f"   动作维度: {self.action_dim}")
         print(f"   智能体数量: {len(self.agent_ids)}")
+        print(f"   全局状态维度: {self.global_state_dim}")
         
         # 🔧 V26 终极修复：移除动态参数调整
         optimized_episodes = total_train_episodes
@@ -473,21 +496,21 @@ class SimplePPOTrainer:
         self.current_learning_rate = LEARNING_RATE_CONFIG["initial_lr"] # 🔧 V34 修复：使用正确的学习率配置
         
         # 🔧 新增：熵系数退火计划（改进版）
-        self.entropy_decay_rate = 0.999  # 更慢的衰减率
-        self.min_entropy_coeff = 0.02    # 更高的最小熵系数，保持基本探索
+        self.entropy_decay_rate = 0.9995  # 🔧 更慢的衰减率，保持更长时间的探索
+        self.min_entropy_coeff = 0.05     # 🔧 更高的最小熵系数，避免过早收敛
         
         
         # 🔧 V40 新增：回合事件日志记录器
         self.episode_events = []
         
         # 创建保存目录 (V31新增：以训练开始时间创建专用文件夹)
-        self.base_models_dir = "自定义ppo/ppo_models"
+        self.base_models_dir = "mappo/ppo_models"
         self.models_dir = f"{self.base_models_dir}/{self.start_time_str}"
         os.makedirs(self.models_dir, exist_ok=True)
         print(f"📁 模型保存目录: {self.models_dir}")
         
         # 🔧 V12 新增：TensorBoard支持
-        self.tensorboard_dir = f"自定义ppo/tensorboard_logs/{self.timestamp}"
+        self.tensorboard_dir = f"mappo/tensorboard_logs/{self.timestamp}"
         os.makedirs(self.tensorboard_dir, exist_ok=True)
         if TENSORBOARD_AVAILABLE:
             self.train_writer = None
@@ -560,6 +583,8 @@ class SimplePPOTrainer:
         for buffer in buffers.values():
             buffer.clear()
 
+        from environments.w_factory_config import PPO_NETWORK_CONFIG
+
         network_weights = {
             'actor': self.shared_network.actor.get_weights(),
             'critic': self.shared_network.critic.get_weights()
@@ -580,6 +605,7 @@ class SimplePPOTrainer:
                     steps_per_worker,
                     seed,
                     self.global_state_dim,
+                    PPO_NETWORK_CONFIG.copy(),
                     curriculum_config  # 🔧 V17修复：传递课程学习配置
                 )
                 futures.append(future)
@@ -644,7 +670,7 @@ class SimplePPOTrainer:
                 buffer.clear()
         
         if len(all_states) == 0:
-            return {'actor_loss': 0, 'critic_loss': 0, 'entropy': 0}
+            return {'actor_loss': 0, 'critic_loss': 0, 'entropy': 0, 'approx_kl': 0, 'clip_fraction': 0}
         
         # 转换为numpy数组
         all_states = np.array(all_states)
@@ -1039,17 +1065,26 @@ class SimplePPOTrainer:
                 
                 # 🔧 新增：智能熵系数调整（基于性能）
                 completion_rate_kpi = (kpi_results.get('mean_completed_parts', 0) / get_total_parts_count()) * 100
-                if episode > 100:  # 前100轮保持高探索
-                    # 如果完成率高，可以降低探索；否则保持探索
-                    if completion_rate_kpi >= 95:  # 高完成率时才降低熵
-                        self.current_entropy_coeff = max(
-                            self.min_entropy_coeff,
-                            self.current_entropy_coeff * self.entropy_decay_rate
-                        )
+                if episode > 50:  # 🔧 更早开始调整
+                    # 检查模型是否陷入局部最优（所有智能体输出相似）
+                    # 🔧 BUG修复：暂时注释掉未实现的策略多样性检查功能
+                    # if hasattr(self, '_check_policy_diversity'):
+                    #     diversity_score = self._check_policy_diversity()
+                    #     if diversity_score < 0.1:  # 策略过于相似
+                    #         # 大幅增加探索
+                    #         self.current_entropy_coeff = min(
+                    #             PPO_NETWORK_CONFIG["entropy_coeff"] * 1.5,
+                    #             self.current_entropy_coeff * 1.1
+                    #         )
+                    #         print(f"⚠️ 检测到策略过于相似，增加探索：熵系数={self.current_entropy_coeff:.4f}")
+                    
+                    # 正常的熵系数衰减
+                    if completion_rate_kpi >= 98:  # 高完成率时才降低熵
+                        self.current_entropy_coeff *= 0.995
                     elif completion_rate_kpi < 80:  # 完成率低时增加探索
                         self.current_entropy_coeff = min(
-                            PPO_NETWORK_CONFIG["entropy_coeff"],
-                            self.current_entropy_coeff * 1.01  # 缓慢增加
+                            PPO_NETWORK_CONFIG["entropy_coeff"] * 1.2,
+                            self.current_entropy_coeff * 1.02  # 更快增加
                         )
 
                 # 🔧 V36 统一TensorBoard日志记录，并根据课程阶段动态切换run
@@ -1201,6 +1236,7 @@ class SimplePPOTrainer:
                     self.best_score = float('-inf')
 
                 model_update_info = ""
+                timestamp = datetime.now().strftime("%m%d_%H%M") # 获取当前时间戳
                 # 🔧 核心改造：区分"全局最佳"和"最终阶段最佳"
                 # 1. 更新全局最佳分数（用于日志显示）
                 if current_score > self.best_score:
@@ -1211,7 +1247,7 @@ class SimplePPOTrainer:
                     if current_score > stage_best_scores[current_stage]:
                         stage_best_scores[current_stage] = current_score
                         stage_name = current_curriculum_config['stage_name'].replace(" ", "_")
-                        model_path = self.save_model(f"{self.models_dir}/{stage_name}_best")
+                        model_path = self.save_model(f"{self.models_dir}/{timestamp}_{stage_name}_best")
                         if model_path:
                             stage_display_name = current_curriculum_config['stage_name']
                             model_update_info = f"✅ {stage_display_name}阶段最佳得分刷新，模型已保存至: {model_path}"
@@ -1222,7 +1258,7 @@ class SimplePPOTrainer:
                             self.final_stage_best_score = current_score
                             self.final_stage_best_kpi = kpi_results.copy()
                             self.final_stage_best_episode = episode + 1 # 🔧 记录最佳KPI的回合数
-                            final_model_path = self.save_model(f"{self.models_dir}/final_challenge_best")
+                            final_model_path = self.save_model(f"{self.models_dir}/{timestamp}_完整挑战最佳")
                             model_update_info = f" 🏆最终阶段最佳! 模型保存至: {final_model_path}"
                         
                         # 🔧 核心改造：检查并更新"双达标"最佳模型
@@ -1231,8 +1267,8 @@ class SimplePPOTrainer:
                             self.best_score_dual_objective = current_score
                             self.best_kpi_dual_objective = kpi_results.copy()
                             self.best_episode_dual_objective = episode + 1
-                            dual_objective_best_path = self.save_model(f"{self.models_dir}/dual_objective_best")
-                            model_update_info = f" ⭐双达标最佳!模型保存至: {dual_objective_best_path}"
+                            dual_objective_best_path = self.save_model(f"{self.models_dir}/{timestamp}完成所有零件得分最佳")
+                            model_update_info = f" ⭐完成所有零件得分最佳!模型保存至: {dual_objective_best_path}"
 
                 else: # 非课程学习模式
                     # 在非课程学习模式下，我们将训练视为一个单一的"最终挑战"阶段
@@ -1241,7 +1277,7 @@ class SimplePPOTrainer:
                         self.final_stage_best_score = current_score
                         self.final_stage_best_kpi = kpi_results.copy()
                         self.final_stage_best_episode = episode + 1 # 记录最佳KPI的回合数
-                        final_model_path = self.save_model(f"{self.models_dir}/final_challenge_best")
+                        final_model_path = self.save_model(f"{self.models_dir}/{timestamp}_完整挑战最佳")
                         if final_model_path:
                             model_update_info = f" 🏆全局最佳! 模型保存至: {final_model_path}"
                     
@@ -1251,9 +1287,9 @@ class SimplePPOTrainer:
                         self.best_score_dual_objective = current_score
                         self.best_kpi_dual_objective = kpi_results.copy()
                         self.best_episode_dual_objective = episode + 1
-                        dual_objective_best_path = self.save_model(f"{self.models_dir}/dual_objective_best")
+                        dual_objective_best_path = self.save_model(f"{self.models_dir}/{timestamp}完成所有零件得分最佳")
                         if dual_objective_best_path:
-                            model_update_info = f" ⭐双达标最佳!模型保存至: {dual_objective_best_path}"
+                            model_update_info = f" ⭐完成所有零件得分最佳!模型保存至: {dual_objective_best_path}"
                 
                 # 🔧 V33 优化：严格按照用户要求的日志格式
                 # 第一行：回合信息和性能数据

@@ -7,6 +7,7 @@ from tqdm import tqdm
 import argparse
 import contextlib
 import time # 导入time模块
+import copy
 
 from plotting import generate_gantt_chart
 
@@ -24,7 +25,6 @@ from environments.w_factory_config import (
 # =============================================================================
 # 1. 核心配置 (Core Configuration)
 # =============================================================================
-# 评估的回合数，建议至少30次以获得统计意义
 NUM_EVAL_EPISODES = 30 
 
 # 静态评估环境配置 (确保公平对比)
@@ -37,7 +37,7 @@ STATIC_EVAL_CONFIG = {
 }
 
 # =============================================================================
-# 🌟 新增：泛化能力测试订单配置 (Generalization Test Configurations)
+# 🌟 新增：泛化能力测试订单配置 (Generalization Test Configurations) 配置是否合理
 # =============================================================================
 
 # 测试配置1：高压力短交期场景
@@ -153,7 +153,7 @@ def run_single_episode(env: WFactoryEnv, policy_fn, seed: int, config: dict = No
     
     return final_stats, score, history
 
-def evaluate_marl_model(model_path: str, config: dict = STATIC_EVAL_CONFIG, generate_gantt: bool = False, output_dir: str = None):
+def evaluate_marl_model(model_path: str, config: dict = STATIC_EVAL_CONFIG, generate_gantt: bool = False, output_dir: str = None, run_name: str = None, env_config_overrides: dict = None):
     """评估MARL模型"""
     config_name = config.get('stage_name', '未知配置')
     print(f"🧠 开始评估MARL模型: {model_path}", flush=True)
@@ -194,7 +194,11 @@ def evaluate_marl_model(model_path: str, config: dict = STATIC_EVAL_CONFIG, gene
     all_scores = []
     first_episode_history = None
 
-    env = WFactoryEnv(config=config)
+    # 🔧 关键修复 V2: 合并来自优化器的基础配置和评估场景的特定配置
+    final_config_for_eval = copy.deepcopy(env_config_overrides) if env_config_overrides else {}
+    final_config_for_eval.update(config)
+
+    env = WFactoryEnv(config=final_config_for_eval)
     
     # 动态选择迭代器：交互式终端使用tqdm，否则使用普通range
     is_tty = sys.stdout.isatty()
@@ -220,13 +224,13 @@ def evaluate_marl_model(model_path: str, config: dict = STATIC_EVAL_CONFIG, gene
 
     # 生成甘特图
     if generate_gantt and first_episode_history:
-        generate_gantt_chart(first_episode_history, "MARL_PPO", config_name, output_dir=output_dir)
+        generate_gantt_chart(first_episode_history, "MARL_PPO", config_name, output_dir=output_dir, run_name=run_name)
 
     env.close()
     
     return all_kpis, all_scores
 
-def evaluate_heuristic(heuristic_name: str, config: dict = STATIC_EVAL_CONFIG, generate_gantt: bool = False, output_dir: str = None):
+def evaluate_heuristic(heuristic_name: str, config: dict = STATIC_EVAL_CONFIG, generate_gantt: bool = False, output_dir: str = None, run_name: str = None):
     """评估启发式算法"""
     config_name = config.get('stage_name', '未知配置')
     print(f"⚙️  开始评估启发式算法: {heuristic_name}", flush=True)
@@ -298,7 +302,7 @@ def evaluate_heuristic(heuristic_name: str, config: dict = STATIC_EVAL_CONFIG, g
     
     # 生成甘特图
     if generate_gantt and first_episode_history:
-        generate_gantt_chart(first_episode_history, heuristic_name, config_name, output_dir=output_dir)
+        generate_gantt_chart(first_episode_history, heuristic_name, config_name, output_dir=output_dir, run_name=run_name)
         
     env.close()
     return all_kpis, all_scores
@@ -338,7 +342,7 @@ def aggregate_results(method_name: str, all_kpis: list, all_scores: list, config
         "Avg Utilization %": f"{np.mean([k['mean_utilization'] for k in all_kpis]) * 100:.1f}",
     }
 
-def run_comprehensive_evaluation(model_path: str, generate_gantt: bool = False, output_dir: str = None):
+def run_comprehensive_evaluation(model_path: str, generate_gantt: bool = False, output_dir: str = None, run_name: str = None):
     """运行综合评估：包括基准测试和泛化能力测试"""
     
     print("="*80, flush=True)
@@ -362,12 +366,13 @@ def run_comprehensive_evaluation(model_path: str, generate_gantt: bool = False, 
         
         # 🔧 V4 修复：直接传递config，无需上下文管理器
         # 1. 评估MARL模型
-        marl_kpis, marl_scores = evaluate_marl_model(model_path, config, generate_gantt=generate_gantt, output_dir=output_dir)
+        marl_kpis, marl_scores = evaluate_marl_model(model_path, config, generate_gantt=generate_gantt, output_dir=output_dir, run_name=run_name)
         
-        # 2. 评估启发式算法
-        fifo_kpis, fifo_scores = evaluate_heuristic('FIFO', config, generate_gantt=generate_gantt, output_dir=output_dir)
-        edd_kpis, edd_scores = evaluate_heuristic('EDD', config, generate_gantt=generate_gantt, output_dir=output_dir)
-        spt_kpis, spt_scores = evaluate_heuristic('SPT', config, generate_gantt=generate_gantt, output_dir=output_dir)
+        # 2. 评估启发式算法 (甘特图保存到父目录)
+        heuristic_output_dir = os.path.dirname(output_dir) if output_dir else None
+        fifo_kpis, fifo_scores = evaluate_heuristic('FIFO', config, generate_gantt=generate_gantt, output_dir=heuristic_output_dir, run_name=run_name)
+        edd_kpis, edd_scores = evaluate_heuristic('EDD', config, generate_gantt=generate_gantt, output_dir=heuristic_output_dir, run_name=run_name)
+        spt_kpis, spt_scores = evaluate_heuristic('SPT', config, generate_gantt=generate_gantt, output_dir=heuristic_output_dir, run_name=run_name)
 
         # 3. 汇总结果
         results = [
@@ -444,11 +449,17 @@ def main():
         default=None,
         help="指定一个目录来存放所有输出的甘特图文件"
     )
+    parser.add_argument(
+        "--run_name",
+        type=str,
+        default=None,
+        help="为本次运行提供一个名称，将用作甘特图文件名的前缀"
+    )
     args = parser.parse_args()
 
     if args.generalization:
         # 运行完整的泛化能力测试
-        run_comprehensive_evaluation(args.model_path, generate_gantt=args.gantt, output_dir=args.output_dir)
+        run_comprehensive_evaluation(args.model_path, generate_gantt=args.gantt, output_dir=args.output_dir, run_name=args.run_name)
     else:
         # 仅运行基准测试 (原有功能)
         print("="*80, flush=True)
@@ -457,12 +468,13 @@ def main():
         print("="*80, flush=True)
 
         # 1. 评估MARL模型
-        marl_kpis, marl_scores = evaluate_marl_model(args.model_path, generate_gantt=args.gantt)
+        marl_kpis, marl_scores = evaluate_marl_model(args.model_path, generate_gantt=args.gantt, output_dir=args.output_dir, run_name=args.run_name)
         
-        # 2. 评估启发式算法
-        fifo_kpis, fifo_scores = evaluate_heuristic('FIFO', generate_gantt=args.gantt)
-        edd_kpis, edd_scores = evaluate_heuristic('EDD', generate_gantt=args.gantt)
-        spt_kpis, spt_scores = evaluate_heuristic('SPT', generate_gantt=args.gantt)
+        # 2. 评估启发式算法 (甘特图保存到父目录)
+        heuristic_output_dir = os.path.dirname(args.output_dir) if args.output_dir else None
+        fifo_kpis, fifo_scores = evaluate_heuristic('FIFO', generate_gantt=args.gantt, output_dir=heuristic_output_dir, run_name=args.run_name)
+        edd_kpis, edd_scores = evaluate_heuristic('EDD', generate_gantt=args.gantt, output_dir=heuristic_output_dir, run_name=args.run_name)
+        spt_kpis, spt_scores = evaluate_heuristic('SPT', generate_gantt=args.gantt, output_dir=heuristic_output_dir, run_name=args.run_name)
 
         # 3. 汇总结果
         results = [

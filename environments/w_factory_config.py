@@ -120,19 +120,19 @@ EMERGENCY_ORDERS = {
 # 5. 强化学习环境参数 (RL Environment Parameters)
 # =============================================================================
 
-# 简化观测配置，MAPPO的集中式Critic已提供全局视野
+# 🔧 修复：增强观测配置，提供更多信息
 ENHANCED_OBS_CONFIG = {
-    "enabled": True,                      # 保持启用，但简化配置
-    "top_n_parts": 2,                     # 减少到2个零件，降低复杂度
-    "include_downstream_info": False,     # 禁用下游信息，MAPPO全局状态已包含
-    "time_feature_normalization": 100.0,  # 保持不变
+    "enabled": True,
+    "top_n_parts": 3,                     # 🔧 恢复到3个零件，降低观察复杂性
+    "include_downstream_info": True,      # 保持启用下游信息
+    "time_feature_normalization": 100.0,
 }
 
-# 动作空间配置，与简化的观测空间保持一致
+# 动作空间配置，与观测空间保持一致
 ACTION_CONFIG_ENHANCED = {
-    "enabled": True,                      # 保持启用扩展动作空间
+    "enabled": True,
     # 动作空间自动适应观测配置
-    "action_space_size": ENHANCED_OBS_CONFIG["top_n_parts"] + 1,  # 现在是3个动作
+    "action_space_size": ENHANCED_OBS_CONFIG["top_n_parts"] + 1,  # 现在是6个动作（0=IDLE, 1-5=处理零件1-5）
     "action_names": ["IDLE"] + [f"PROCESS_PART_{i+1}" for i in range(ENHANCED_OBS_CONFIG["top_n_parts"])],
 }
 
@@ -142,29 +142,38 @@ ACTION_CONFIG_ENHANCED = {
 # =============================================================================
 
 REWARD_CONFIG = {
-    # === 核心奖励组件 (6个) ===
+    # === 核心奖励组件 ===
     
     # 1. 零件完成奖励 - 主要驱动力
-    "part_completion_reward": 20.0,        # 增加到20分，强化主要激励
+    "part_completion_reward": 20.0,
     
     # 2. 订单完成奖励 - 协调激励  
-    "order_completion_reward": 100.0,      # 增加到100分，强化订单完成
+    "order_completion_reward": 100.0,
     
-    # 3. 延期惩罚 - 质量约束 (重构版)
-    "continuous_lateness_penalty": -0.2,   # 持续惩罚：加强延期压力
-    "final_tardiness_penalty": -0.5,       # 终局惩罚：适度降低
+    # 3. 延期惩罚 - 质量约束
+    "continuous_lateness_penalty": -1,   # 🔧 加大持续惩罚，强化时间意识
+    "final_tardiness_penalty": -1,
     
     # 4. 闲置惩罚与工作激励 - 效率约束
-    "idle_penalty": -1.0,                  # 适度的闲置惩罚
-    "idle_penalty_threshold": 5,           # 触发阈值
-    "work_bonus": 1.0,                     # 增加工作奖励
+    "idle_penalty": -2.0,                  # 🔧 加大闲置惩罚，避免偷懒
+    "idle_penalty_threshold": 3,           # 🔧 降低触发阈值，更敏感
+    "work_bonus": 2.0,                     # 🔧 加大工作奖励
     
-    # 5. 终局完成率奖励/惩罚 - 全局目标
-    "final_completion_bonus_per_percent": 5.0,    # 每完成1%获得5分，强化激励
-    "final_incompletion_penalty_per_percent": -5.0,  # 每未完成1%扣5分
+    # 5. 终局完成率奖励/惩罚
+    "final_completion_bonus_per_percent": 5.0,
+    "final_incompletion_penalty_per_percent": -5.0,
     
-    # 6. 为100%完成率设置巨额"完工大奖"
-    "final_all_parts_completion_bonus": 1000.0, # 增加到1000分的超级大奖
+    # 6. 完工大奖
+    "final_all_parts_completion_bonus": 1000.0,
+    
+    # 🔧 新增：智能选择奖励
+    "smart_selection_bonus": 3.0,          # 选择高优先级零件的额外奖励
+    "urgent_part_bonus": 10.0,              # 处理紧急零件的额外奖励
+
+    "efficiency_bonus": 2.0,  # 快速完成零件的额外奖励
+    "time_pressure_multiplier": 1.5,  # 时间压力下的奖励倍数
+
+    "wip_penalty": -0.1, # 减少WIP积压的惩罚
 }
 
 
@@ -184,18 +193,18 @@ ADAPTIVE_TRAINING_CONFIG = {
 
 # PPO网络架构配置
 PPO_NETWORK_CONFIG = {
-    "hidden_sizes": [768, 384],          # 适中的网络规模，平衡能力和泛化
-    "dropout_rate": 0.15,                # 适度的Dropout
-    "clip_ratio": 0.3,                   # 适中的裁剪比例
-    "entropy_coeff": 0.1,                # 恢复适中的熵系数，保持探索能力
-    "num_policy_updates": 8,             # 适度的更新次数
+    "hidden_sizes": [1024, 512, 256],    # 🔧 关键：增加网络深度和宽度
+    "dropout_rate": 0.1,
+    "clip_ratio": 0.25,
+    "entropy_coeff": 0.03,               
+    "num_policy_updates": 12,            # 🔧 增加更新次数，让大网络充分学习
 }
 
 # 学习率调度配置
 LEARNING_RATE_CONFIG = {
-    "initial_lr": 3e-4,                  # 恢复合理的初始学习率
-    "end_lr": 1e-5,                      # 合理的最终学习率
-    "decay_power": 0.8,                  # 更平滑的衰减曲线
+    "initial_lr": 1e-4,                  # 🔧 降低初始学习率，配合大网络
+    "end_lr": 1e-6,
+    "decay_power": 0.8,
 }
 
 # 系统资源配置
