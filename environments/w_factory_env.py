@@ -17,6 +17,15 @@ from .w_factory_config import *
 
 SILENT_MODE = True  # 设置为True时，完全禁用调试输出
 
+# --- 方案一 & 二：新增辅助函数 ---
+def calculate_slack_time(part, current_time: float) -> float:
+    """计算零件的松弛时间 (Slack Time)"""
+    route = get_route_for_product(part.product_type)
+    remaining_processing_time = sum(
+        step['time'] for i, step in enumerate(route) if i >= part.current_step
+    )
+    return (part.due_date - current_time) - remaining_processing_time
+
 # =============================================================================
 # 1. 数据结构定义 (Data Structures)
 # =============================================================================
@@ -145,6 +154,10 @@ class WFactorySim:
         self._downstream_map = self._create_downstream_map()
         
         self._initialize_resources()
+        
+        # --- 方案三：引入环境随机性 ---
+        # 备份基础订单，以便在重置时重新引入随机性
+        self._base_orders_template = [o.copy() for o in BASE_ORDERS]
         self._initialize_orders()
     
     def reset(self):
@@ -211,18 +224,22 @@ class WFactorySim:
             self.env.process(self._equipment_process(station_name))
     
     def _initialize_orders(self):
-        """初始化订单（支持课程学习和自定义订单）"""
+        """初始化订单（支持课程学习、自定义订单和环境随机性）"""
         # 🔧 修复：优先使用自定义订单配置
         if 'custom_orders' in self.config:
             # 使用自定义订单，忽略课程学习缩放
-            actual_orders = self.config['custom_orders']
+            actual_orders_config = self.config['custom_orders']
+            is_randomized = False
         else:
-            # 支持课程学习的订单缩放
+            # --- 方案三：引入环境随机性 ---
             orders_scale = self.config.get('orders_scale', 1.0)
             time_scale = self.config.get('time_scale', 1.0)
+            is_randomized = self.config.get('randomize_env', False)
+
+            base_orders_template = self._base_orders_template
             
             # 如果启用课程学习，按比例调整订单
-            actual_orders = []
+            actual_orders_config = []
             if orders_scale < 1.0:
                 # 计算需要多少个零件
                 total_parts_needed = int(sum(o["quantity"] for o in BASE_ORDERS) * orders_scale)
@@ -239,20 +256,31 @@ class WFactorySim:
                         adjusted_order = order_data.copy()
                         adjusted_order["quantity"] = adjusted_quantity
                         adjusted_order["due_date"] = order_data["due_date"] * time_scale  # 放宽时间限制
-                        actual_orders.append(adjusted_order)
+                        actual_orders_config.append(adjusted_order)
                         parts_added += adjusted_quantity
             else:
-                actual_orders = BASE_ORDERS
-        
+                actual_orders_config = base_orders_template
+
         # 创建订单对象
-        for i, order_data in enumerate(actual_orders):
+        for i, order_data in enumerate(actual_orders_config):
+            order_data_copy = order_data.copy()
+
+            # --- 方案三：如果启用了随机化，则添加扰动 ---
+            if is_randomized:
+                due_date_jitter = np.random.uniform(-15, 15)
+                arrival_time_jitter = np.random.uniform(0, 10)
+                order_data_copy['due_date'] += due_date_jitter
+                order_data_copy['arrival_time'] = order_data_copy.get('start_time', 0) + arrival_time_jitter
+            else:
+                 order_data_copy['arrival_time'] = order_data_copy.get('start_time', 0)
+
             order = Order(
                 order_id=i,
-                product=order_data["product"],
-                quantity=order_data["quantity"],
-                priority=order_data["priority"],
-                due_date=order_data["due_date"],
-                arrival_time=0
+                product=order_data_copy["product"],
+                quantity=order_data_copy["quantity"],
+                priority=order_data_copy["priority"],
+                due_date=order_data_copy["due_date"],
+                arrival_time=order_data_copy['arrival_time']
             )
             self.orders.append(order)
             
@@ -410,8 +438,15 @@ class WFactorySim:
                 product_types = list(PRODUCT_ROUTES.keys())
                 product_index = product_types.index(part.product_type) if part.product_type in product_types else -1
                 state_features.append((product_index + 1) / len(product_types)) # +1避免-1
+
+                # --- 方案二：新增第6个特征：归一化紧急度 ---
+                slack = calculate_slack_time(part, self.env.now)
+                # 将slack归一化，负数代表非常紧急，我们用一个sigmoid函数将其映射到0-1之间
+                # slack越小，值越接近1 (越紧急)
+                urgency_score = 1 / (1 + np.exp(slack / 100.0)) # 100是一个缩放因子，可调
+                state_features.append(urgency_score)
             else:
-                state_features.extend([0.0] * 5)
+                state_features.extend([0.0] * 6) # 方案二：扩展到6个特征
         
         # 5. 下游工作站信息 (1个特征)
         if ENHANCED_OBS_CONFIG["include_downstream_info"]:
@@ -424,12 +459,12 @@ class WFactorySim:
                 state_features.append(0.0)
         
         # 🔧 新增：全局信息
-        time_progress = self.env.now / SIMULATION_TIME
-        state_features.append(time_progress)
+        # time_progress = self.env.now / SIMULATION_TIME
+        # state_features.append(time_progress)
         
-        completion_rate = len(self.completed_parts) / (sum(o.quantity for o in self.orders) + 1e-6)
-        state_features.append(completion_rate)
-        
+        # completion_rate = len(self.completed_parts) / (sum(o.quantity for o in self.orders) + 1e-6)
+        # state_features.append(completion_rate)
+
         return np.array(state_features, dtype=np.float32)
 
     def get_global_state(self) -> np.ndarray:
@@ -591,21 +626,16 @@ class WFactorySim:
             if action > 0:  # 工作
                 if work_is_available:
                     rewards[agent_id] += REWARD_CONFIG["work_bonus"]
-                    # 🔧 BUG修复：将“按交期”奖励逻辑移入此循环
-                    if action - 1 < len(queue_items):
-                        chosen = queue_items[action - 1]
-                        # 计算候选的slack并与前三个做对比
-                        candidates = queue_items[:3]
-                        if candidates: # 确保队列不为空
-                            def slack(p):
-                                rem = sum(get_route_for_product(p.product_type)[i]['time'] 
-                                          for i in range(p.current_step, len(get_route_for_product(p.product_type))))
-                                return (p.due_date - self.current_time) - rem
-                            
-                            chosen_slack = slack(chosen)
-                            best_slack = min(slack(p) for p in candidates)
-                            if abs(chosen_slack - best_slack) < 1e-6 or chosen_slack <= best_slack:
-                                rewards[agent_id] += 0.5  # 小额奖励，引导优先级敏感
+                    # --- 方案一：实现紧急零件奖励 ---
+                    chosen_part_index = action - 1
+                    if chosen_part_index < len(queue_items):
+                        # 计算队列中所有零件的slack time
+                        slacks = [calculate_slack_time(p, self.current_time) for p in queue_items]
+                        if slacks:
+                            most_urgent_part_index = np.argmin(slacks)
+                            # 如果选择的就是最紧急的零件，给予奖励
+                            if chosen_part_index == most_urgent_part_index:
+                                rewards[agent_id] += REWARD_CONFIG.get("urgent_part_bonus", 0.0)
             else:  # 闲置
                 if work_is_available:
                     rewards[agent_id] += REWARD_CONFIG["idle_penalty"]
@@ -628,20 +658,30 @@ class WFactorySim:
             
             # 组件b: 延期 (Tardiness) - 综合计算所有订单
             total_tardiness = 0
-            for order in self.orders:
-                if order.order_id in self.order_completion_times:
-                    completion_time = self.order_completion_times[order.order_id]
-                    total_tardiness += max(0, completion_time - order.due_date)
-                else:
-                    # 对于未完成的订单，延期时间从截止日期算到仿真结束
-                    total_tardiness += max(0, self.current_time - order.due_date)
+            for part in self.completed_parts:
+                 total_tardiness += max(0, part.completion_time - part.due_date)
             
+            # 对未完成的零件，延期从交期算到仿真结束
+            for part in self.active_parts:
+                total_tardiness += max(0, self.current_time - part.due_date)
+
             final_reward_component += total_tardiness * REWARD_CONFIG["final_tardiness_penalty"]
             
             # --- 将总的终局奖励/惩罚平分 ---
             for agent_id in rewards:
                 rewards[agent_id] += final_reward_component / len(WORKSTATIONS)
         
+        # --- 方案一：为所有智能体应用通用惩罚 ---
+        for agent_id in rewards:
+            station_name = agent_id.replace("agent_", "")
+            
+            # 应用WIP惩罚
+            queue_len = len(self.queues[station_name].items)
+            rewards[agent_id] += queue_len * REWARD_CONFIG.get("wip_penalty", 0.0)
+            
+            # 应用时间步惩罚
+            rewards[agent_id] += REWARD_CONFIG.get("time_step_penalty", 0.0)
+
         # 🔧 更新统计（为下次计算准备）
         self._update_order_progress()
 

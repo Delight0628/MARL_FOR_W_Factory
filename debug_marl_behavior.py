@@ -1,5 +1,10 @@
 import os
 import sys
+
+# 关键修复：强制调试脚本在CPU上运行，避免与训练进程争夺GPU资源
+os.environ['CUDA_VISIBLE_DEVICES'] = '-1'
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'  # 屏蔽TensorFlow的INFO级别日志
+
 import numpy as np
 import tensorflow as tf
 from collections import Counter

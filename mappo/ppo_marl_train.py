@@ -491,6 +491,10 @@ class SimplePPOTrainer:
             "stagnation_counter": 0,             # 停滞计数器
             "last_stagnation_performance": -1.0, # 上一次停滞时的性能
         }
+        # --- 方案三：新增停滞感知的熵调整所需变量 ---
+        self.epochs_without_improvement = 0
+        self.global_best_score_for_entropy = -np.inf
+        
         # 🔧 V34 初始化动态训练参数
         self.current_entropy_coeff = PPO_NETWORK_CONFIG["entropy_coeff"] # 初始化动态熵系数
         self.current_learning_rate = LEARNING_RATE_CONFIG["initial_lr"] # 🔧 V34 修复：使用正确的学习率配置
@@ -1063,30 +1067,31 @@ class SimplePPOTrainer:
                 # 🔧 核心改造：计算当前回合的综合评分
                 current_score = self._calculate_score(kpi_results, current_curriculum_config)
                 
-                # 🔧 新增：智能熵系数调整（基于性能）
-                completion_rate_kpi = (kpi_results.get('mean_completed_parts', 0) / get_total_parts_count()) * 100
-                if episode > 50:  # 🔧 更早开始调整
-                    # 检查模型是否陷入局部最优（所有智能体输出相似）
-                    # 🔧 BUG修复：暂时注释掉未实现的策略多样性检查功能
-                    # if hasattr(self, '_check_policy_diversity'):
-                    #     diversity_score = self._check_policy_diversity()
-                    #     if diversity_score < 0.1:  # 策略过于相似
-                    #         # 大幅增加探索
-                    #         self.current_entropy_coeff = min(
-                    #             PPO_NETWORK_CONFIG["entropy_coeff"] * 1.5,
-                    #             self.current_entropy_coeff * 1.1
-                    #         )
-                    #         print(f"⚠️ 检测到策略过于相似，增加探索：熵系数={self.current_entropy_coeff:.4f}")
+                # --- 方案三：实现停滞感知的自适应熵调整 ---
+                if kpi_results['mean_completed_parts'] >= get_total_parts_count() * 0.98: # 仅在高完成率时应用
+                    if current_score > self.global_best_score_for_entropy:
+                        self.global_best_score_for_entropy = current_score
+                        self.epochs_without_improvement = 0
+                    else:
+                        self.epochs_without_improvement += 1
                     
-                    # 正常的熵系数衰减
-                    if completion_rate_kpi >= 98:  # 高完成率时才降低熵
+                    if self.epochs_without_improvement > 20: # 超过25轮没进步
+                        self.current_entropy_coeff = min(self.current_entropy_coeff * 1.1, PPO_NETWORK_CONFIG["entropy_coeff"])
+                        print(f"📈 性能停滞 {self.epochs_without_improvement} 回合, 提升熵至 {self.current_entropy_coeff:.4f} 以鼓励探索!")
+                        self.epochs_without_improvement = 0 # 重置计数器
+                    else:
+                        # 正常衰减
                         self.current_entropy_coeff *= 0.995
-                    elif completion_rate_kpi < 80:  # 完成率低时增加探索
-                        self.current_entropy_coeff = min(
-                            PPO_NETWORK_CONFIG["entropy_coeff"] * 1.2,
-                            self.current_entropy_coeff * 1.02  # 更快增加
-                        )
+                elif kpi_results['mean_completed_parts'] < get_total_parts_count() * 0.8: # 完成率低时增加探索
+                    self.current_entropy_coeff = min(
+                        PPO_NETWORK_CONFIG["entropy_coeff"] * 1.2,
+                        self.current_entropy_coeff * 1.02
+                    )
+                
+                # 确保熵不会低于最小值
+                self.current_entropy_coeff = max(self.current_entropy_coeff, 0.005)
 
+                
                 # 🔧 V36 统一TensorBoard日志记录，并根据课程阶段动态切换run
                 if TENSORBOARD_AVAILABLE:
                     # 根据课程阶段切换run，在悬停提示中显示阶段名
@@ -1139,6 +1144,12 @@ class SimplePPOTrainer:
                     # 获取最终阶段必须完成的课程轮数
                     final_stage_iterations = CURRICULUM_CONFIG["stages"][-1].get("iterations", 100)
                     
+                    # --- 方案三：启用环境随机性 ---
+                    # 在最终挑战阶段引入随机性，强制模型学习泛化
+                    if stage_episode_count > final_stage_iterations / 2: # 在后半段引入
+                         if current_curriculum_config:
+                            current_curriculum_config['randomize_env'] = True
+
                     # 只有在完成了最终阶段的指定课程轮数后，才开始早停评估
                     if stage_episode_count > final_stage_iterations:
                         completion_rate_check = (kpi_results.get('mean_completed_parts', 0) / get_total_parts_count()) * 100
