@@ -5,7 +5,7 @@ W工厂生产调度系统配置文件
 """
 
 import numpy as np
-from typing import Dict, List, Tuple, Any
+from typing import Dict, List, Tuple, Any, Optional
 
 # =============================================================================
 # 1. 基础仿真参数 (Basic Simulation Parameters)
@@ -15,7 +15,7 @@ TIME_UNIT = "minutes"  # 时间单位：分钟
 
 # 课程学习配置
 CURRICULUM_CONFIG = {
-    "enabled": False, # 启用课程学习，从简单到复杂
+    "enabled": False, # 关键：禁用旧的课程学习，新的两阶段逻辑在ppo_marl_train.py中实现
     "stages": [
         {"name": "基础入门", "orders_scale": 0.4, "time_scale": 1.6, "iterations": 30, "graduation_thresholds": 95},
         {"name": "能力提升", "orders_scale": 0.8, "time_scale": 1.2, "iterations": 50, "graduation_thresholds": 90},
@@ -142,39 +142,33 @@ ACTION_CONFIG_ENHANCED = {
 # =============================================================================
 
 REWARD_CONFIG = {
-    # === 核心奖励组件 ===
-    
-    # 1. 零件完成奖励 - 主要驱动力
-    "part_completion_reward": 20.0,
-    
-    # 2. 订单完成奖励 - 协调激励  
-    "order_completion_reward": 100.0,
+    # === 核心奖励组件 (简化，让位于时间奖励) ===
+    "part_completion_reward": 10.0,
+    "order_completion_reward": 50.0,
     
     # 3. 延期惩罚 - 质量约束
-    "continuous_lateness_penalty": -1,   # 🔧 加大持续惩罚，强化时间意识
+    "continuous_lateness_penalty": -1,
     "final_tardiness_penalty": -1,
     
     # 4. 闲置惩罚与工作激励 - 效率约束
-    "idle_penalty": -2.0,                  # 🔧 加大闲置惩罚，避免偷懒
-    "idle_penalty_threshold": 3,           # 🔧 降低触发阈值，更敏感
-    "work_bonus": 2.0,                     # 🔧 加大工作奖励
+    "idle_penalty": -2.0,
+    "idle_penalty_threshold": 3,
+    "work_bonus": 1.0, # 略微降低，因为主要奖励来自时间
     
-    # 5. 终局完成率奖励/惩罚
-    "final_completion_bonus_per_percent": 5.0,
-    "final_incompletion_penalty_per_percent": -5.0,
+    # 6. 完工大奖 (保持)
+    "final_all_parts_completion_bonus": 500.0,
     
-    # 6. 完工大奖
-    "final_all_parts_completion_bonus": 1000.0,
+    # --- 方案一：全新的、与时间大小直接挂钩的奖励机制 ---
+    "urgency_bonus_scaler": 5.0,           # 对选择最紧急零件的奖励进行缩放
+    "slack_time_reward_multiplier": 0.01,  # 对选择的零件，其正的松弛时间（提前量）的奖励系数
+    "lateness_penalty_multiplier": 0.1,   # 对选择的零件，其负的松弛时间（延期量）的惩罚系数
     
-    # --- 方案一：激活并调优时间相关奖励 ---
-    # "smart_selection_bonus": 3.0, # 暂时禁用，使用更精确的 urgent_part_bonus
-    "time_step_penalty": -0.01,          # 每个时间步的固定惩罚，鼓励速战速决
-    "urgent_part_bonus": 1.5,              # 奖励处理紧急零件 (Slack Time最小)
+    # 禁用旧的、模糊的奖励
+    # "urgent_part_bonus": 1.5,
 
-    # "efficiency_bonus": 2.0,  # 快速完成零件的额外奖励
-    # "time_pressure_multiplier": 1.5,  # 时间压力下的奖励倍数
-
-    "wip_penalty": -0.2, # 加大WIP惩罚，减少排队
+    # 通用惩罚 (保持)
+    "wip_penalty": -0.05, # Penalty per part in queue, per agent, per reward step
+    "time_step_penalty": -0.01, # A small penalty for every time step to encourage speed
 }
 
 
@@ -185,11 +179,13 @@ REWARD_CONFIG = {
 
 # 自适应训练配置
 ADAPTIVE_TRAINING_CONFIG = {
-    "target_score": 0.68,                # 合理的目标分数
+    "target_score": 0.72,                # 合理的目标分数
     "target_consistency": 6,             # 合理的一致性要求
     "max_episodes": 1000,                # 充分的训练轮数
     "early_stop_patience": 100,          # 更长的耐心，防止过早停止
     "performance_window": 15,            # 适中的性能窗口
+    # 新增：基础训练毕业的延期硬性门槛 (分钟)
+    "foundation_training_tardiness_threshold": 450.0,
 }
 
 # PPO网络架构配置
@@ -198,12 +194,12 @@ PPO_NETWORK_CONFIG = {
     "dropout_rate": 0.1,
     "clip_ratio": 0.25,
     "entropy_coeff": 0.03,               
-    "num_policy_updates": 12,            # 🔧 增加更新次数，让大网络充分学习
+    "num_policy_updates": 16,            # 方案三：增加更新次数
 }
 
 # 学习率调度配置
 LEARNING_RATE_CONFIG = {
-    "initial_lr": 1e-4,                  # 🔧 降低初始学习率，配合大网络
+    "initial_lr": 8e-5,                  # 方案三：微调初始学习率
     "end_lr": 1e-6,
     "decay_power": 0.8,
 }
@@ -216,9 +212,71 @@ SYSTEM_CONFIG = {
 }
 
 
-def get_total_parts_count() -> int:
-    """获取基础订单的总零件数"""
-    return sum(order["quantity"] for order in BASE_ORDERS)
+# =============================================================================
+# 10. 随机领域生成配置 (Random Domain Generation)
+# =============================================================================
+
+# 随机订单生成参数
+RANDOM_ORDERS_CONFIG = {
+    "min_orders": 5,           # 最少订单数
+    "max_orders": 8,           # 最多订单数
+    "min_quantity_per_order": 3,  # 每个订单最少零件数
+    "max_quantity_per_order": 12, # 每个订单最多零件数
+    "due_date_range": (200.0, 700.0),  # 交期范围
+    "priority_weights": [0.3, 0.5, 0.2],  # 优先级1,2,3的概率权重
+}
+
+def generate_random_orders() -> List[Dict[str, Any]]:
+    """
+    生成随机订单配置，用于泛化能力训练
+    每次调用都会返回一套全新的、随机的订单组合
+    """
+    import random
+    
+    config = RANDOM_ORDERS_CONFIG
+    product_types = list(PRODUCT_ROUTES.keys())
+    
+    # 随机决定订单数量
+    num_orders = random.randint(config["min_orders"], config["max_orders"])
+    
+    generated_orders = []
+    for i in range(num_orders):
+        # 随机选择产品类型
+        product = random.choice(product_types)
+        
+        # 随机订单数量
+        quantity = random.randint(
+            config["min_quantity_per_order"], 
+            config["max_quantity_per_order"]
+        )
+        
+        # 随机优先级（基于权重）
+        priority = random.choices([1, 2, 3], weights=config["priority_weights"])[0]
+        
+        # 随机交期
+        due_date = random.uniform(*config["due_date_range"])
+        
+        generated_orders.append({
+            "product": product,
+            "quantity": quantity,
+            "priority": priority,
+            "due_date": due_date
+        })
+    
+    return generated_orders
+
+
+def get_total_parts_count(orders_list: Optional[List[Dict[str, Any]]] = None) -> int:
+    """
+    获取指定订单列表的总零件数。
+    如果未提供订单列表，则默认计算基础订单 (BASE_ORDERS) 的总数。
+    """
+    if orders_list is None:
+        orders_to_process = BASE_ORDERS
+    else:
+        orders_to_process = orders_list
+    return sum(order["quantity"] for order in orders_to_process)
+
 
 def get_route_for_product(product: str) -> List[Dict[str, Any]]:
     """获取指定产品的工艺路线"""

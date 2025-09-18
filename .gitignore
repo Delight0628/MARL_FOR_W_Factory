@@ -1,9 +1,13 @@
-/INSTALL.md
-/itmustbedone
-/ray_marl_train.py
-/simple_train.py
-/tests
-/test_env.py
-/train_windows.py
-/wsl_setup_guide.md
-/__pycache__
+# 忽略所有文件
+*
+
+# 但不忽略这些文件
+!environments/
+!mappo/
+!auto_train.py
+!advanced_optimization.py
+!debug_marl_behavior.py
+!evaluation.py
+!log_parser.py
+!plotting.py
+!答疑

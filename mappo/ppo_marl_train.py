@@ -34,7 +34,7 @@ sys.path.append(parent_dir)
 from environments.w_factory_env import make_parallel_env, WFactoryEnv
 from environments.w_factory_config import *
 # 🔧 V38 新增：导入任务可行性分析函数
-from environments.w_factory_config import validate_config, get_total_parts_count
+from environments.w_factory_config import validate_config, get_total_parts_count, generate_random_orders
 
 class ExperienceBuffer:
     """🔧 MAPPO经验缓冲区 - 支持全局状态"""
@@ -491,9 +491,25 @@ class SimplePPOTrainer:
             "stagnation_counter": 0,             # 停滞计数器
             "last_stagnation_performance": -1.0, # 上一次停滞时的性能
         }
-        # --- 方案三：新增停滞感知的熵调整所需变量 ---
+        # --- 方案二：升级自适应熵所需变量 ---
         self.epochs_without_improvement = 0
         self.global_best_score_for_entropy = -np.inf
+        self.stagnation_level = 0  # 新增：停滞等级，用于阶梯式提升熵
+        
+        # --- 新增：基础训练 + 随机领域强化 阶段管理 ---
+        self.foundation_training_completed = False  # 基础训练是否完成
+        self.generalization_phase_active = False   # 是否进入泛化强化阶段
+        self.foundation_achievement_count = 0      # 基础训练连续达标次数
+        self.generalization_achievement_count = 0  # 泛化阶段连续达标次数
+        
+        # --- 新增：为新两阶段方案的独立模型保存追踪 ---
+        self.best_score_foundation_phase = -1.0    # 基础训练阶段最佳分数
+        self.best_kpi_foundation_phase = {}         # 基础训练阶段最佳KPI
+        self.best_episode_foundation_phase = -1    # 基础训练阶段最佳回合
+        
+        self.best_score_generalization_phase = -1.0  # 泛化强化阶段最佳分数
+        self.best_kpi_generalization_phase = {}       # 泛化强化阶段最佳KPI
+        self.best_episode_generalization_phase = -1  # 泛化强化阶段最佳回合
         
         # 🔧 V34 初始化动态训练参数
         self.current_entropy_coeff = PPO_NETWORK_CONFIG["entropy_coeff"] # 初始化动态熵系数
@@ -562,6 +578,56 @@ class SimplePPOTrainer:
                     return False, f"连续{improvement_gap}轮无改进，且平均分数低于{target_score*0.8:.3f}", 0
         
         return True, f"当前分数 {current_score:.3f}, 完成率 {completion_rate:.1f}%", 0
+    
+    def check_foundation_training_completion(self, kpi_results: Dict[str, float], current_score: float) -> bool:
+        """检查基础训练是否达到毕业标准，包含延期硬指标"""
+        # 基础训练的目标零件数是固定的
+        total_parts_target = get_total_parts_count() # 默认使用基础订单
+        completion_rate_kpi = (kpi_results.get('mean_completed_parts', 0) / total_parts_target) * 100 if total_parts_target > 0 else 0
+        
+        targets = self.training_targets
+        target_score = targets["target_score"]
+        stability_goal = targets["target_consistency"]
+        tardiness_threshold = targets.get("foundation_training_tardiness_threshold", float('inf'))
+        current_tardiness = kpi_results.get('mean_tardiness', float('inf'))
+
+        conditions_met = {
+            f"完成率达标(>=100%)": completion_rate_kpi >= 100,
+            f"分数达标(>={target_score})": current_score >= target_score,
+            f"延期达标(<={tardiness_threshold}min)": current_tardiness <= tardiness_threshold
+        }
+
+        if all(conditions_met.values()):
+            self.foundation_achievement_count += 1
+            print(f"🎯 基础训练达标: 完成率 {completion_rate_kpi:.1f}%, 分数 {current_score:.3f}, 延期 {current_tardiness:.1f}min (连续第{self.foundation_achievement_count}/{stability_goal}次)")
+        else:
+            if self.foundation_achievement_count > 0:
+                reasons = [k for k, v in conditions_met.items() if not v]
+                print(f"❌ 基础训练连续达标中断. 未达标项: {', '.join(reasons)}")
+            self.foundation_achievement_count = 0
+
+        if self.foundation_achievement_count >= stability_goal:
+            print(f"🏆 基础训练完成！连续{stability_goal}次达到所有标准，准备进入泛化强化阶段。")
+            return True
+        return False
+    
+    def check_generalization_training_completion(self, current_score: float, completion_rate: float) -> bool:
+        """检查泛化训练是否已达到最终训练完成的条件"""
+        targets = self.training_targets
+        target_score = targets["target_score"]
+        
+        # 在泛化阶段，我们对分数要求可以适当放宽，但仍需要合理的完成率
+        if completion_rate >= 85 and current_score >= target_score * 0.9:  # 稍微放宽条件
+            self.generalization_achievement_count += 1
+            print(f"🌟 泛化阶段达标: 完成率 {completion_rate:.1f}% & 分数 {current_score:.3f} (连续第{self.generalization_achievement_count}次)")
+            
+            if self.generalization_achievement_count >= targets["target_consistency"]:
+                print(f"🎉 泛化训练完成！模型已具备优秀的泛化能力。")
+                return True
+        else:
+            self.generalization_achievement_count = 0
+        
+        return False
     
     def create_environment(self, curriculum_stage=None):
         """创建环境（支持课程学习）"""
@@ -922,8 +988,10 @@ class SimplePPOTrainer:
             for episode in range(max_episodes):
                 iteration_start_time = time.time()
                 
-                # 🔧 V17关键修复：课程学习阶段管理
+                # --- 核心创新：基础训练 + 随机领域强化 逻辑 ---
                 current_curriculum_config = None
+                
+                # 首先处理课程学习逻辑（如果启用）
                 if curriculum_enabled:
                     stage_config = CURRICULUM_CONFIG["stages"][current_stage]
                     
@@ -1043,6 +1111,53 @@ class SimplePPOTrainer:
                         print(f"   当前难度: {int(get_total_parts_count() * stage['orders_scale'])}零件, {stage['time_scale']:.1f}x时间")    
                     stage_episode_count += 1
                 
+                # --- 核心创新：基础训练 + 随机领域强化 叠加逻辑 ---
+                # 无论是否使用课程学习，都要经过这个额外的两阶段认证
+                
+                if not self.foundation_training_completed:
+                    # 阶段1：基础能力训练阶段
+                    # 强制使用BASE_ORDERS进行训练，直到模型达到基础能力标准
+                    foundation_config = {
+                        'orders_scale': 1.0,
+                        'time_scale': 1.0,
+                        'stage_name': '基础能力认证',
+                        'custom_orders': BASE_ORDERS,
+                        'disable_failures': True
+                    }
+                    
+                    # 如果已有课程学习的配置，则基础训练阶段会覆盖它
+                    current_curriculum_config = foundation_config
+                    
+                    if episode % 20 == 0:
+                        print(f"📚 基础训练阶段: 连续达标 {self.foundation_achievement_count}/{self.training_targets['target_consistency']} 次")
+                
+                elif not self.generalization_phase_active:
+                    # 基础训练刚完成，准备进入泛化阶段
+                    self.generalization_phase_active = True
+                    print("\n" + "="*80)
+                    print(f"🚀 [回合 {episode+1}] 基础训练已完成，正式进入随机领域强化阶段!")
+                    print("   每轮将使用全新的随机订单配置，并启用环境扰动。")
+                    print("   这将全面锻炼模型的泛化能力和鲁棒性。")
+                    print("="*80 + "\n")
+                
+                if self.generalization_phase_active:
+                    # 阶段2：随机领域强化阶段
+                    # 每轮生成全新的随机订单配置
+                    random_orders = generate_random_orders()
+                    generalization_config = {
+                        'custom_orders': random_orders,
+                        'randomize_env': True,  # 启用环境扰动
+                        'stage_name': f'随机领域强化-R{episode}',
+                        'disable_failures': True
+                    }
+                    
+                    current_curriculum_config = generalization_config
+                    
+                    if episode % 20 == 0:
+                        total_parts = sum(order["quantity"] for order in random_orders)
+                        print(f"🎲 随机领域强化: 本轮{len(random_orders)}个订单，共{total_parts}个零件")
+                        print(f"   泛化阶段连续达标: {self.generalization_achievement_count}/{self.training_targets['target_consistency']} 次")
+                
 
                 collect_start_time = time.time()
                 episode_reward = self.collect_experience_parallel(buffers, steps_per_episode, current_curriculum_config)
@@ -1067,28 +1182,62 @@ class SimplePPOTrainer:
                 # 🔧 核心改造：计算当前回合的综合评分
                 current_score = self._calculate_score(kpi_results, current_curriculum_config)
                 
-                # --- 方案三：实现停滞感知的自适应熵调整 ---
-                if kpi_results['mean_completed_parts'] >= get_total_parts_count() * 0.98: # 仅在高完成率时应用
-                    if current_score > self.global_best_score_for_entropy:
-                        self.global_best_score_for_entropy = current_score
-                        self.epochs_without_improvement = 0
-                    else:
-                        self.epochs_without_improvement += 1
-                    
-                    if self.epochs_without_improvement > 20: # 超过25轮没进步
-                        self.current_entropy_coeff = min(self.current_entropy_coeff * 1.1, PPO_NETWORK_CONFIG["entropy_coeff"])
-                        print(f"📈 性能停滞 {self.epochs_without_improvement} 回合, 提升熵至 {self.current_entropy_coeff:.4f} 以鼓励探索!")
-                        self.epochs_without_improvement = 0 # 重置计数器
-                    else:
-                        # 正常衰减
-                        self.current_entropy_coeff *= 0.995
-                elif kpi_results['mean_completed_parts'] < get_total_parts_count() * 0.8: # 完成率低时增加探索
-                    self.current_entropy_coeff = min(
-                        PPO_NETWORK_CONFIG["entropy_coeff"] * 1.2,
-                        self.current_entropy_coeff * 1.02
-                    )
+                # --- 核心创新：检查阶段转换和训练完成条件 ---
+                target_parts_for_check = self._get_target_parts(current_curriculum_config)
                 
-                # 确保熵不会低于最小值
+                completion_rate_for_check = (kpi_results.get('mean_completed_parts', 0) / target_parts_for_check) * 100 if target_parts_for_check > 0 else 0
+                
+                # 检查基础训练是否完成
+                if not self.foundation_training_completed:
+                    if self.check_foundation_training_completion(kpi_results, current_score):
+                        self.foundation_training_completed = True
+                
+                # 检查泛化训练是否完成（这将触发整个训练的结束）
+                training_should_end = False
+                if self.generalization_phase_active:
+                    if self.check_generalization_training_completion(current_score, completion_rate_for_check):
+                        training_should_end = True
+                
+                # --- 修复方案二：修正自适应熵的触发与重置逻辑 ---
+                # 1. 默认情况下，每个回合都增加停滞计数
+                self.epochs_without_improvement += 1
+                
+                # 2. 只有在保存新的全局最佳模型时，才重置停滞计数器
+                # （注意：这个逻辑将在模型保存部分处理）
+                
+                # 3. 自适应熵调整逻辑（修正版）
+                # 修复：使用简化的硬编码配置，避免依赖不存在的ADAPTIVE_ENTROPY_CONFIG
+                adaptive_entropy_enabled = True  # 默认启用
+                start_episode = 10  # 第10回合后开始
+                patience = 20  # 20回合停滞后触发
+                boost_factor = 0.2  # 每次提升20%
+                
+                if adaptive_entropy_enabled and episode > start_episode:
+                    # 当前的完成率，用于判断是否需要降低熵
+                    target_parts_for_entropy = self._get_target_parts(current_curriculum_config)
+                    completion_rate_for_entropy = kpi_results['mean_completed_parts'] / (target_parts_for_entropy + 1e-6)
+
+                    # 检查是否停滞
+                    if self.epochs_without_improvement >= patience:
+                        self.stagnation_level += 1
+                        boost_multiplier = 1.0 + boost_factor * self.stagnation_level
+                        self.current_entropy_coeff = min(
+                            self.current_entropy_coeff * boost_multiplier,
+                            PPO_NETWORK_CONFIG["entropy_coeff"] * 5 # 设置一个硬上限，例如原始的5倍
+                        )
+                        print(f"📈 停滞等级 {self.stagnation_level}! 性能已停滞 {self.epochs_without_improvement} 回合。")
+                        print(f"   采取强力措施: 将熵提升至 {self.current_entropy_coeff:.4f} (提升因子: {boost_multiplier:.2f})")
+                        # 核心修复：重置计数器，给予模型适应新熵值的窗口期
+                        self.epochs_without_improvement = 0
+                    
+                    # 如果完成率很高，可以适当降低熵以进行微调
+                    elif completion_rate_for_entropy > 0.95:
+                        self.current_entropy_coeff = max(
+                            self.current_entropy_coeff * 0.999,
+                            0.005  # 最小熵值
+                        )
+                
+                # 确保熵不会低于设定的最小值
                 self.current_entropy_coeff = max(self.current_entropy_coeff, 0.005)
 
                 
@@ -1132,39 +1281,14 @@ class SimplePPOTrainer:
                             
                             self.train_writer.flush()
                 
-                # 🔧 核心改造：动态早停逻辑 - 在完成"完整挑战"阶段的指定轮数后，才开始评估
-                should_continue = True
-                reason = "继续训练"
-                estimated_remaining = 0
+                # --- 核心创新：新的训练结束逻辑 ---
+                if training_should_end:
+                    print(f"\n🎉 训练完成！模型已通过基础训练和泛化强化两个阶段的认证。")
+                    break
                 
-                # 检查是否在最终阶段（完整挑战）
-                is_final_stage = curriculum_enabled and (current_stage == len(CURRICULUM_CONFIG["stages"]) - 1)
-                
-                if is_final_stage:
-                    # 获取最终阶段必须完成的课程轮数
-                    final_stage_iterations = CURRICULUM_CONFIG["stages"][-1].get("iterations", 100)
-                    
-                    # --- 方案三：启用环境随机性 ---
-                    # 在最终挑战阶段引入随机性，强制模型学习泛化
-                    if stage_episode_count > final_stage_iterations / 2: # 在后半段引入
-                         if current_curriculum_config:
-                            current_curriculum_config['randomize_env'] = True
-
-                    # 只有在完成了最终阶段的指定课程轮数后，才开始早停评估
-                    if stage_episode_count > final_stage_iterations:
-                        completion_rate_check = (kpi_results.get('mean_completed_parts', 0) / get_total_parts_count()) * 100
-                        should_continue, reason, estimated_remaining = self.should_continue_training(episode + 1, current_score, completion_rate_check)
-                        
-                        # 每10轮打印一次早停评估状态
-                        if episode % 10 == 0:
-                            print(f"📊 最终阶段早停评估: {reason}")
-                    else:
-                        remaining_curriculum_eps = final_stage_iterations - stage_episode_count
-                        reason = f"最终阶段课程还需 {remaining_curriculum_eps} 轮"
-                
-                # 🔧 V31 关键：检查是否应该提前结束训练
-                if not should_continue:
-                    print(f"\n🏁 自适应训练提前结束: {reason}")
+                # 检查最大轮数限制
+                if episode >= max_episodes - 1:
+                    print(f"\n⏰ 达到最大训练轮数 {max_episodes}，训练结束。")
                     break
                 
                 # 🔧 V36 新增：记录当前课程阶段信息供其他方法使用
@@ -1182,10 +1306,6 @@ class SimplePPOTrainer:
                 if len(self._performance_history) > 20:
                     self._performance_history.pop(0)
                 
-                # 🔧 V31 关键：检查是否应该提前结束训练
-                if not should_continue:
-                    print(f"\n🏁 自适应训练提前结束: {reason}")
-                    break
                 
                 # 🔧 V38修复：每30回合进行一次完整难度评估（静默模式，避免输出污染）
                 if episode > 0 and episode % 30 == 0:
@@ -1253,71 +1373,92 @@ class SimplePPOTrainer:
                 if current_score > self.best_score:
                     self.best_score = current_score
 
-                # 2. 更新课程各阶段最佳分数并保存模型
-                if curriculum_enabled:
+                # === 核心重构：模型保存逻辑 ===
+                
+                # 1. 两阶段训练的独立模型保存
+                model_update_info = ""
+                phase_model_saved = False
+                if not self.foundation_training_completed:
+                    # 基础训练阶段的模型保存
+                    if current_score > self.best_score_foundation_phase:
+                        self.best_score_foundation_phase = current_score
+                        self.best_kpi_foundation_phase = kpi_results.copy()
+                        self.best_episode_foundation_phase = episode + 1
+                        model_path = self.save_model(f"{self.models_dir}/{timestamp}_基础训练阶段最佳")
+                        if model_path:
+                            model_update_info = f"✅ 基础训练阶段最佳! 模型保存至: {model_path}"
+                            phase_model_saved = True
+                elif self.generalization_phase_active:
+                    # 泛化强化阶段的模型保存
+                    if current_score > self.best_score_generalization_phase:
+                        self.best_score_generalization_phase = current_score
+                        self.best_kpi_generalization_phase = kpi_results.copy()
+                        self.best_episode_generalization_phase = episode + 1
+                        model_path = self.save_model(f"{self.models_dir}/{timestamp}_泛化强化阶段最佳")
+                        if model_path:
+                            model_update_info = f"🏆 泛化强化阶段最佳! 模型保存至: {model_path}"
+                            phase_model_saved = True
+
+                # 2. 课程学习各阶段最佳分数保存模型（仅在课程学习启用且两阶段模型未保存时执行）
+                if not phase_model_saved and curriculum_enabled:
                     if current_score > stage_best_scores[current_stage]:
                         stage_best_scores[current_stage] = current_score
                         stage_name = current_curriculum_config['stage_name'].replace(" ", "_")
                         model_path = self.save_model(f"{self.models_dir}/{timestamp}_{stage_name}_best")
                         if model_path:
                             stage_display_name = current_curriculum_config['stage_name']
-                            model_update_info = f"✅ {stage_display_name}阶段最佳得分刷新，模型已保存至: {model_path}"
-
-                    # 3. 如果是最终阶段，则更新"最终阶段最佳模型"
-                    if current_stage == len(CURRICULUM_CONFIG["stages"]) - 1:
-                        if current_score > self.final_stage_best_score:
-                            self.final_stage_best_score = current_score
-                            self.final_stage_best_kpi = kpi_results.copy()
-                            self.final_stage_best_episode = episode + 1 # 🔧 记录最佳KPI的回合数
-                            final_model_path = self.save_model(f"{self.models_dir}/{timestamp}_完整挑战最佳")
-                            model_update_info = f" 🏆最终阶段最佳! 模型保存至: {final_model_path}"
+                            model_update_info = f"✅ {stage_display_name}阶段最佳! 模型保存至: {model_path}"
+                
+                # 3. 全局"双达标"最佳模型保存（独立于所有其他逻辑）
+                #    首先，获取当前回合的正确目标零件数
+                target_parts_for_dual_check = self._get_target_parts(current_curriculum_config)
+                
+                completion_rate_kpi = (kpi_results.get('mean_completed_parts', 0) / target_parts_for_dual_check) * 100 if target_parts_for_dual_check > 0 else 0
+                
+                dual_objective_model_update_info = ""
+                if completion_rate_kpi >= 100 and current_score > self.best_score_dual_objective:
+                    self.best_score_dual_objective = current_score
+                    self.best_kpi_dual_objective = kpi_results.copy()
+                    self.best_episode_dual_objective = episode + 1
+                    dual_objective_best_path = self.save_model(f"{self.models_dir}/{timestamp}完成所有零件得分最佳")
+                    if dual_objective_best_path:
+                        dual_objective_model_update_info = f" ⭐完成所有零件得分最佳!模型保存至: {dual_objective_best_path}"
                         
-                        # 🔧 核心改造：检查并更新"双达标"最佳模型
-                        completion_rate_kpi = (kpi_results.get('mean_completed_parts', 0) / get_total_parts_count()) * 100
-                        if completion_rate_kpi >= 100 and current_score > self.best_score_dual_objective:
-                            self.best_score_dual_objective = current_score
-                            self.best_kpi_dual_objective = kpi_results.copy()
-                            self.best_episode_dual_objective = episode + 1
-                            dual_objective_best_path = self.save_model(f"{self.models_dir}/{timestamp}完成所有零件得分最佳")
-                            model_update_info = f" ⭐完成所有零件得分最佳!模型保存至: {dual_objective_best_path}"
+                        # 修复方案二：在这里重置停滞计数器（只有全局最佳模型保存时）
+                        print(f"🎉 新的全局最佳模型! 重置停滞计数。")
+                        self.epochs_without_improvement = 0
+                        self.stagnation_level = 0  # 创下新高，"警报"解除
+                
+                # ------------------- 统一日志输出开始 -------------------
 
-                else: # 非课程学习模式
-                    # 在非课程学习模式下，我们将训练视为一个单一的"最终挑战"阶段
-                    # 1. 更新"最终挑战"最佳模型 (等同于全局最佳)
-                    if current_score > self.final_stage_best_score:
-                        self.final_stage_best_score = current_score
-                        self.final_stage_best_kpi = kpi_results.copy()
-                        self.final_stage_best_episode = episode + 1 # 记录最佳KPI的回合数
-                        final_model_path = self.save_model(f"{self.models_dir}/{timestamp}_完整挑战最佳")
-                        if final_model_path:
-                            model_update_info = f" 🏆全局最佳! 模型保存至: {final_model_path}"
-                    
-                    # 2. 检查并更新"双达标"最佳模型
-                    completion_rate_kpi = (kpi_results.get('mean_completed_parts', 0) / get_total_parts_count()) * 100
-                    if completion_rate_kpi >= 100 and current_score > self.best_score_dual_objective:
-                        self.best_score_dual_objective = current_score
-                        self.best_kpi_dual_objective = kpi_results.copy()
-                        self.best_episode_dual_objective = episode + 1
-                        dual_objective_best_path = self.save_model(f"{self.models_dir}/{timestamp}完成所有零件得分最佳")
-                        if dual_objective_best_path:
-                            model_update_info = f" ⭐完成所有零件得分最佳!模型保存至: {dual_objective_best_path}"
-                
-                # 🔧 V33 优化：严格按照用户要求的日志格式
-                # 第一行：回合信息和性能数据
+                 # 第一行：回合信息和性能数据
                 line1 = f"🔂 回合 {episode + 1:3d}/{max_episodes} | 奖励: {episode_reward:.1f} | Actor损失: {losses['actor_loss']:.4f}| ⏱️本轮用时: {iteration_duration:.1f}s (CPU采集: {collect_duration:.1f}s, GPU更新: {update_duration:.1f}s)"
+
+                # 第二行：KPI数据和阶段信息 (核心修复：动态显示目标零件数)
+                target_parts_for_log = self._get_target_parts(current_curriculum_config)
+                stage_info_str = ""
+                if current_curriculum_config and 'stage_name' in current_curriculum_config:
+                    stage_info_str = f"   | 阶段: '{current_curriculum_config['stage_name']}'"
                 
-                # 第二行：KPI数据和阶段信息
-                target_parts_str = f"/{int(get_total_parts_count() * current_curriculum_config['orders_scale'])}" if curriculum_enabled and current_curriculum_config else f"/{get_total_parts_count()}"
-                stage_info = f"   | 阶段：'{current_curriculum_config['stage_name']}'" if curriculum_enabled and current_curriculum_config else ""
-                line2 = f"📊 KPI - 总完工时间: {makespan:.1f}min  | 设备利用率: {utilization:.1%} | 延期时间: {tardiness:.1f}min |  完成零件数: {completed_parts:.0f}{target_parts_str}{stage_info}"
-                
+                target_parts_str = f"/{target_parts_for_log}"
+                line2 = f"📊 KPI - 总完工时间: {makespan:.1f}min  | 设备利用率: {utilization:.1%} | 延期时间: {tardiness:.1f}min |  完成零件数: {completed_parts:.0f}{target_parts_str}{stage_info_str}"
+
                 # 第三行：评分和模型更新信息
+                phase_best_str = ""
+                if not self.foundation_training_completed:
+                    phase_best_str = f" (基础阶段最佳: {self.best_score_foundation_phase:.3f})"
+                elif self.generalization_phase_active:
+                    phase_best_str = f" (泛化阶段最佳: {self.best_score_generalization_phase:.3f})"
+                
                 if curriculum_enabled:
-                    stage_best_str = f" (阶段最佳: {stage_best_scores[current_stage]:.3f})"
-                    line3_score = f"🚥 回合评分: {current_score:.3f} (全局最佳: {self.best_score:.3f}){stage_best_str}"
+                    stage_best_str = f" (课程阶段最佳: {stage_best_scores[current_stage]:.3f})"
+                    line3_score = f"🚥 回合评分: {current_score:.3f} (全局最佳: {self.best_score:.3f}){phase_best_str}{stage_best_str}"
                 else:
-                    line3_score = f"🚥 回合评分: {current_score:.3f} (全局最佳: {self.best_score:.3f})"
-                line3 = f"{line3_score}{model_update_info}" if model_update_info else line3_score
+                    line3_score = f"🚥 回合评分: {current_score:.3f} (全局最佳: {self.best_score:.3f}){phase_best_str}"
+                
+                # 合并所有模型更新信息
+                combined_model_info = model_update_info + dual_objective_model_update_info
+                line3 = f"{line3_score}{combined_model_info}" if combined_model_info else line3_score
 
                 avg_time = np.mean(self.iteration_times)
                 remaining_episodes = max_episodes - (episode + 1)
@@ -1380,6 +1521,72 @@ class SimplePPOTrainer:
             print(f"   总延期时间: {best_kpi.get('mean_tardiness', 0):.1f} 分钟")
             print("="*40)
             
+            # --- 核心修复：输出每个阶段的最佳KPI ---
+            print("\n" + "="*40)
+            print("🏆 各阶段最佳KPI表现 🏆")
+            print("="*40)
+
+            # 基础训练阶段最佳
+            if self.best_episode_foundation_phase != -1:
+                print("\n--- 基础训练阶段 ---")
+                best_kpi = self.best_kpi_foundation_phase
+                target_parts = get_total_parts_count()
+                completion_rate = (best_kpi.get('mean_completed_parts', 0) / target_parts) * 100 if target_parts > 0 else 0
+                print(f"   (在第 {self.best_episode_foundation_phase} 回合取得)")
+                print(f"   完成零件: {best_kpi.get('mean_completed_parts', 0):.1f} / {target_parts} ({completion_rate:.1f}%)")
+                print(f"   总完工时间: {best_kpi.get('mean_makespan', 0):.1f} 分钟")
+                print(f"   设备利用率: {best_kpi.get('mean_utilization', 0):.1%}")
+                print(f"   总延期时间: {best_kpi.get('mean_tardiness', 0):.1f} 分钟")
+                print(f"   综合评分: {self.best_score_foundation_phase:.3f}")
+
+            # 泛化强化阶段最佳
+            if self.best_episode_generalization_phase != -1:
+                print("\n--- 泛化强化阶段 ---")
+                best_kpi = self.best_kpi_generalization_phase
+                # 注意：泛化阶段的目标零件数是动态的，此处仅为参考
+                print(f"   (在第 {self.best_episode_generalization_phase} 回合取得)")
+                print(f"   完成零件: {best_kpi.get('mean_completed_parts', 0):.1f}")
+                print(f"   总完工时间: {best_kpi.get('mean_makespan', 0):.1f} 分钟")
+                print(f"   设备利用率: {best_kpi.get('mean_utilization', 0):.1%}")
+                print(f"   总延期时间: {best_kpi.get('mean_tardiness', 0):.1f} 分钟")
+                print(f"   综合评分: {self.best_score_generalization_phase:.3f}")
+            
+            # 新增：如果启用了课程学习，则展示每个课程阶段的最佳分数
+            if curriculum_enabled:
+                 print("\n--- 课程学习各阶段最佳分数 ---")
+                 for i, score in enumerate(stage_best_scores):
+                     if score != -1.0:
+                         stage_name = CURRICULUM_CONFIG["stages"][i]['name']
+                         print(f"   阶段 '{stage_name}': {score:.3f}")
+                     else:
+                         stage_name = CURRICULUM_CONFIG["stages"][i]['name']
+                         print(f"   阶段 '{stage_name}': 未记录最佳分数")
+
+
+            # 最终黄金标准：双达标模型
+            print("\n" + "="*40)
+            print("⭐ 最终黄金标准模型 (完成所有零件且得分最高) ⭐")
+            print("="*40)
+            
+            if self.best_episode_dual_objective != -1:
+                best_kpi = self.best_kpi_dual_objective
+                best_episode_to_report = self.best_episode_dual_objective
+                
+                # 在双达标的情况下，目标零件数是确定的
+                target_parts_final = get_total_parts_count()
+                completion_rate_final = (best_kpi.get('mean_completed_parts', 0) / target_parts_final) * 100 if target_parts_final > 0 else 0
+            
+                print(f"   (在第 {best_episode_to_report} 回合取得)") 
+                print(f"   完成零件: {best_kpi.get('mean_completed_parts', 0):.1f} / {target_parts_final} ({completion_rate_final:.1f}%)")
+                print(f"   总完工时间: {best_kpi.get('mean_makespan', 0):.1f} 分钟")
+                print(f"   设备利用率: {best_kpi.get('mean_utilization', 0):.1%}")
+                print(f"   总延期时间: {best_kpi.get('mean_tardiness', 0):.1f} 分钟")
+                print(f"   综合评分: {self.best_score_dual_objective:.3f}")
+            else:
+                print("   ⚠️ 本次训练未产生满足'完成所有零件'条件的最佳模型。")
+
+            print("="*40)
+            
             return {
                 'training_time': total_training_time,
                 'kpi_history': self.kpi_history,
@@ -1435,6 +1642,19 @@ class SimplePPOTrainer:
             utilization_score * 0.1
         )
         return current_score
+
+    def _get_target_parts(self, curriculum_config: Optional[Dict]) -> int:
+        """统一获取当前回合的目标零件数"""
+        if curriculum_config and 'custom_orders' in curriculum_config:
+            # 泛化阶段或自定义订单
+            return get_total_parts_count(curriculum_config['custom_orders'])
+        elif curriculum_config and 'orders_scale' in curriculum_config:
+            # 课程学习阶段
+            base_parts = get_total_parts_count()
+            return int(base_parts * curriculum_config['orders_scale'])
+        else:
+            # 默认或基础训练阶段
+            return get_total_parts_count()
 
 def main():
     

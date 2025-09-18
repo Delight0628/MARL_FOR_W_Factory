@@ -443,8 +443,8 @@ class WFactorySim:
                 slack = calculate_slack_time(part, self.env.now)
                 # 将slack归一化，负数代表非常紧急，我们用一个sigmoid函数将其映射到0-1之间
                 # slack越小，值越接近1 (越紧急)
-                urgency_score = 1 / (1 + np.exp(slack / 100.0)) # 100是一个缩放因子，可调
-                state_features.append(urgency_score)
+                normalized_slack = np.clip(slack / 300.0, -1.0, 1.0)
+                state_features.append(normalized_slack)
             else:
                 state_features.extend([0.0] * 6) # 方案二：扩展到6个特征
         
@@ -458,12 +458,25 @@ class WFactorySim:
             else:
                 state_features.append(0.0)
         
-        # 🔧 新增：全局信息
-        # time_progress = self.env.now / SIMULATION_TIME
-        # state_features.append(time_progress)
-        
-        # completion_rate = len(self.completed_parts) / (sum(o.quantity for o in self.orders) + 1e-6)
-        # state_features.append(completion_rate)
+        # --- 方案一：注入全局状态信息 ---
+        # 特征f: 归一化的时间进度
+        time_progress = self.env.now / SIMULATION_TIME
+        state_features.append(time_progress)
+
+        # 特征g: 归一化的整体在制品（WIP）水平
+        total_parts_in_system = sum(order.quantity for order in self.orders)
+        if total_parts_in_system > 0:
+            wip_ratio = len(self.active_parts) / total_parts_in_system
+        else:
+            wip_ratio = 0.0
+        state_features.append(wip_ratio)
+
+        # 特征h: 归一化的整体完成率
+        if total_parts_in_system > 0:
+            completion_ratio = len(self.completed_parts) / total_parts_in_system
+        else:
+            completion_ratio = 0.0
+        state_features.append(completion_ratio)
 
         return np.array(state_features, dtype=np.float32)
 
@@ -625,17 +638,33 @@ class WFactorySim:
 
             if action > 0:  # 工作
                 if work_is_available:
-                    rewards[agent_id] += REWARD_CONFIG["work_bonus"]
-                    # --- 方案一：实现紧急零件奖励 ---
+                    # rewards[agent_id] += REWARD_CONFIG["work_bonus"] # 移动到下面
+                    # --- 方案一：实施紧急零件奖励 ---
                     chosen_part_index = action - 1
                     if chosen_part_index < len(queue_items):
-                        # 计算队列中所有零件的slack time
-                        slacks = [calculate_slack_time(p, self.current_time) for p in queue_items]
-                        if slacks:
-                            most_urgent_part_index = np.argmin(slacks)
-                            # 如果选择的就是最紧急的零件，给予奖励
-                            if chosen_part_index == most_urgent_part_index:
-                                rewards[agent_id] += REWARD_CONFIG.get("urgent_part_bonus", 0.0)
+                       # --- 新增：工作奖励现在只有在成功选择一个有效零件时才给予 ---
+                       rewards[agent_id] += REWARD_CONFIG["work_bonus"]
+                       
+                       chosen_part = queue_items[chosen_part_index]
+                       slack = calculate_slack_time(chosen_part, self.current_time)
+
+                       # --- 方案一：实施比例化奖惩 ---
+                       if slack > 0:
+                           # 奖励与提前量成正比
+                           rewards[agent_id] += slack * REWARD_CONFIG.get("slack_time_reward_multiplier", 0.0)
+                       else:
+                           # 惩罚与延期量成正比 (slack为负)
+                           rewards[agent_id] += slack * REWARD_CONFIG.get("lateness_penalty_multiplier", 0.0)
+
+                       # --- 方案一：实施最优选择激励 ---
+                       slacks_in_queue = [calculate_slack_time(p, self.current_time) for p in queue_items]
+                       if slacks_in_queue:
+                           most_urgent_part_index = np.argmin(slacks_in_queue)
+                           if chosen_part_index == most_urgent_part_index:
+                               # 奖励的大小与最紧急零件的“火烧眉毛”程度成正比
+                               urgency_level = max(0, -slacks_in_queue[most_urgent_part_index] / 100.0) # 用100来缩放
+                               bonus = urgency_level * REWARD_CONFIG.get("urgency_bonus_scaler", 0.0)
+                               rewards[agent_id] += bonus
             else:  # 闲置
                 if work_is_available:
                     rewards[agent_id] += REWARD_CONFIG["idle_penalty"]
@@ -649,12 +678,15 @@ class WFactorySim:
             
             # 组件a: 完成率 & 完工大奖
             if completion_rate >= 100:
-                final_reward_component += 100 * REWARD_CONFIG["final_completion_bonus_per_percent"]
+                # 移除对旧配置项的依赖
+                # final_reward_component += 100 * REWARD_CONFIG["final_completion_bonus_per_percent"]
                 # 发放巨额的“完工大奖”
                 final_reward_component += REWARD_CONFIG.get("final_all_parts_completion_bonus", 500.0)
             else:
-                incomplete_percent = 100 - completion_rate
-                final_reward_component += incomplete_percent * REWARD_CONFIG["final_incompletion_penalty_per_percent"]
+                # 简化逻辑，如果未完成，则不发放完工大奖，依赖其他惩罚项
+                # incomplete_percent = 100 - completion_rate
+                # final_reward_component += incomplete_percent * REWARD_CONFIG["final_incompletion_penalty_per_percent"]
+                pass # 依赖延期惩罚，不再需要专门的未完成惩罚
             
             # 组件b: 延期 (Tardiness) - 综合计算所有订单
             total_tardiness = 0
