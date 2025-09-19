@@ -9,6 +9,7 @@ import numpy as np
 import tensorflow as tf
 from collections import Counter
 import argparse
+import random # 统一随机种子
 
 # 添加环境路径
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -20,18 +21,102 @@ from evaluation import (
     STATIC_EVAL_CONFIG, 
     GENERALIZATION_CONFIG_1, GENERALIZATION_CONFIG_2, GENERALIZATION_CONFIG_3
 )
+# 导入配置以解码观测向量和动作
+from environments.w_factory_config import (
+    WORKSTATIONS,
+    PRODUCT_ROUTES,
+    ENHANCED_OBS_CONFIG,
+    ACTION_CONFIG_ENHANCED,
+    RANDOM_SEED
+)
 
-def debug_marl_actions(model_path: str, config: dict, max_steps: int = 600, deterministic: bool = False):
+
+def decode_observation(obs_vector: np.ndarray, agent_id: str) -> str:
+    """将扁平的观测向量解码为人类可读的格式"""
+    if obs_vector is None or obs_vector.size == 0:
+        return "  - 观测向量为空"
+
+    decoded_lines = ["[Observation Vector]"]
+    station_name = agent_id.replace("agent_", "")
+    
+    station_types = list(WORKSTATIONS.keys())
+    product_types = list(PRODUCT_ROUTES.keys())
+    num_stations = len(station_types)
+    top_n = ENHANCED_OBS_CONFIG["top_n_parts"]
+    part_features_count = 6 # 根据get_state_for_agent的定义，每个零件有6个特征
+    
+    current_idx = 0
+
+    try:
+        # 1. Agent ID
+        agent_id_one_hot = obs_vector[current_idx : current_idx + num_stations]
+        station_idx = np.argmax(agent_id_one_hot)
+        decoded_lines.append(f"  - 智能体身份: {station_types[station_idx]} (one-hot)")
+        current_idx += num_stations
+
+        # 2. Workstation capacity
+        capacity = obs_vector[current_idx] * 5.0
+        decoded_lines.append(f"  - 工作站容量: {capacity:.1f}")
+        current_idx += 1
+        
+        # 3. Equipment status
+        busy_ratio = obs_vector[current_idx]
+        is_failed = obs_vector[current_idx + 1] > 0.5
+        decoded_lines.append(f"  - 设备状态: [繁忙率: {busy_ratio:.1%}, 是否故障: {'是' if is_failed else '否'}]")
+        current_idx += 2
+        
+        # 4. Queue details
+        decoded_lines.append("  - 队列零件 (前N个):")
+        for i in range(top_n):
+            part_vec = obs_vector[current_idx : current_idx + part_features_count]
+            if np.any(part_vec != 0):
+                rem_time, urgency, priority, is_last, prod_type_enc, slack = part_vec
+                
+                # 解码产品类型
+                prod_idx = int(round(prod_type_enc * len(product_types) - 1))
+                product_name = product_types[prod_idx] if 0 <= prod_idx < len(product_types) else "未知"
+
+                decoded_lines.append(
+                    f"    {i+1}. {product_name}: [剩余时间: {rem_time:.1%}, 紧急度: {urgency:.2f}, "
+                    f"优先级: {priority*5.0:.1f}, 终点站: {'是' if is_last > 0.5 else '否'}, 松弛时间: {slack*300.0:.1f}]"
+                )
+            else:
+                decoded_lines.append(f"    {i+1}. (空)")
+            current_idx += part_features_count
+        
+        # 5. Downstream info
+        if ENHANCED_OBS_CONFIG["include_downstream_info"]:
+            downstream_queue = obs_vector[current_idx]
+            decoded_lines.append(f"  - 下游队列占用率: {downstream_queue:.1%}")
+            current_idx += 1
+        
+        # 6. Global info
+        time_prog, wip_ratio, completion_ratio = obs_vector[current_idx : current_idx + 3]
+        decoded_lines.append(f"  - 全局信息: [时间进度: {time_prog:.1%}, WIP率: {wip_ratio:.1%}, 完成率: {completion_ratio:.1%}]")
+        current_idx += 3
+
+    except IndexError:
+        decoded_lines.append("  - (观测向量维度不匹配，部分信息无法解析)")
+    except Exception as e:
+        decoded_lines.append(f"  - (解析时发生未知错误: {e})")
+
+    return "\n".join(decoded_lines)
+
+def debug_marl_actions(model_path: str, config: dict, max_steps: int = 600, deterministic: bool = False, snapshot_interval: int = 100, seed: int = 42):
     """
     调试MARL模型的动作输出模式。
     
     新增功能:
     - 可选择确定性策略或与evaluation.py对齐的随机策略。
     - 更具体的模型加载异常处理。
+    - 可视化智能体观测向量(视野)。
+    - 定期输出KPI快照。
+    - 统一随机种子。
     """
     print(f"🔍 开始调试MARL模型行为")
     print(f"📋 配置: {config.get('stage_name', '未知')}")
     print(f"🕹️  策略: {'确定性 (Greedy)' if deterministic else '随机 (与evaluation.py对齐)'}")
+    print(f"🌱 随机种子: {seed}")
     
     # 加载模型
     try:
@@ -51,7 +136,7 @@ def debug_marl_actions(model_path: str, config: dict, max_steps: int = 600, dete
 
     # 创建环境
     env = WFactoryEnv(config=config)
-    obs, info = env.reset(seed=42)
+    obs, info = env.reset(seed=seed)
     
     print(f"🏭 环境信息:")
     print(f"   智能体数量: {len(env.agents)}")
@@ -73,8 +158,15 @@ def debug_marl_actions(model_path: str, config: dict, max_steps: int = 600, dete
                 
                 # 显示前几步的详细信息
                 if step_count < 5:
-                    print(f"   步骤{step_count+1} {agent}: 概率分布 {action_probs[0].numpy()}")
-                
+                    print(f"\n--- 步骤 {step_count+1}: {agent} ---")
+                    # 解码并打印观测向量
+                    decoded_obs_str = decode_observation(obs[agent], agent)
+                    print(decoded_obs_str)
+                    # 打印动作概率
+                    print(f"[Action Probs]")
+                    prob_str = ", ".join([f"{ACTION_CONFIG_ENHANCED['action_names'][i]}: {p:.2%}" for i, p in enumerate(action_probs[0].numpy())])
+                    print(f"  - {prob_str}")
+
                 if deterministic:
                     # 确定性策略：总是选择概率最高的动作
                     action = int(tf.argmax(action_probs[0]))
@@ -92,6 +184,16 @@ def debug_marl_actions(model_path: str, config: dict, max_steps: int = 600, dete
         obs, rewards, terminations, truncations, info = env.step(actions)
         step_count += 1
         
+        # KPI快照
+        if step_count > 0 and snapshot_interval > 0 and step_count % snapshot_interval == 0:
+            print(f"\n--- 📈 KPI 快照 (第 {step_count} 步) ---")
+            current_stats = env.sim.get_final_stats()
+            print(f"   完成零件: {current_stats.get('total_parts', 0)}")
+            print(f"   在制品(WIP): {len(env.sim.active_parts)}")
+            print(f"   累计延期: {current_stats.get('total_tardiness', 0):.1f}")
+            print(f"   当前利用率: {current_stats.get('mean_utilization', 0):.1%}")
+            print("-" * 35)
+
         # 检查是否结束
         if any(terminations.values()) or any(truncations.values()):
             print(f"🏁 环境在第{step_count}步结束")
@@ -106,7 +208,8 @@ def debug_marl_actions(model_path: str, config: dict, max_steps: int = 600, dete
         total_actions = sum(action_stats[agent].values())
         for action, count in sorted(action_stats[agent].items()):
             percentage = (count / total_actions) * 100 if total_actions > 0 else 0
-            action_name = "IDLE" if action == 0 else f"处理零件{action}"
+            # 使用配置中的动作名称
+            action_name = ACTION_CONFIG_ENHANCED["action_names"][action] if action < len(ACTION_CONFIG_ENHANCED["action_names"]) else f"未知动作{action}"
             print(f"   动作{action} ({action_name}): {count}次 ({percentage:.1f}%)")
         print()
     
@@ -150,7 +253,25 @@ def main():
         action="store_true",
         help="如果设置此标志，将使用确定性策略（总是选择最优动作）。否则，使用与评估脚本一致的随机策略（80%最优，20%采样）。"
     )
+    parser.add_argument(
+        "--snapshot_interval",
+        type=int,
+        default=100,
+        help="每隔多少步打印一次KPI快照。设置为0则禁用。"
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=RANDOM_SEED,
+        help="设置随机种子以保证可复现性。"
+    )
     args = parser.parse_args()
+
+    # 统一设置随机种子
+    print(f"🌱 使用随机种子: {args.seed}")
+    random.seed(args.seed)
+    np.random.seed(args.seed)
+    tf.random.set_seed(args.seed)
 
     # 配置名称到对象的映射
     config_map = {
@@ -178,7 +299,9 @@ def main():
             model_path=args.model_path,
             config=config,
             max_steps=args.max_steps,
-            deterministic=args.deterministic
+            deterministic=args.deterministic,
+            snapshot_interval=args.snapshot_interval,
+            seed=args.seed
         )
         print()
 

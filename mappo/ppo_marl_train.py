@@ -1308,7 +1308,7 @@ class SimplePPOTrainer:
                 
                 
                 # 🔧 V38修复：每30回合进行一次完整难度评估（静默模式，避免输出污染）
-                if episode > 0 and episode % 30 == 0:
+                if curriculum_enabled and episode > 0 and episode % 30 == 0:
                     print("\n" + "="*60)
                     print("🎓 进行完整难度评估（100%订单，标准时间）...")
                     full_config = {
@@ -1384,7 +1384,7 @@ class SimplePPOTrainer:
                         self.best_score_foundation_phase = current_score
                         self.best_kpi_foundation_phase = kpi_results.copy()
                         self.best_episode_foundation_phase = episode + 1
-                        model_path = self.save_model(f"{self.models_dir}/{timestamp}_基础训练阶段最佳")
+                        model_path = self.save_model(f"{self.models_dir}/{timestamp}base_train_best")
                         if model_path:
                             model_update_info = f"✅ 基础训练阶段最佳! 模型保存至: {model_path}"
                             phase_model_saved = True
@@ -1394,7 +1394,7 @@ class SimplePPOTrainer:
                         self.best_score_generalization_phase = current_score
                         self.best_kpi_generalization_phase = kpi_results.copy()
                         self.best_episode_generalization_phase = episode + 1
-                        model_path = self.save_model(f"{self.models_dir}/{timestamp}_泛化强化阶段最佳")
+                        model_path = self.save_model(f"{self.models_dir}/{timestamp}general_train_best")
                         if model_path:
                             model_update_info = f"🏆 泛化强化阶段最佳! 模型保存至: {model_path}"
                             phase_model_saved = True
@@ -1420,7 +1420,7 @@ class SimplePPOTrainer:
                     self.best_score_dual_objective = current_score
                     self.best_kpi_dual_objective = kpi_results.copy()
                     self.best_episode_dual_objective = episode + 1
-                    dual_objective_best_path = self.save_model(f"{self.models_dir}/{timestamp}完成所有零件得分最佳")
+                    dual_objective_best_path = self.save_model(f"{self.models_dir}/{timestamp}Twin_best")
                     if dual_objective_best_path:
                         dual_objective_model_update_info = f" ⭐完成所有零件得分最佳!模型保存至: {dual_objective_best_path}"
                         

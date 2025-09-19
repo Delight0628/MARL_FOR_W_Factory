@@ -161,7 +161,7 @@ REWARD_CONFIG = {
     # --- 方案一：全新的、与时间大小直接挂钩的奖励机制 ---
     "urgency_bonus_scaler": 5.0,           # 对选择最紧急零件的奖励进行缩放
     "slack_time_reward_multiplier": 0.01,  # 对选择的零件，其正的松弛时间（提前量）的奖励系数
-    "lateness_penalty_multiplier": 0.1,   # 对选择的零件，其负的松弛时间（延期量）的惩罚系数
+    "lateness_penalty_multiplier": 0.3,   # 对选择的零件，其负的松弛时间（延期量）的惩罚系数
     
     # 禁用旧的、模糊的奖励
     # "urgent_part_bonus": 1.5,
