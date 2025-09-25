@@ -24,7 +24,8 @@ if current_dir not in sys.path:
 from environments.w_factory_env import WFactoryEnv
 from environments.w_factory_config import (
     get_total_parts_count, SIMULATION_TIME, BASE_ORDERS,
-    ACTION_CONFIG_ENHANCED, WORKSTATIONS
+    ACTION_CONFIG_ENHANCED, WORKSTATIONS, calculate_episode_score,
+    QUEUE_VIEW_CONFIG
 )
 
 # =============================================================================
@@ -87,47 +88,6 @@ GENERALIZATION_CONFIG_3 = {
 }
 
 # =============================================================================
-# 2. 评分函数 (Scoring Function)
-# =============================================================================
-
-def calculate_score(kpi_results: dict, config: dict = None) -> float:
-    """
-    统一计算回合评分的辅助函数。
-    与 ppo_marl_train.py 中的评分逻辑完全一致，确保评估标准统一。
-    """
-    makespan = kpi_results.get('makespan', 0)
-    completed_parts = kpi_results.get('total_parts', 0)
-    utilization = kpi_results.get('mean_utilization', 0)
-    tardiness = kpi_results.get('total_tardiness', 0)
-
-    if completed_parts == 0:
-        return 0.0
-    
-    # 评分基准与训练时保持一致
-    makespan_score = max(0, 1 - makespan / (SIMULATION_TIME * 1.5))
-    utilization_score = utilization
-    tardiness_score = max(0, 1 - tardiness / (SIMULATION_TIME * 2.0))
-
-    # 🌟 新增：根据配置确定目标零件数
-    if config and 'custom_orders' in config:
-        # 泛化测试：计算自定义订单的总零件数
-        target_parts = sum(order["quantity"] for order in config['custom_orders'])
-    else:
-        # 标准测试：使用基础订单配置
-        target_parts = get_total_parts_count()
-    
-    completion_score = completed_parts / target_parts if target_parts > 0 else 0
-    
-    # 权重与训练时保持一致
-    current_score = (
-        completion_score * 0.5 +
-        tardiness_score * 0.25 +
-        makespan_score * 0.15 +
-        utilization_score * 0.1
-    )
-    return current_score
-
-# =============================================================================
 # 3. 环境创建与配置 (Environment Creation & Configuration)
 # =============================================================================
 
@@ -151,7 +111,7 @@ def run_single_episode(env: WFactoryEnv, policy_fn, seed: int, config: dict = No
             break
             
     final_stats = env.sim.get_final_stats()
-    score = calculate_score(final_stats, config)
+    score = calculate_episode_score(final_stats, config)
     
     # 仅在第一个回合（seed=0）返回详细的加工历史
     history = env.sim.gantt_chart_history if seed == 0 else None
@@ -258,21 +218,47 @@ def evaluate_heuristic(heuristic_name: str, config: dict = STATIC_EVAL_CONFIG, g
                 actions[agent_id] = 0 # IDLE
                 continue
 
-            # 根据启发式规则选择零件
-            if heuristic_name == 'FIFO':
-                # 先进先出: 直接选择队列头的第一个 (index 0)
-                best_part_index = 0
-            elif heuristic_name == 'EDD':
-                # 最早交期: 选择交期最小的
-                best_part_index = np.argmin([part.due_date for part in queue])
-            elif heuristic_name == 'SPT':
-                # 最短处理时间: 选择当前工序处理时间最短的
-                best_part_index = np.argmin([part.get_processing_time() for part in queue])
+            # 🔧 关键修复：根据是否启用排序视图来选择不同的策略
+            if QUEUE_VIEW_CONFIG.get("enabled", False):
+                # 使用排序视图：获取按紧急度排序的队列视图
+                sorted_view = sim._get_sorted_queue_view(station_name)
+                
+                if not sorted_view:
+                    actions[agent_id] = 0 # IDLE
+                    continue
+                
+                # 在排序视图中根据启发式规则选择零件
+                if heuristic_name == 'FIFO':
+                    # 先进先出: 选择排序视图中的第一个 (最紧急的)
+                    best_view_index = 0
+                elif heuristic_name == 'EDD':
+                    # 最早交期: 在排序视图中选择交期最小的
+                    best_view_index = np.argmin([item["part"].due_date for item in sorted_view])
+                elif heuristic_name == 'SPT':
+                    # 最短处理时间: 在排序视图中选择当前工序处理时间最短的
+                    best_view_index = np.argmin([item["part"].get_processing_time() for item in sorted_view])
+                else:
+                    raise ValueError(f"未知的启发式规则: {heuristic_name}")
+                
+                # 动作ID = 排序视图索引 + 1
+                actions[agent_id] = best_view_index + 1
+                
             else:
-                raise ValueError(f"未知的启发式规则: {heuristic_name}")
+                # 使用物理队列：原有的逻辑
+                if heuristic_name == 'FIFO':
+                    # 先进先出: 直接选择队列头的第一个 (index 0)
+                    best_part_index = 0
+                elif heuristic_name == 'EDD':
+                    # 最早交期: 选择交期最小的
+                    best_part_index = np.argmin([part.due_date for part in queue])
+                elif heuristic_name == 'SPT':
+                    # 最短处理时间: 选择当前工序处理时间最短的
+                    best_part_index = np.argmin([part.get_processing_time() for part in queue])
+                else:
+                    raise ValueError(f"未知的启发式规则: {heuristic_name}")
 
-            # 动作ID = 零件索引 + 1
-            actions[agent_id] = best_part_index + 1
+                # 动作ID = 零件索引 + 1
+                actions[agent_id] = best_part_index + 1
             
         return actions
 
@@ -417,19 +403,6 @@ def run_comprehensive_evaluation(model_path: str, generate_gantt: bool = False, 
             method_df = method_df[cols]
             print(method_df.to_string(index=False), flush=True)
 
-    print("\n💡 指标解读:", flush=True)
-    print("  - Avg Score: 综合评分，越高越好 (我们的核心优化目标)。", flush=True)
-    print("  - Std Score: 分数标准差，越低说明策略越稳定。", flush=True)
-    print("  - Avg Completion %: 平均任务完成率，越高越好。", flush=True)
-    print("  - Avg Makespan: 平均总完工时间，越低越好。", flush=True)
-    print("  - Avg Tardiness: 平均总延期时间，越低越好。", flush=True)
-    print("  - Avg Utilization %: 平均设备利用率，越高说明资源利用越充分。", flush=True)
-    
-    print(f"\n🔬 泛化能力分析结论:", flush=True)
-    print("  观察MARL模型在不同测试配置下的评分稳定性，", flush=True)
-    print("  对比启发式算法在面对新订单配置时的性能波动，", flush=True)
-    print("  以此评估各策略的泛化能力和鲁棒性。", flush=True)
-
 def main():
     parser = argparse.ArgumentParser(description="评估MARL模型与启发式算法的性能")
     parser.add_argument(
@@ -497,13 +470,6 @@ def main():
         print("="*80, flush=True)
         print(df.to_string(index=False), flush=True)
         print("="*80, flush=True)
-        print("\n💡 指标解读:", flush=True)
-        print("  - Avg Score: 综合评分，越高越好 (我们的核心优化目标)。", flush=True)
-        print("  - Std Score: 分数标准差，越低说明策略越稳定。", flush=True)
-        print("  - Avg Completion %: 平均任务完成率，越高越好。", flush=True)
-        print("  - Avg Makespan: 平均总完工时间，越低越好。", flush=True)
-        print("  - Avg Tardiness: 平均总延期时间，越低越好。", flush=True)
-        print("  - Avg Utilization %: 平均设备利用率，越高说明资源利用越充分。", flush=True)
 
 
 if __name__ == "__main__":

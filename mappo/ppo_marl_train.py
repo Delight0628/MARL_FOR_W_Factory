@@ -33,8 +33,7 @@ sys.path.append(parent_dir)
 
 from environments.w_factory_env import make_parallel_env, WFactoryEnv
 from environments.w_factory_config import *
-# 🔧 V38 新增：导入任务可行性分析函数
-from environments.w_factory_config import validate_config, get_total_parts_count, generate_random_orders
+from environments.w_factory_config import validate_config, get_total_parts_count, generate_random_orders, calculate_episode_score
 
 class ExperienceBuffer:
     """🔧 MAPPO经验缓冲区 - 支持全局状态"""
@@ -61,12 +60,12 @@ class ExperienceBuffer:
     
     def get_batch(self, gamma=0.99, lam=0.95, next_value_if_truncated=None):
         """🔧 MAPPO改进：正确处理轨迹截断"""
-        states = np.array(self.states)
-        global_states = np.array(self.global_states) # 🔧 新增
+        states = np.array(self.states, dtype=np.float32)
+        global_states = np.array(self.global_states, dtype=np.float32)
         actions = np.array(self.actions)
-        rewards = np.array(self.rewards)
-        values = np.array(self.values)
-        action_probs = np.array(self.action_probs)
+        rewards = np.array(self.rewards, dtype=np.float32)
+        values = np.array(self.values, dtype=np.float32)
+        action_probs = np.array(self.action_probs, dtype=np.float32)
         dones = np.array(self.dones)
         truncateds = np.array(self.truncateds)
         
@@ -96,15 +95,17 @@ class ExperienceBuffer:
         
         returns = advantages + values
         
-        # 🔧 修复：更稳健的优势标准化
+        # 🔧 MAPPO修复：更稳健的优势标准化，处理边界情况
         if len(advantages) > 1:
             adv_mean = np.mean(advantages)
             adv_std = np.std(advantages)
-            # 避免标准差过小导致的数值不稳定
-            if adv_std > 1e-8:
+            # 只有当标准差足够大时才进行完整标准化
+            if adv_std > 1e-6:  # 提高阈值，避免数值不稳定
                 advantages = (advantages - adv_mean) / (adv_std + 1e-8)
             else:
+                # 标准差太小时只进行去均值，不进行缩放
                 advantages = advantages - adv_mean
+        # 单样本情况：不进行任何标准化，保持原值
         
         # 🔧 新增：优势裁剪，防止极端值（但保留足够的动态范围）
         advantages = np.clip(advantages, -5, 5)
@@ -137,8 +138,30 @@ class PPONetwork:
         
         # 优化器 - 🔧 修复：处理lr为None的情况（worker不需要优化器）
         if lr is not None:
-            self.actor_optimizer = tf.keras.optimizers.Adam(lr)
-            self.critic_optimizer = tf.keras.optimizers.Adam(lr)
+            # 专家修复：为Critic设置一个较低的学习率乘数
+            critic_lr = lr
+            if isinstance(lr, tf.keras.optimizers.schedules.LearningRateSchedule):
+                # 如果lr是调度器，我们不能直接乘，但可以创建一个新的调度器或在优化器层面处理
+                # Adam优化器支持在创建时传入学习率调度器
+                pass # 优化器将直接使用调度器
+            
+            self.actor_optimizer = tf.keras.optimizers.Adam(learning_rate=lr)
+            
+            # 🔧 关键修复：为Critic创建相同类型的学习率调度器，但使用较低的乘数
+            if isinstance(lr, tf.keras.optimizers.schedules.LearningRateSchedule):
+                # 如果lr是调度器，为Critic创建一个带乘数的调度器
+                critic_lr_multiplier = LEARNING_RATE_CONFIG.get("critic_lr_multiplier", 0.5)
+                critic_lr_schedule = tf.keras.optimizers.schedules.PolynomialDecay(
+                    initial_learning_rate=LEARNING_RATE_CONFIG["initial_lr"] * critic_lr_multiplier,
+                    decay_steps=lr.decay_steps,
+                    end_learning_rate=LEARNING_RATE_CONFIG["end_lr"] * critic_lr_multiplier,
+                    power=LEARNING_RATE_CONFIG["decay_power"]
+                )
+                self.critic_optimizer = tf.keras.optimizers.Adam(learning_rate=critic_lr_schedule)
+            else:
+                # 如果lr是固定值，则使用固定值乘以乘数
+                critic_lr_value = lr * LEARNING_RATE_CONFIG.get("critic_lr_multiplier", 0.5)
+                self.critic_optimizer = tf.keras.optimizers.Adam(learning_rate=critic_lr_value)
         else:
             self.actor_optimizer = None
             self.critic_optimizer = None
@@ -227,7 +250,7 @@ class PPONetwork:
         
         return actor, critic
     
-    def get_action_and_value(self, state: np.ndarray, global_state: np.ndarray) -> Tuple[int, float, float]:
+    def get_action_and_value(self, state: np.ndarray, global_state: np.ndarray) -> Tuple[int, np.float32, np.float32]:
         """获取动作、价值和动作概率"""
         state_tensor = tf.expand_dims(tf.convert_to_tensor(state), 0)
         probs = self.actor(state_tensor)
@@ -239,7 +262,7 @@ class PPONetwork:
         # 🔧 Critic使用全局状态
         value = self.critic(tf.expand_dims(tf.convert_to_tensor(global_state), 0))[0, 0].numpy()
         
-        return action, float(value), float(action_prob)
+        return action, np.float32(value), np.float32(action_prob)
     
     def get_value(self, global_state: np.ndarray) -> float:
         """获取状态价值（仅使用全局状态）"""
@@ -275,7 +298,7 @@ class PPONetwork:
             # 🔧 修复：正确计算KL散度
             old_log_probs = tf.math.log(old_probs + 1e-8)
             new_log_probs = tf.math.log(new_probs + 1e-8)
-            approx_kl = tf.reduce_mean(old_probs * (old_log_probs - new_log_probs))
+            approx_kl = tf.reduce_mean(old_log_probs - new_log_probs)
             
             # 计算裁剪比例 (用于监控)
             clipped_mask = tf.greater(tf.abs(ratio - 1.0), clip_ratio)
@@ -312,7 +335,7 @@ class PPONetwork:
 # 🔧 V8 新增: 多进程并行工作函数
 def run_simulation_worker(network_weights: Dict[str, List[np.ndarray]],
                           state_dim: int, action_dim: int, num_steps: int, seed: int, 
-                          global_state_dim: int, network_config: Dict[str, Any], curriculum_config: Dict[str, Any] = None) -> Tuple[Dict[str, ExperienceBuffer], float]:
+                          global_state_dim: int, network_config: Dict[str, Any], curriculum_config: Dict[str, Any] = None) -> Tuple[Dict[str, ExperienceBuffer], float, Optional[np.ndarray], bool]:
     """并行仿真工作进程 - 🔧 MAPPO改造：收集全局状态"""
     
     # 🔧 终极修复：将tf导入移至顶部，解决UnboundLocalError
@@ -335,6 +358,11 @@ def run_simulation_worker(network_weights: Dict[str, List[np.ndarray]],
     
     observations, infos = env.reset(seed=seed)
     global_state = infos[env.agents[0]]['global_state']
+    # 🔧 智能体条件化：构建one-hot映射
+    agent_list = list(env.agents)
+    agent_index = {agent_id: idx for idx, agent_id in enumerate(agent_list)}
+    # 专家修复：修正base_global_dim的计算方式，避免硬编码或依赖不一致的环境实例
+    base_global_dim = global_state_dim - len(agent_list)
     
     total_reward_collected = 0.0
     collected_steps = 0
@@ -345,14 +373,22 @@ def run_simulation_worker(network_weights: Dict[str, List[np.ndarray]],
         values = {}
         action_probs = {}
         
-        # 🔧 修复：确保所有智能体使用同一个全局状态
-        current_global_state = global_state.copy() if global_state is not None else np.zeros(global_state_dim)
+        # 🔧 修复：基础全局状态（不含one-hot）
+        if global_state is not None:
+            base_global_state = global_state.copy()
+        else:
+            base_global_state = np.zeros(base_global_dim, dtype=np.float32)
 
         # 🔧 修复：确保智能体动作的同步性
         for agent in env.agents:  # 使用env.agents确保顺序一致
             if agent in observations:
                 obs = observations[agent]
-                action, value, action_prob = network.get_action_and_value(obs, current_global_state)
+                # 🔧 拼接agent one-hot到全局状态
+                one_hot = np.zeros(len(agent_list), dtype=np.float32)
+                one_hot[agent_index[agent]] = 1.0
+                # 注意：global_state_dim 已经包含one-hot长度
+                augmented_global_state = np.concatenate([base_global_state, one_hot]).astype(np.float32)
+                action, value, action_prob = network.get_action_and_value(obs, augmented_global_state)
                 actions[agent] = action
                 values[agent] = value
                 action_probs[agent] = action_prob
@@ -371,10 +407,13 @@ def run_simulation_worker(network_weights: Dict[str, List[np.ndarray]],
                 terminated = terminations.get(agent, False)
                 truncated = truncations.get(agent, False)
                 reward = rewards.get(agent, 0)
-                # 🔧 重要：存储时使用相同的全局状态
+                # 🔧 重要：存储时使用agent条件化的全局状态
+                one_hot = np.zeros(len(agent_list), dtype=np.float32)
+                one_hot[agent_index[agent]] = 1.0
+                augmented_global_state = np.concatenate([base_global_state, one_hot]).astype(np.float32)
                 buffers[agent].store(
                     observations[agent], 
-                    current_global_state.copy(),  # 使用副本避免引用问题
+                    augmented_global_state.copy(),  # 使用副本避免引用问题
                     actions[agent], 
                     reward,
                     values[agent], 
@@ -392,15 +431,17 @@ def run_simulation_worker(network_weights: Dict[str, List[np.ndarray]],
             # 注意：这里暂时不处理，让buffer自己在get_batch时处理
             pass
             
-        
-            # total_reward += sum(episode_rewards.values())
-            # 重置
-            observations, infos = env.reset(seed=seed)
-            global_state = infos[env.agents[0]]['global_state']
-            step_count = 0  # 重置episode步数计数器
+            # 🔧 关键修复：episode结束时应该break，而不是reset继续收集
+            # 一个worker调用应该只收集单个trajectory的数据
+            break
 
+    # 🔧 核心修复：返回最后一个全局状态和截断标志，用于价值引导
+    was_truncated = any(truncations.values())
+    # 返回基础全局状态（不含one-hot），主进程将为各agent添加one-hot后计算bootstrap
+    next_global_state_for_bootstrap = global_state if was_truncated else None
+    
     env.close()
-    return buffers, total_reward_collected
+    return buffers, total_reward_collected, next_global_state_for_bootstrap, was_truncated
 
 class SimplePPOTrainer:
     """🔧 V31 自适应PPO训练器：根据训练状态自动调整训练策略"""
@@ -424,15 +465,17 @@ class SimplePPOTrainer:
         temp_env = make_parallel_env()
         self.state_dim = temp_env.observation_space(temp_env.possible_agents[0]).shape[0]
         self.action_dim = temp_env.action_space(temp_env.possible_agents[0]).n
-        self.global_state_dim = temp_env.global_state_space.shape[0]
         self.agent_ids = temp_env.possible_agents
+        self.num_agents = len(self.agent_ids)
+        # 🔧 Critic智能体条件化：将智能体one-hot并入全局状态输入维度
+        self.global_state_dim = temp_env.global_state_space.shape[0] + self.num_agents
         temp_env.close()
         
         print("🔧 环境空间检测:")
         print(f"   观测维度: {self.state_dim}")
         print(f"   动作维度: {self.action_dim}")
         print(f"   智能体数量: {len(self.agent_ids)}")
-        print(f"   全局状态维度: {self.global_state_dim}")
+        print(f"   全局状态维度(含agent one-hot): {self.global_state_dim}")
         
         # 🔧 V26 终极修复：移除动态参数调整
         optimized_episodes = total_train_episodes
@@ -478,8 +521,9 @@ class SimplePPOTrainer:
         self.best_score_dual_objective = -1.0
         self.best_episode_dual_objective = -1
 
-        # 🔧 V32 统一：使用配置文件中的自适应训练配置
-        self.training_targets = training_targets or ADAPTIVE_TRAINING_CONFIG.copy()
+        # 🔧 核心重构：训练流程由配置文件驱动
+        self.training_flow_config = TRAINING_FLOW_CONFIG
+        self.training_targets = self.training_flow_config["general_params"] # 通用参数
         
         # 🔧 V31 新增：自适应训练状态跟踪
         self.adaptive_state = {
@@ -580,19 +624,20 @@ class SimplePPOTrainer:
         return True, f"当前分数 {current_score:.3f}, 完成率 {completion_rate:.1f}%", 0
     
     def check_foundation_training_completion(self, kpi_results: Dict[str, float], current_score: float) -> bool:
-        """检查基础训练是否达到毕业标准，包含延期硬指标"""
-        # 基础训练的目标零件数是固定的
-        total_parts_target = get_total_parts_count() # 默认使用基础订单
+        """检查基础训练是否达到毕业标准，由配置文件驱动"""
+        criteria = self.training_flow_config["foundation_phase"]["graduation_criteria"]
+        
+        total_parts_target = get_total_parts_count()
         completion_rate_kpi = (kpi_results.get('mean_completed_parts', 0) / total_parts_target) * 100 if total_parts_target > 0 else 0
         
-        targets = self.training_targets
-        target_score = targets["target_score"]
-        stability_goal = targets["target_consistency"]
-        tardiness_threshold = targets.get("foundation_training_tardiness_threshold", float('inf'))
+        target_score = criteria["target_score"]
+        stability_goal = criteria["target_consistency"]
+        tardiness_threshold = criteria["tardiness_threshold"]
+        min_completion_rate = criteria["min_completion_rate"]
         current_tardiness = kpi_results.get('mean_tardiness', float('inf'))
 
         conditions_met = {
-            f"完成率达标(>=100%)": completion_rate_kpi >= 100,
+            f"完成率达标(>={min_completion_rate}%)": completion_rate_kpi >= min_completion_rate,
             f"分数达标(>={target_score})": current_score >= target_score,
             f"延期达标(<={tardiness_threshold}min)": current_tardiness <= tardiness_threshold
         }
@@ -612,16 +657,18 @@ class SimplePPOTrainer:
         return False
     
     def check_generalization_training_completion(self, current_score: float, completion_rate: float) -> bool:
-        """检查泛化训练是否已达到最终训练完成的条件"""
-        targets = self.training_targets
-        target_score = targets["target_score"]
+        """检查泛化训练是否已达到最终训练完成的条件，由配置文件驱动"""
+        criteria = self.training_flow_config["generalization_phase"]["completion_criteria"]
         
-        # 在泛化阶段，我们对分数要求可以适当放宽，但仍需要合理的完成率
-        if completion_rate >= 85 and current_score >= target_score * 0.9:  # 稍微放宽条件
+        target_score = criteria["target_score"]
+        stability_goal = criteria["target_consistency"]
+        min_completion_rate = criteria["min_completion_rate"]
+        
+        if completion_rate >= min_completion_rate and current_score >= target_score:
             self.generalization_achievement_count += 1
-            print(f"🌟 泛化阶段达标: 完成率 {completion_rate:.1f}% & 分数 {current_score:.3f} (连续第{self.generalization_achievement_count}次)")
+            print(f"🌟 泛化阶段达标: 完成率 {completion_rate:.1f}% & 分数 {current_score:.3f} (连续第{self.generalization_achievement_count}/{stability_goal}次)")
             
-            if self.generalization_achievement_count >= targets["target_consistency"]:
+            if self.generalization_achievement_count >= stability_goal:
                 print(f"🎉 泛化训练完成！模型已具备优秀的泛化能力。")
                 return True
         else:
@@ -634,8 +681,11 @@ class SimplePPOTrainer:
         config = {}
         
         # 🔧 V16：实现课程学习的环境配置
-        if curriculum_stage is not None and CURRICULUM_CONFIG.get("enabled", False):
-            stage = CURRICULUM_CONFIG["stages"][curriculum_stage] if curriculum_stage < len(CURRICULUM_CONFIG["stages"]) else CURRICULUM_CONFIG["stages"][-1]
+        # 核心重构：课程学习逻辑现在由 TRAINING_FLOW_CONFIG 控制
+        cl_config = self.training_flow_config["foundation_phase"]["curriculum_learning"]
+        if curriculum_stage is not None and cl_config["enabled"]:
+            stages = cl_config["stages"]
+            stage = stages[curriculum_stage] if curriculum_stage < len(stages) else stages[-1]
             config['curriculum_stage'] = stage
             config['orders_scale'] = stage.get('orders_scale', 1.0)
             config['time_scale'] = stage.get('time_scale', 1.0)
@@ -648,11 +698,11 @@ class SimplePPOTrainer:
         }
         return env, buffers
     
-    def collect_experience_parallel(self, buffers, num_steps: int, curriculum_config: Dict[str, Any] = None) -> float:
-        """🔧 V17修复：使用多进程并行收集经验，支持课程学习"""
-        for buffer in buffers.values():
-            buffer.clear()
-
+    def collect_and_process_experience(self, num_steps: int, curriculum_config: Dict[str, Any] = None) -> Tuple[float, Optional[Dict[str, np.ndarray]]]:
+        """
+        🔧 核心修复：并行收集经验，并在主进程中统一处理价值引导和GAE计算
+        - 返回一个处理完成、可以直接用于更新的训练批次
+        """
         from environments.w_factory_config import PPO_NETWORK_CONFIG
 
         network_weights = {
@@ -662,6 +712,9 @@ class SimplePPOTrainer:
         steps_per_worker = num_steps // self.num_workers
         
         total_reward = 0
+        
+        # 初始化用于聚合所有worker数据的列表
+        all_states, all_global_states, all_actions, all_old_probs, all_advantages, all_returns = [], [], [], [], [], []
 
         with ProcessPoolExecutor(max_workers=self.num_workers) as executor:
             futures = []
@@ -676,110 +729,156 @@ class SimplePPOTrainer:
                     seed,
                     self.global_state_dim,
                     PPO_NETWORK_CONFIG.copy(),
-                    curriculum_config  # 🔧 V17修复：传递课程学习配置
+                    curriculum_config
                 )
                 futures.append(future)
 
             for future in as_completed(futures):
                 try:
-                    worker_buffers, worker_reward = future.result()
+                    # 接收worker返回的原始经验、下一个全局状态和截断标志
+                    worker_buffers, worker_reward, next_global_state, was_truncated = future.result()
                     total_reward += worker_reward
                     
-                    for agent_id, worker_buffer in worker_buffers.items():
-                        buffers[agent_id].states.extend(worker_buffer.states)
-                        buffers[agent_id].global_states.extend(worker_buffer.global_states)
-                        buffers[agent_id].actions.extend(worker_buffer.actions)
-                        buffers[agent_id].rewards.extend(worker_buffer.rewards)
-                        buffers[agent_id].values.extend(worker_buffer.values)
-                        buffers[agent_id].action_probs.extend(worker_buffer.action_probs)
-                        buffers[agent_id].dones.extend(worker_buffer.dones)
-                        buffers[agent_id].truncateds.extend(worker_buffer.truncateds)
+                    # 在主进程中为该worker的每个智能体计算GAE和回报
+                    for agent_id in self.agent_ids:
+                        if agent_id in worker_buffers:
+                            buffer = worker_buffers[agent_id]
+                            if not buffer.states:  # 跳过空缓冲区
+                                continue
+                            
+                            # 🔧 使用正确的引导价值（逐智能体 one-hot 条件化）
+                            if was_truncated and next_global_state is not None:
+                                # 专家修复：使用在主训练器中定义的agent_ids和num_agents，确保索引一致性
+                                one_hot = np.zeros(self.num_agents, dtype=np.float32)
+                                one_hot[self.agent_ids.index(agent_id)] = 1.0
+                                augmented_next_state = np.concatenate([next_global_state, one_hot]).astype(np.float32)
+                                bootstrap_value = self.shared_network.get_value(augmented_next_state)
+                            else:
+                                bootstrap_value = None
+
+                            # 使用正确的引导价值处理该轨迹
+                            states, global_states, actions, old_probs, advantages, returns = buffer.get_batch(
+                                next_value_if_truncated=bootstrap_value
+                            )
+                            
+                            # 将处理好的数据聚合到总批次中
+                            all_states.extend(states)
+                            all_global_states.extend(global_states)
+                            all_actions.extend(actions)
+                            all_old_probs.extend(old_probs)
+                            all_advantages.extend(advantages)
+                            all_returns.extend(returns)
+                            
                 except Exception as e:
                     print(f"❌ 一个并行工作进程失败: {e}")
                     import traceback
                     traceback.print_exc()
 
-        return total_reward
+        if not all_states:
+            return total_reward, None
+
+        # 将聚合后的数据列表转换为NumPy数组，形成最终的训练批次
+        batch = {
+            "states": np.array(all_states),
+            "global_states": np.array(all_global_states),
+            "actions": np.array(all_actions),
+            "old_probs": np.array(all_old_probs),
+            "advantages": np.array(all_advantages),
+            "returns": np.array(all_returns),
+        }
+        return total_reward, batch
     
-    def update_policy(self, buffers, entropy_coeff: float) -> Dict[str, float]:
-        """🔧 MAPPO改进：正确处理多智能体的策略更新"""
-        all_states = []
-        all_global_states = []
-        all_actions = []
-        all_action_probs = []
-        all_advantages = []
-        all_returns = []
+    def update_policy(self, batch: Dict[str, np.ndarray], entropy_coeff: float) -> Dict[str, float]:
+        """
+        专家修复：接收已处理好的数据批次，执行标准的PPO更新流程
+        - 移除了数据聚合和GAE计算逻辑，因为这些已在 `collect_and_process_experience` 中完成
+        """
+        # 1. 从批次中解包数据
+        all_states = batch["states"]
+        all_global_states = batch["global_states"]
+        all_actions = batch["actions"]
+        all_old_probs = batch["old_probs"]
+        all_advantages = batch["advantages"]
+        all_returns = batch["returns"]
+
+        total_samples = len(all_states)
+        if total_samples == 0:
+            return {}
+
+        # 初始化训练统计
+        total_actor_loss, total_critic_loss, total_entropy = 0, 0, 0
+        total_approx_kl, total_clip_fraction = 0, 0
+        update_count = 0
+
+        # 2. 标准PPO更新循环 (Epochs + Mini-batch)
+        ppo_epochs = PPO_NETWORK_CONFIG.get("ppo_epochs", 10)
+        num_minibatches = PPO_NETWORK_CONFIG.get("num_minibatches", 4)
         
-        # 🔧 为每个智能体单独计算advantages，考虑截断
-        for agent, buffer in buffers.items():
-            if len(buffer.states) > 0:
-                # 🔧 修复：正确获取截断时的bootstrap价值
-                next_value_if_truncated = None
-                if len(buffer.truncateds) > 0 and buffer.truncateds[-1]:
-                    # 如果最后一步是截断，使用最后存储的全局状态估计价值
-                    # 注意：这里应该使用"下一个"全局状态，但如果没有，就用最后一个
-                    last_global_state = buffer.global_states[-1]
-                    next_value_if_truncated = self.shared_network.get_value(last_global_state)
-                elif len(buffer.states) > 0 and not buffer.dones[-1]:
-                    # 如果trajectory既不终止也不截断（被steps_per_episode截断）
-                    # 也需要bootstrap
-                    last_global_state = buffer.global_states[-1]
-                    next_value_if_truncated = self.shared_network.get_value(last_global_state)
+        if total_samples < num_minibatches:
+            num_minibatches = 1
+            
+        batch_size = total_samples // num_minibatches
+
+        for epoch in range(ppo_epochs):
+            # 2.1. 数据随机化 (Shuffle)
+            indices = np.arange(total_samples)
+            np.random.shuffle(indices)
+
+            shuffled_states = all_states[indices]
+            shuffled_global_states = all_global_states[indices]
+            shuffled_actions = all_actions[indices]
+            shuffled_old_probs = all_old_probs[indices]
+            shuffled_advantages = all_advantages[indices]
+            shuffled_returns = all_returns[indices]
+
+            # 2.2. Mini-batch 训练
+            for i in range(0, total_samples, batch_size):
+                start = i
+                end = i + batch_size
                 
-                states, global_states, actions, action_probs, advantages, returns = buffer.get_batch(
-                    next_value_if_truncated=next_value_if_truncated
+                if end > total_samples:
+                    end = total_samples
+                if start == end:
+                    continue
+
+                # 提取Mini-batch数据
+                mini_batch_states = shuffled_states[start:end]
+                mini_batch_global_states = shuffled_global_states[start:end]
+                mini_batch_actions = shuffled_actions[start:end]
+                mini_batch_old_probs = shuffled_old_probs[start:end]
+                mini_batch_advantages = shuffled_advantages[start:end]
+                mini_batch_returns = shuffled_returns[start:end]
+
+                # 2.3. 执行网络更新
+                loss_info = self.shared_network.update(
+                    mini_batch_states,
+                    mini_batch_global_states,
+                    mini_batch_actions,
+                    mini_batch_old_probs,
+                    mini_batch_advantages,
+                    mini_batch_returns,
+                    entropy_coeff=entropy_coeff
                 )
-                
-                all_states.extend(states)
-                all_global_states.extend(global_states)
-                all_actions.extend(actions)
-                all_action_probs.extend(action_probs)
-                all_advantages.extend(advantages)
-                all_returns.extend(returns)
-                
-                buffer.clear()
+
+                # 累加统计信息
+                if loss_info:
+                    total_actor_loss += loss_info["actor_loss"]
+                    total_critic_loss += loss_info["critic_loss"]
+                    total_entropy += loss_info["entropy"]
+                    total_approx_kl += loss_info["approx_kl"]
+                    total_clip_fraction += loss_info["clip_fraction"]
+                    update_count += 1
         
-        if len(all_states) == 0:
-            return {'actor_loss': 0, 'critic_loss': 0, 'entropy': 0, 'approx_kl': 0, 'clip_fraction': 0}
-        
-        # 转换为numpy数组
-        all_states = np.array(all_states)
-        all_global_states = np.array(all_global_states)
-        all_actions = np.array(all_actions)
-        all_action_probs = np.array(all_action_probs, dtype=np.float32) # 🔧 修复：确保数据类型为float32
-        all_advantages = np.array(all_advantages, dtype=np.float32)     # 🔧 修复：确保数据类型为float32
-        all_returns = np.array(all_returns, dtype=np.float32).reshape(-1, 1)
-        
-        # 🔧 新增：奖励标准化（提高训练稳定性）
-        returns_mean = np.mean(all_returns)
-        returns_std = np.std(all_returns) + 1e-8
-        all_returns = (all_returns - returns_mean) / returns_std
-        
-        # 🔧 V32 使用配置文件的策略更新次数
-        losses = {'actor_loss': 0, 'critic_loss': 0, 'entropy': 0, 'approx_kl': 0, 'clip_fraction': 0}
-        num_updates = PPO_NETWORK_CONFIG["num_policy_updates"]
-        
-        # 🔧 修复：添加早停机制，避免过度更新
-        for epoch in range(num_updates):
-            batch_losses = self.shared_network.update(
-                states=all_states,
-                global_states=all_global_states,
-                actions=all_actions,
-                old_probs=all_action_probs,
-                advantages=all_advantages,
-                returns=all_returns,
-                entropy_coeff=entropy_coeff # 传递动态熵系数
-            )
-            
-            for key in losses:
-                losses[key] += batch_losses[key] / num_updates
-            
-            # 🔧 新增：如果KL散度过大，提前停止更新
-            if batch_losses['approx_kl'] > 0.02:  # 稍微提高KL阈值
-                if epoch > 0:  # 至少更新一次
-                    break
-        
-        return losses
+        # 返回平均损失
+        if update_count > 0:
+            return {
+                "actor_loss": total_actor_loss / update_count,
+                "critic_loss": total_critic_loss / update_count,
+                "entropy": total_entropy / update_count,
+                "approx_kl": total_approx_kl / update_count,
+                "clip_fraction": total_clip_fraction / update_count,
+            }
+        return {}
     
     def _independent_exam_evaluation(self, env, curriculum_config, seed):
         """🔧 V33 新增：独立的考试评估，确保每轮都是全新的仿真"""
@@ -951,9 +1050,10 @@ class SimplePPOTrainer:
             self.training_targets["max_episodes"] = max_episodes
         
         # 🔧 V16：显示课程学习配置
-        if CURRICULUM_CONFIG.get("enabled", False):
-            print(f"📚 课程学习已启用，共{len(CURRICULUM_CONFIG['stages'])}个阶段:")
-            for i, stage in enumerate(CURRICULUM_CONFIG["stages"]):
+        curriculum_config = self.training_flow_config["foundation_phase"]["curriculum_learning"]
+        if curriculum_config.get("enabled", False):
+            print(f"📚 课程学习已启用，共{len(curriculum_config['stages'])}个阶段:")
+            for i, stage in enumerate(curriculum_config["stages"]):
                 print(f"   阶段{i+1}: {stage['name']} - {stage['iterations']}轮，订单{stage['orders_scale']*100:.0f}%")
         print("=" * 80)
         
@@ -968,7 +1068,8 @@ class SimplePPOTrainer:
         print("=" * 80)
         
         # 🔧 V16：课程学习管理
-        curriculum_enabled = CURRICULUM_CONFIG.get("enabled", False)
+        curriculum_config = self.training_flow_config["foundation_phase"]["curriculum_learning"]
+        curriculum_enabled = curriculum_config.get("enabled", False)
         current_stage = 0
         stage_episode_count = 0
         
@@ -982,7 +1083,7 @@ class SimplePPOTrainer:
         best_makespan = float('inf')
         
         # 🔧 V27 核心修复：为课程学习的每个阶段独立跟踪最佳分数
-        stage_best_scores = [-1.0] * len(CURRICULUM_CONFIG["stages"])
+        stage_best_scores = [-1.0] * len(curriculum_config["stages"]) if curriculum_enabled else []
         
         try:
             for episode in range(max_episodes):
@@ -993,11 +1094,11 @@ class SimplePPOTrainer:
                 
                 # 首先处理课程学习逻辑（如果启用）
                 if curriculum_enabled:
-                    stage_config = CURRICULUM_CONFIG["stages"][current_stage]
+                    stage_config = curriculum_config["stages"][current_stage]
                     
                     # 🔧 V31 强化毕业考试机制：使用新的高标准门槛，防止带病毕业
                     if stage_episode_count >= stage_config["iterations"]:
-                        if current_stage < len(CURRICULUM_CONFIG["stages"]) - 1:
+                        if current_stage < len(curriculum_config["stages"]) - 1:
                             # 🔧 V33 修复：暂停训练计时，隔离考试时间
                             iteration_pause_time = time.time()
                             
@@ -1005,7 +1106,7 @@ class SimplePPOTrainer:
                             print(f"🎓 阶段 '{stage_config['name']}' 训练完成，开始强化毕业考试...")
                             
                             # 🔧 V31 使用新的毕业门槛配置
-                            graduation_config = CURRICULUM_CONFIG.get("graduation_config", {})
+                            graduation_config = curriculum_config.get("graduation_exam", {})
                             
                             # 🔧 修复：从当前阶段配置中获取毕业阈值
                             current_threshold = stage_config.get("graduation_thresholds", 95.0)
@@ -1015,7 +1116,7 @@ class SimplePPOTrainer:
                             retry_extension = graduation_config.get("retry_extension", 15)
                             
                             # 🔧 V34 修复：毕业考试应检验当前阶段的掌握情况，而不是用下一阶段的标准
-                            current_stage_data = CURRICULUM_CONFIG["stages"][current_stage]
+                            current_stage_data = curriculum_config["stages"][current_stage]
                             exam_target_parts = int(get_total_parts_count() * current_stage_data['orders_scale'])
                             exam_config = {
                                 'orders_scale': current_stage_data.get('orders_scale', 1.0),
@@ -1053,7 +1154,7 @@ class SimplePPOTrainer:
                             # 🔧 V37 修复：稳定性达到即通过，无需重复检查平均分数
                             if stability_achieved:
                                 # 关键修复：需要获取下一阶段的数据来打印日志
-                                next_stage_data = CURRICULUM_CONFIG["stages"][current_stage + 1]
+                                next_stage_data = curriculum_config["stages"][current_stage + 1]
                                 print(f"   ✅ 毕业考试通过！进入下一阶段: '{next_stage_data['name']}'")
                                 current_stage += 1
                                 stage_episode_count = 0
@@ -1084,7 +1185,7 @@ class SimplePPOTrainer:
                         # 如果是最后阶段，则不再切换
                     
                     # 获取当前阶段配置 (可能已更新)
-                    stage = CURRICULUM_CONFIG["stages"][current_stage]
+                    stage = curriculum_config["stages"][current_stage]
                     current_curriculum_config = {
                         'orders_scale': stage.get('orders_scale', 1.0),
                         'time_scale': stage.get('time_scale', 1.0),
@@ -1129,7 +1230,8 @@ class SimplePPOTrainer:
                     current_curriculum_config = foundation_config
                     
                     if episode % 20 == 0:
-                        print(f"📚 基础训练阶段: 连续达标 {self.foundation_achievement_count}/{self.training_targets['target_consistency']} 次")
+                        foundation_criteria = self.training_flow_config["foundation_phase"]["graduation_criteria"]
+                        print(f"📚 基础训练阶段: 连续达标 {self.foundation_achievement_count}/{foundation_criteria['target_consistency']} 次")
                 
                 elif not self.generalization_phase_active:
                     # 基础训练刚完成，准备进入泛化阶段
@@ -1155,17 +1257,18 @@ class SimplePPOTrainer:
                     
                     if episode % 20 == 0:
                         total_parts = sum(order["quantity"] for order in random_orders)
+                        generalization_criteria = self.training_flow_config["generalization_phase"]["completion_criteria"]
                         print(f"🎲 随机领域强化: 本轮{len(random_orders)}个订单，共{total_parts}个零件")
-                        print(f"   泛化阶段连续达标: {self.generalization_achievement_count}/{self.training_targets['target_consistency']} 次")
+                        print(f"   泛化阶段连续达标: {self.generalization_achievement_count}/{generalization_criteria['target_consistency']} 次")
                 
 
                 collect_start_time = time.time()
-                episode_reward = self.collect_experience_parallel(buffers, steps_per_episode, current_curriculum_config)
+                episode_reward, batch = self.collect_and_process_experience(steps_per_episode, current_curriculum_config)
                 collect_duration = time.time() - collect_start_time
                 
                 # 🔧 V6 安全的策略更新（包含内存检查）
                 update_start_time = time.time()
-                losses = self.update_policy(buffers, entropy_coeff=self.current_entropy_coeff)
+                losses = self.update_policy(batch, entropy_coeff=self.current_entropy_coeff)
                 update_duration = time.time() - update_start_time
                 
                 # 记录统计
@@ -1180,7 +1283,7 @@ class SimplePPOTrainer:
                 self.kpi_history.append(kpi_results)
 
                 # 🔧 核心改造：计算当前回合的综合评分
-                current_score = self._calculate_score(kpi_results, current_curriculum_config)
+                current_score = calculate_episode_score(kpi_results, config=current_curriculum_config)
                 
                 # --- 核心创新：检查阶段转换和训练完成条件 ---
                 target_parts_for_check = self._get_target_parts(current_curriculum_config)
@@ -1208,9 +1311,9 @@ class SimplePPOTrainer:
                 # 3. 自适应熵调整逻辑（修正版）
                 # 修复：使用简化的硬编码配置，避免依赖不存在的ADAPTIVE_ENTROPY_CONFIG
                 adaptive_entropy_enabled = True  # 默认启用
-                start_episode = 10  # 第10回合后开始
-                patience = 20  # 20回合停滞后触发
-                boost_factor = 0.2  # 每次提升20%
+                start_episode = 100  # 第10回合后开始
+                patience = 50  # 20回合停滞后触发
+                boost_factor = 0.1  # 每次提升20%
                 
                 if adaptive_entropy_enabled and episode > start_episode:
                     # 当前的完成率，用于判断是否需要降低熵
@@ -1276,7 +1379,7 @@ class SimplePPOTrainer:
                             tf.summary.scalar('KPI/Completed_Parts', kpi_results['mean_completed_parts'], step=episode)
                             tf.summary.scalar('KPI/Utilization', kpi_results['mean_utilization'], step=episode)
                             tf.summary.scalar('KPI/Tardiness', kpi_results['mean_tardiness'], step=episode)
-                            # 🌟 新增：记录综合评分
+                            # 记录综合评分
                             tf.summary.scalar('KPI/Score', current_score, step=episode)
                             
                             self.train_writer.flush()
@@ -1326,7 +1429,7 @@ class SimplePPOTrainer:
                     real_utilization = full_kpi.get('mean_utilization', 0)
                     
                     # 🔧 V34 修复：获取完整的评估指标，修复设备利用率显示异常
-                    real_tardiness = full_kpi.get('mean_tardiness', 0) / 60  # 转换为分钟
+                    real_tardiness = full_kpi.get('mean_tardiness', 0)  
                     real_reward = full_kpi.get('mean_reward', 0)
                     
                     print(f"🎯 完整难度评估结果（3轮平均）:")
@@ -1556,10 +1659,10 @@ class SimplePPOTrainer:
                  print("\n--- 课程学习各阶段最佳分数 ---")
                  for i, score in enumerate(stage_best_scores):
                      if score != -1.0:
-                         stage_name = CURRICULUM_CONFIG["stages"][i]['name']
+                         stage_name = curriculum_config["stages"][i]['name']
                          print(f"   阶段 '{stage_name}': {score:.3f}")
                      else:
-                         stage_name = CURRICULUM_CONFIG["stages"][i]['name']
+                         stage_name = curriculum_config["stages"][i]['name']
                          print(f"   阶段 '{stage_name}': 未记录最佳分数")
 
 
@@ -1615,34 +1718,6 @@ class SimplePPOTrainer:
             print(f"⚠️ 保存模型时出错: {e}")
             return ""
 
-    def _calculate_score(self, kpi_results: Dict[str, float], curriculum_config: Dict) -> float:
-        """统一计算回合评分的辅助函数"""
-        makespan = kpi_results.get('mean_makespan', 0)
-        completed_parts = kpi_results.get('mean_completed_parts', 0)
-        utilization = kpi_results.get('mean_utilization', 0)
-        tardiness = kpi_results.get('mean_tardiness', 0)
-
-        if completed_parts == 0:
-            return 0.0
-        
-        makespan_score = max(0, 1 - makespan / (SIMULATION_TIME * 1.5)) # 使用1.5倍仿真时间作为基准
-        utilization_score = utilization
-        tardiness_score = max(0, 1 - tardiness / (SIMULATION_TIME * 2.0)) # 使用2倍仿真时间作为基准
-
-        target_parts = get_total_parts_count()
-        if curriculum_config:
-            target_parts = int(get_total_parts_count() * curriculum_config.get('orders_scale', 1.0))
-        
-        completion_score = completed_parts / target_parts if target_parts > 0 else 0
-        
-        current_score = (
-            completion_score * 0.5 +
-            tardiness_score * 0.25 +
-            makespan_score * 0.15 +
-            utilization_score * 0.1
-        )
-        return current_score
-
     def _get_target_parts(self, curriculum_config: Optional[Dict]) -> int:
         """统一获取当前回合的目标零件数"""
         if curriculum_config and 'custom_orders' in curriculum_config:
@@ -1666,49 +1741,59 @@ def main():
     tf.random.set_seed(RANDOM_SEED)
     
     try:
-        max_episodes = 1000  # 最大轮数上限，实际轮数根据性能动态决定
+        # 核心重构：从TRAINING_FLOW_CONFIG获取训练参数
+        max_episodes = TRAINING_FLOW_CONFIG["general_params"]["max_episodes"]
         steps_per_episode = 1500  # 与评估保持一致的步数
         
-        # 🔧 V32 使用配置文件的自适应训练目标配置
-        training_targets = ADAPTIVE_TRAINING_CONFIG.copy()
-        training_targets["max_episodes"] = max_episodes  # 只覆盖最大轮数
+        # 训练目标现在分散在TRAINING_FLOW_CONFIG中，不再需要独立的training_targets字典
         
-        print("🚀 启动V31自适应PPO训练系统")
+
         print("=" * 80)
-        print(f"🎯 训练目标: 综合评分达到 {training_targets['target_score']:.2f}")
-        print(f"⚖️ 稳定性要求: 连续{training_targets['target_consistency']}次达到目标")
-        print(f"📊 轮数上限: {training_targets['max_episodes']}轮 (完整挑战阶段完成后开始早停评估)")
-        print(f"🔄 早停耐心: {training_targets['early_stop_patience']}轮无改进")
+        foundation_criteria = TRAINING_FLOW_CONFIG["foundation_phase"]["graduation_criteria"]
+        generalization_criteria = TRAINING_FLOW_CONFIG["generalization_phase"]["completion_criteria"]
+        
+        print(f"🎯 基础训练目标: 综合评分 > {foundation_criteria['target_score']:.2f}, "
+              f"完成率 > {foundation_criteria['min_completion_rate']:.0f}%, "
+              f"延期 < {foundation_criteria['tardiness_threshold']:.0f}min, "
+              f"连续{foundation_criteria['target_consistency']}次")
+              
+        print(f"🎯 泛化训练目标: 综合评分 > {generalization_criteria['target_score']:.2f}, "
+              f"完成率 > {generalization_criteria['min_completion_rate']:.0f}%, "
+              f"连续{generalization_criteria['target_consistency']}次")
+
+        print(f"📊 轮数上限: {max_episodes}轮")
         print("=" * 80)
         print("🔧 核心配置:")
         print("  工作站:")
         for station, config in WORKSTATIONS.items():
             print(f"    - {station}: 数量={config['count']}, 容量={config['capacity']}")
         
-        grad_config = CURRICULUM_CONFIG.get("graduation_config", {})
-        print("  毕业考试:")
-        print(f"    - 考试轮数: {grad_config.get('exam_episodes', 'N/A')}")
-        print(f"    - 稳定要求: {grad_config.get('stability_requirement', 'N/A')}次通过")
-        print(f"    - 最大重试: {grad_config.get('max_retries', 'N/A')}次")
-        print(f"    - 补课轮数: {grad_config.get('retry_extension', 'N/A')}轮")
+        cl_config = TRAINING_FLOW_CONFIG["foundation_phase"]["curriculum_learning"]
+        if cl_config["enabled"]:
+            grad_config = cl_config["graduation_exam"]
+            print("  课程学习毕业考试:")
+            print(f"    - 考试轮数: {grad_config.get('exam_episodes', 'N/A')}")
+            print(f"    - 稳定要求: {grad_config.get('stability_requirement', 'N/A')}次通过")
+            print(f"    - 最大重试: {grad_config.get('max_retries', 'N/A')}次")
+            print(f"    - 补课轮数: {grad_config.get('retry_extension', 'N/A')}轮")
         
         print(f"  设备故障: {'启用' if EQUIPMENT_FAILURE.get('enabled', False) else '禁用'}")
         print(f"  紧急插单: {'启用' if EMERGENCY_ORDERS.get('enabled', False) else '禁用'}")
         print("-" * 40)
         
         trainer = SimplePPOTrainer(
-            initial_lr=LEARNING_RATE_CONFIG["initial_lr"],  # 🔧 V32：使用配置文件的学习率
-            total_train_episodes=max_episodes,  # 传递最大轮数
+            initial_lr=LEARNING_RATE_CONFIG["initial_lr"],
+            total_train_episodes=max_episodes,
             steps_per_episode=steps_per_episode,
-            training_targets=training_targets   # 🔧 V32核心：传递自适应训练目标
+            training_targets=None  # 不再需要，由内部读取配置文件
         )
         
         # 🔧 V31 启动自适应训练：系统将根据性能自动决定何时停止
         results = trainer.train(
-            max_episodes=max_episodes,           # 最大轮数（上限）
+            max_episodes=max_episodes,
             steps_per_episode=steps_per_episode,
-            eval_frequency=20,                  # 评估频率
-            adaptive_mode=True                  # 🔧 V31核心：启用自适应模式
+            eval_frequency=20,
+            adaptive_mode=True
         )
         
         if results:

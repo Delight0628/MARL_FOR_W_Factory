@@ -13,22 +13,68 @@ from typing import Dict, List, Tuple, Any, Optional
 SIMULATION_TIME = 600  # 10小时
 TIME_UNIT = "minutes"  # 时间单位：分钟
 
-# 课程学习配置
-CURRICULUM_CONFIG = {
-    "enabled": False, # 关键：禁用旧的课程学习，新的两阶段逻辑在ppo_marl_train.py中实现
-    "stages": [
-        {"name": "基础入门", "orders_scale": 0.4, "time_scale": 1.6, "iterations": 30, "graduation_thresholds": 95},
-        {"name": "能力提升", "orders_scale": 0.8, "time_scale": 1.2, "iterations": 50, "graduation_thresholds": 90},
-        {"name": "完整挑战", "orders_scale": 1.0, "time_scale": 1.0, "iterations": 100, "graduation_thresholds": 85},
-    ],
-    # 毕业考试配置
-    "graduation_config": {
-        "exam_episodes": 5,           # 毕业考试回合5轮
-        "stability_requirement": 2,   # 需要连续2次考试通过才能毕业
-        "max_retries": 5,             # 最大重考次数
-        "retry_extension": 10,        # 每次重考延长10轮训练
+# =============================================================================
+# 8. 核心训练流程配置 (Core Training Flow Configuration)
+# =============================================================================
+TRAINING_FLOW_CONFIG = {
+    # --- 阶段一：基础能力训练 ---
+    # 目标：在标准静态环境下，让模型掌握完成100%任务的核心能力。
+    "foundation_phase": {
+        # 毕业标准：必须连续N次达到以下所有条件
+        "graduation_criteria": {
+            "target_score": 0.72,
+            "target_consistency": 6,
+            "tardiness_threshold": 450.0,  # 总延期不得超过450分钟
+            "min_completion_rate": 100.0,   # 必须100%完成
+        },
+        
+        # 可选：在基础训练内部启用课程学习，以循序渐进的方式达到最终目标
+        "curriculum_learning": {
+            "enabled": False,  # 关键开关：是否启用课程学习
+            "stages": [
+                {"name": "基础入门", "orders_scale": 0.4, "time_scale": 1.6, "iterations": 30, "graduation_thresholds": 95},
+                {"name": "能力提升", "orders_scale": 0.8, "time_scale": 1.2, "iterations": 50, "graduation_thresholds": 90},
+                {"name": "完整挑战", "orders_scale": 1.0, "time_scale": 1.0, "iterations": 100, "graduation_thresholds": 85},
+            ],
+            # 阶段间的毕业考试配置
+            "graduation_exam": {
+                "exam_episodes": 5,
+                "stability_requirement": 2,
+                "max_retries": 5,
+                "retry_extension": 10,
+            }
+        }
+    },
+
+    # --- 阶段二：泛化能力强化 ---
+    # 目标：在动态随机环境下，训练模型的鲁棒性和对未知任务的适应能力。
+    "generalization_phase": {
+        # 训练完成标准：连续N次达到以下所有条件
+        "completion_criteria": {
+            "target_score": 0.65,  # 泛化阶段分数要求可略微放宽
+            "target_consistency": 10, # 需要更长时间的稳定表现
+            "min_completion_rate": 85.0, # 允许在随机高难度任务下有少量未完成
+        },
+        
+        # 随机订单生成器配置
+        "random_orders_config": {
+            "min_orders": 5,
+            "max_orders": 8,
+            "min_quantity_per_order": 3,
+            "max_quantity_per_order": 12,
+            "due_date_range": (200.0, 700.0),
+            "priority_weights": [0.3, 0.5, 0.2],
+        }
+    },
+    
+    # --- 通用训练参数 ---
+    "general_params": {
+        "max_episodes": 1000,
+        "early_stop_patience": 100,
+        "performance_window": 15
     }
 }
+
 
 # 随机种子（用于可重复实验）
 RANDOM_SEED = 42
@@ -105,8 +151,15 @@ BASE_ORDERS = [
     {"product": "樱桃木椅子", "quantity": 6, "priority": 1, "due_date": 250},    
 ]
 
+# 随机订单生成参数 (已移至TRAINING_FLOW_CONFIG)
+
 # 队列设置
-QUEUE_CAPACITY = sum(order["quantity"] for order in BASE_ORDERS)
+# 🔧 缺陷修复：动态计算队列容量以防止死锁
+# 容量基于基础订单和随机订单可能产生的最大零件数，并乘以2作为安全系数
+_base_parts_count = sum(order["quantity"] for order in BASE_ORDERS)
+_max_random_parts_count = TRAINING_FLOW_CONFIG["generalization_phase"]["random_orders_config"]["max_orders"] * \
+                          TRAINING_FLOW_CONFIG["generalization_phase"]["random_orders_config"]["max_quantity_per_order"]
+QUEUE_CAPACITY = max(_base_parts_count, _max_random_parts_count) * 2
 
 # 紧急插单配置
 EMERGENCY_ORDERS = {
@@ -120,20 +173,27 @@ EMERGENCY_ORDERS = {
 # 5. 强化学习环境参数 (RL Environment Parameters)
 # =============================================================================
 
-# 🔧 修复：增强观测配置，提供更多信息
 ENHANCED_OBS_CONFIG = {
     "enabled": True,
-    "top_n_parts": 3,                     # 🔧 恢复到3个零件，降低观察复杂性
-    "include_downstream_info": True,      # 保持启用下游信息
-    "time_feature_normalization": 100.0,
+    "obs_slot_size": 3,                     # 观测队列中前3个工件
+    "max_op_duration_norm": 60.0,           # 用于归一化操作时长的最大值
+    "max_bom_ops_norm": 20,                 # 用于归一化剩余工步数的最大值
+    "time_slack_norm": 480.0,               # 用于归一化松弛时间的基准值 (一个8小时班次)
+    "total_remaining_time_norm": 960.0,     # 用于归一化总剩余加工时间的基准值 (两个8小时班次)
+    "w_station_capacity_norm": 10.0,        # 用于归一化队列长度的基准值
+}
+
+# 队列视图配置：启用按紧急度排序以去除"索引偏置"
+QUEUE_VIEW_CONFIG = {
+    "enabled": True,        # 若为True，则状态与动作均基于"紧急度排序视图"
 }
 
 # 动作空间配置，与观测空间保持一致
 ACTION_CONFIG_ENHANCED = {
     "enabled": True,
     # 动作空间自动适应观测配置
-    "action_space_size": ENHANCED_OBS_CONFIG["top_n_parts"] + 1,  # 现在是6个动作（0=IDLE, 1-5=处理零件1-5）
-    "action_names": ["IDLE"] + [f"PROCESS_PART_{i+1}" for i in range(ENHANCED_OBS_CONFIG["top_n_parts"])],
+    "action_space_size": ENHANCED_OBS_CONFIG["obs_slot_size"] + 1,
+    "action_names": ["IDLE"] + [f"PROCESS_MOST_URGENT_{i+1}" for i in range(ENHANCED_OBS_CONFIG["obs_slot_size"])],
 }
 
 
@@ -141,34 +201,32 @@ ACTION_CONFIG_ENHANCED = {
 # 6. 奖励系统配置 (Reward System) - 简洁目标导向设计
 # =============================================================================
 
-REWARD_CONFIG = {
-    # === 核心奖励组件 (简化，让位于时间奖励) ===
-    "part_completion_reward": 10.0,
-    "order_completion_reward": 50.0,
-    
-    # 3. 延期惩罚 - 质量约束
-    "continuous_lateness_penalty": -1,
-    "final_tardiness_penalty": -1,
-    
-    # 4. 闲置惩罚与工作激励 - 效率约束
-    "idle_penalty": -2.0,
-    "idle_penalty_threshold": 3,
-    "work_bonus": 1.0, # 略微降低，因为主要奖励来自时间
-    
-    # 6. 完工大奖 (保持)
-    "final_all_parts_completion_bonus": 500.0,
-    
-    # --- 方案一：全新的、与时间大小直接挂钩的奖励机制 ---
-    "urgency_bonus_scaler": 5.0,           # 对选择最紧急零件的奖励进行缩放
-    "slack_time_reward_multiplier": 0.01,  # 对选择的零件，其正的松弛时间（提前量）的奖励系数
-    "lateness_penalty_multiplier": 0.3,   # 对选择的零件，其负的松弛时间（延期量）的惩罚系数
-    
-    # 禁用旧的、模糊的奖励
-    # "urgent_part_bonus": 1.5,
+# 奖励退火配置（用于逐步关闭启发式护栏）
+REWARD_ANNEALING_CONFIG = {
+    "ANNEALING_END_EPISODE": 100,
+}
 
-    # 通用惩罚 (保持)
-    "wip_penalty": -0.05, # Penalty per part in queue, per agent, per reward step
-    "time_step_penalty": -0.01, # A small penalty for every time step to encourage speed
+# 启发式护栏配置（只在错误极端时介入，且随训练退火）
+HEURISTIC_GUARDRAILS_CONFIG = {
+    "enabled": True,
+    "critical_choice_penalty": 0.5, # 专家修复：名称调整并增加惩罚力度
+    "critical_slack_threshold": -60.0,  # 分钟；更紧急
+    "safe_slack_threshold": 120.0,      # 分钟；更安全
+}
+
+REWARD_CONFIG = {
+    # === 子目标驱动奖励 (Subgoal-Oriented Rewards) ===
+    "on_time_completion_reward": 10.0,
+    "tardiness_penalty_scaler": -2.0,
+    "final_all_parts_completion_bonus": 500.0,
+
+    # === 行为底线惩罚 (Behavioral Baseline Penalties) ===
+    "unnecessary_idle_penalty": -1.,
+    "invalid_action_penalty": -4.0,
+
+    # === 系统风险惩罚 (Systemic Risk Penalty) ===
+    # 专家修复V2：惩罚本地化，避免“连坐”
+    "local_queue_penalty_factor": -0.02,
 }
 
 
@@ -177,24 +235,14 @@ REWARD_CONFIG = {
 # 8. 自定义MAPPO训练配置 (Custom PPO Training Configuration)
 # =============================================================================
 
-# 自适应训练配置
-ADAPTIVE_TRAINING_CONFIG = {
-    "target_score": 0.72,                # 合理的目标分数
-    "target_consistency": 6,             # 合理的一致性要求
-    "max_episodes": 1000,                # 充分的训练轮数
-    "early_stop_patience": 100,          # 更长的耐心，防止过早停止
-    "performance_window": 15,            # 适中的性能窗口
-    # 新增：基础训练毕业的延期硬性门槛 (分钟)
-    "foundation_training_tardiness_threshold": 450.0,
-}
-
 # PPO网络架构配置
 PPO_NETWORK_CONFIG = {
     "hidden_sizes": [1024, 512, 256],    # 🔧 关键：增加网络深度和宽度
     "dropout_rate": 0.1,
     "clip_ratio": 0.25,
-    "entropy_coeff": 0.03,               
-    "num_policy_updates": 16,            # 方案三：增加更新次数
+    "entropy_coeff": 0.05,
+    "ppo_epochs": 10,                    # 专家修复：重命名，明确其为Epochs
+    "num_minibatches": 4,                # 专家修复：新增Mini-batch数量
 }
 
 # 学习率调度配置
@@ -202,6 +250,7 @@ LEARNING_RATE_CONFIG = {
     "initial_lr": 8e-5,                  # 方案三：微调初始学习率
     "end_lr": 1e-6,
     "decay_power": 0.8,
+    "critic_lr_multiplier": 0.5,         # 专家修复：为Critic设置一个较低的学习率乘数，以稳定价值学习
 }
 
 # 系统资源配置
@@ -216,16 +265,6 @@ SYSTEM_CONFIG = {
 # 10. 随机领域生成配置 (Random Domain Generation)
 # =============================================================================
 
-# 随机订单生成参数
-RANDOM_ORDERS_CONFIG = {
-    "min_orders": 5,           # 最少订单数
-    "max_orders": 8,           # 最多订单数
-    "min_quantity_per_order": 3,  # 每个订单最少零件数
-    "max_quantity_per_order": 12, # 每个订单最多零件数
-    "due_date_range": (200.0, 700.0),  # 交期范围
-    "priority_weights": [0.3, 0.5, 0.2],  # 优先级1,2,3的概率权重
-}
-
 def generate_random_orders() -> List[Dict[str, Any]]:
     """
     生成随机订单配置，用于泛化能力训练
@@ -233,7 +272,7 @@ def generate_random_orders() -> List[Dict[str, Any]]:
     """
     import random
     
-    config = RANDOM_ORDERS_CONFIG
+    config = TRAINING_FLOW_CONFIG["generalization_phase"]["random_orders_config"]
     product_types = list(PRODUCT_ROUTES.keys())
     
     # 随机决定订单数量
@@ -264,6 +303,49 @@ def generate_random_orders() -> List[Dict[str, Any]]:
         })
     
     return generated_orders
+
+
+# =============================================================================
+# 7. 评分与辅助函数 (Scoring and Helper Functions)
+# =============================================================================
+
+def calculate_episode_score(kpi_results: Dict[str, float], config: Dict = None) -> float:
+    """
+    根据单次仿真的KPI结果计算综合评分。
+    config: WFactorySim的环境配置，用于获取课程学习信息
+    """
+    config = config or {}
+    
+    # 适配 `get_final_stats` 和 `quick_kpi_evaluation` 的不同key
+    makespan = kpi_results.get('makespan', kpi_results.get('mean_makespan', 0))
+    completed_parts = kpi_results.get('total_parts', kpi_results.get('mean_completed_parts', 0))
+    utilization = kpi_results.get('mean_utilization', 0)
+    tardiness = kpi_results.get('total_tardiness', kpi_results.get('mean_tardiness', 0))
+    
+    if completed_parts == 0:
+        return 0.0
+    
+    makespan_score = max(0, 1 - makespan / (SIMULATION_TIME * 1.5))
+    utilization_score = utilization
+    tardiness_score = max(0, 1 - tardiness / (SIMULATION_TIME * 2.0))
+    
+    # 获取目标零件数
+    if 'custom_orders' in config:
+        target_parts = get_total_parts_count(config['custom_orders'])
+    elif 'orders_scale' in config:
+        target_parts = int(get_total_parts_count() * config.get('orders_scale', 1.0))
+    else:
+        target_parts = get_total_parts_count()
+
+    completion_score = completed_parts / target_parts if target_parts > 0 else 0
+    
+    current_score = (
+        completion_score * 0.40 +
+        tardiness_score * 0.35 +
+        makespan_score * 0.15 +
+        utilization_score * 0.1
+    )
+    return current_score
 
 
 def get_total_parts_count(orders_list: Optional[List[Dict[str, Any]]] = None) -> int:

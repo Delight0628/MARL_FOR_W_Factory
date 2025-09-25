@@ -37,68 +37,76 @@ def decode_observation(obs_vector: np.ndarray, agent_id: str) -> str:
         return "  - 观测向量为空"
 
     decoded_lines = ["[Observation Vector]"]
-    station_name = agent_id.replace("agent_", "")
     
+    # 从配置中获取维度信息
     station_types = list(WORKSTATIONS.keys())
     product_types = list(PRODUCT_ROUTES.keys())
     num_stations = len(station_types)
-    top_n = ENHANCED_OBS_CONFIG["top_n_parts"]
-    part_features_count = 6 # 根据get_state_for_agent的定义，每个零件有6个特征
-    
-    current_idx = 0
+    obs_slot_size = ENHANCED_OBS_CONFIG["obs_slot_size"]
+    workpiece_feature_count = 10  # V3版工件特征数量为10
 
+    current_idx = 0
     try:
-        # 1. Agent ID
+        # --- 1. Agent Features ---
+        decoded_lines.append("  --- 1. 智能体自身特征 ---")
+        
+        # Agent ID (one-hot)
         agent_id_one_hot = obs_vector[current_idx : current_idx + num_stations]
         station_idx = np.argmax(agent_id_one_hot)
-        decoded_lines.append(f"  - 智能体身份: {station_types[station_idx]} (one-hot)")
+        decoded_lines.append(f"    - 智能体身份: {station_types[station_idx]} (one-hot)")
         current_idx += num_stations
 
-        # 2. Workstation capacity
+        # Capacity
         capacity = obs_vector[current_idx] * 5.0
-        decoded_lines.append(f"  - 工作站容量: {capacity:.1f}")
+        decoded_lines.append(f"    - 工作站容量: {capacity:.1f}")
         current_idx += 1
         
-        # 3. Equipment status
+        # Status
         busy_ratio = obs_vector[current_idx]
         is_failed = obs_vector[current_idx + 1] > 0.5
-        decoded_lines.append(f"  - 设备状态: [繁忙率: {busy_ratio:.1%}, 是否故障: {'是' if is_failed else '否'}]")
+        decoded_lines.append(f"    - 设备状态: [繁忙率: {busy_ratio:.1%}, 是否故障: {'是' if is_failed else '否'}]")
         current_idx += 2
         
-        # 4. Queue details
-        decoded_lines.append("  - 队列零件 (前N个):")
-        for i in range(top_n):
-            part_vec = obs_vector[current_idx : current_idx + part_features_count]
-            if np.any(part_vec != 0):
-                rem_time, urgency, priority, is_last, prod_type_enc, slack = part_vec
-                
-                # 解码产品类型
-                prod_idx = int(round(prod_type_enc * len(product_types) - 1))
-                product_name = product_types[prod_idx] if 0 <= prod_idx < len(product_types) else "未知"
+        # --- 2. Global Features ---
+        decoded_lines.append("  --- 2. 全局宏观特征 ---")
+        time_prog = obs_vector[current_idx]
+        wip_ratio = obs_vector[current_idx + 1]
+        decoded_lines.append(f"    - 全局信息: [时间进度: {time_prog:.1%}, WIP率: {wip_ratio:.1%}]")
+        current_idx += 2
+        
+        # --- 3. Workpiece Features ---
+        decoded_lines.append("  --- 3. 队列中工件的详细特征 ---")
+        for i in range(obs_slot_size):
+            part_vec = obs_vector[current_idx : current_idx + workpiece_feature_count]
+            exists = part_vec[0]
 
+            if exists > 0.5:
+                # Unpack all 10 features from V3 state space
+                (exists, norm_slack, norm_rem_ops, norm_rem_time, 
+                 norm_op_dur, is_late, downstream_cong, priority, 
+                 is_final, prod_type_enc) = part_vec
+                
+                # Decode product type
+                prod_idx = int(round(prod_type_enc * len(product_types))) - 1
+                product_name = product_types[prod_idx] if 0 <= prod_idx < len(product_types) else "未知"
+                
+                # Un-normalize values for readability
+                time_slack = norm_slack * ENHANCED_OBS_CONFIG["time_slack_norm"]
+                
                 decoded_lines.append(
-                    f"    {i+1}. {product_name}: [剩余时间: {rem_time:.1%}, 紧急度: {urgency:.2f}, "
-                    f"优先级: {priority*5.0:.1f}, 终点站: {'是' if is_last > 0.5 else '否'}, 松弛时间: {slack*300.0:.1f}]"
+                    f"    槽位 {i+1} ({product_name}):\n"
+                    f"      - 状态: [松弛时间: {time_slack:.1f}, 将延期: {'是' if is_late > 0.5 else '否'}, 最终工序: {'是' if is_final > 0.5 else '否'}]\n"
+                    f"      - 属性: [优先级: {priority*5.0:.1f}, 下游拥堵: {downstream_cong:.1%}]"
                 )
             else:
-                decoded_lines.append(f"    {i+1}. (空)")
-            current_idx += part_features_count
-        
-        # 5. Downstream info
-        if ENHANCED_OBS_CONFIG["include_downstream_info"]:
-            downstream_queue = obs_vector[current_idx]
-            decoded_lines.append(f"  - 下游队列占用率: {downstream_queue:.1%}")
-            current_idx += 1
-        
-        # 6. Global info
-        time_prog, wip_ratio, completion_ratio = obs_vector[current_idx : current_idx + 3]
-        decoded_lines.append(f"  - 全局信息: [时间进度: {time_prog:.1%}, WIP率: {wip_ratio:.1%}, 完成率: {completion_ratio:.1%}]")
-        current_idx += 3
+                decoded_lines.append(f"    槽位 {i+1}: (空)")
+            
+            current_idx += workpiece_feature_count
 
     except IndexError:
-        decoded_lines.append("  - (观测向量维度不匹配，部分信息无法解析)")
+        decoded_lines.append("  - (!! 观测向量维度不匹配，部分信息无法解析 !!)")
     except Exception as e:
-        decoded_lines.append(f"  - (解析时发生未知错误: {e})")
+        decoded_lines.append(f"  - (!! 解析时发生未知错误: {e} !!)")
 
     return "\n".join(decoded_lines)
 
