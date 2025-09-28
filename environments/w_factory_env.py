@@ -25,10 +25,36 @@ def _calculate_part_total_remaining_processing_time(part: 'Part') -> float:
         return 0.0
     return sum(step['time'] for i, step in enumerate(route) if i >= part.current_step)
 
-def calculate_slack_time(part: 'Part', current_time: float) -> float:
-    """计算零件的松弛时间 (Slack Time)"""
+def calculate_slack_time(part: 'Part', current_time: float, queues: Dict[str, Any] = None, workstations: Dict[str, Dict] = None) -> float:
+    """
+    计算零件的松弛时间 (Slack Time) - 改进版本，考虑队列等待时间
+    
+    Args:
+        part: 零件对象
+        current_time: 当前时间
+        queues: 工作站队列字典（可选）
+        workstations: 工作站配置字典（可选）
+    
+    Returns:
+        松弛时间（分钟）。正值表示有余量，负值表示可能延期
+    """
     remaining_processing_time = _calculate_part_total_remaining_processing_time(part)
-    return (part.due_date - current_time) - remaining_processing_time
+    
+    # 基础松弛时间（原始计算）
+    basic_slack = (part.due_date - current_time) - remaining_processing_time
+    
+    # 如果提供了队列和工作站信息，则考虑等待时间
+    if queues is not None and workstations is not None:
+        try:
+            from .w_factory_config import calculate_estimated_waiting_time, WORKSTATIONS
+            estimated_waiting = calculate_estimated_waiting_time(part, current_time, queues, WORKSTATIONS)
+            # 修正后的松弛时间 = 基础松弛时间 - 估算等待时间
+            return basic_slack - estimated_waiting
+        except (ImportError, Exception):
+            # 如果导入失败或计算出错，回退到基础计算
+            pass
+    
+    return basic_slack
 
 # =============================================================================
 # 1. 数据结构定义 (Data Structures)
@@ -489,7 +515,7 @@ class WFactorySim:
             downstream = feats[5]  # 下游拥堵情况
             
             # 判断是否已延期或即将延期
-            time_slack = calculate_slack_time(part, self.env.now)
+            time_slack = calculate_slack_time(part, self.env.now, self.queues, WORKSTATIONS)
             is_late_soon = 1.0 if time_slack < 0 else 0.0
             
             # 已/将延期优先 -> late_flag 越小越优
@@ -507,8 +533,8 @@ class WFactorySim:
         # 特征1: 是否存在
         exists = 1.0
         
-        # 特征2: 时间松弛度
-        time_slack = calculate_slack_time(part, self.env.now)
+        # 特征2: 时间松弛度（改进版本，考虑队列等待时间）
+        time_slack = calculate_slack_time(part, self.env.now, self.queues, WORKSTATIONS)
         normalized_time_slack = time_slack / ENHANCED_OBS_CONFIG["time_slack_norm"]
         
         # 特征3: 剩余工序数
@@ -605,7 +631,7 @@ class WFactorySim:
         urgent_parts_count = 0
         
         for part in self.active_parts:
-            slack_time = calculate_slack_time(part, self.env.now)
+            slack_time = calculate_slack_time(part, self.env.now, self.queues, WORKSTATIONS)
             if slack_time < -60:  # 严重延期
                 critical_parts_count += 1
             elif slack_time < 0:  # 一般延期
@@ -680,7 +706,7 @@ class WFactorySim:
                         if orig_index < len(self.queues[station_name].items):
                             selected_part = sorted_view[chosen_view_idx]["part"]
                             context["selected_part"] = selected_part
-                            context["selected_part_slack"] = calculate_slack_time(selected_part, decision_time)
+                            context["selected_part_slack"] = calculate_slack_time(selected_part, decision_time, self.queues, WORKSTATIONS)
                             context["orig_index_before"] = orig_index
                             self._process_part_at_station(station_name, part_index=orig_index)
                             context["processed"] = True
@@ -688,7 +714,7 @@ class WFactorySim:
                     if chosen_view_idx < len(pre_queue_snapshot):
                         selected_part = pre_queue_snapshot[chosen_view_idx]
                         context["selected_part"] = selected_part
-                        context["selected_part_slack"] = calculate_slack_time(selected_part, decision_time)
+                        context["selected_part_slack"] = calculate_slack_time(selected_part, decision_time, self.queues, WORKSTATIONS)
                         context["orig_index_before"] = chosen_view_idx
                         self._process_part_at_station(station_name, part_index=chosen_view_idx)
                         context["processed"] = True
@@ -827,42 +853,54 @@ class WFactorySim:
                 else:
                     part_reward = REWARD_CONFIG.get("on_time_completion_reward", 0.0)
                 
-                # 信用分配：按贡献时间加权分配给所有贡献者
-                total_contribution_time = sum(part.contribution_map.values())
-                if total_contribution_time > 0:
-                    for station_name, contributed_time in part.contribution_map.items():
+                # 🔧 修复：基于调度决策重要性的均匀信用分配
+                # 避免按加工时间分配造成的学习信号偏差
+                if part.contribution_map:
+                    # 均匀分配给所有参与加工的工作站
+                    participating_stations = list(part.contribution_map.keys())
+                    equal_weight = 1.0 / len(participating_stations)
+                    for station_name in participating_stations:
                         agent_id = f"agent_{station_name}"
                         if agent_id in rewards:
-                            # 权重 = 该站贡献时间 / 总贡献时间
-                            weight = contributed_time / total_contribution_time
-                            rewards[agent_id] += part_reward * weight
+                            rewards[agent_id] += part_reward * equal_weight
         
         # === 2. 启发式护栏（仅在极端错误时介入，且随训练退火） ===
         if guard_cfg.get('enabled', False) and shaping_strength > 0.0:
-            critical_thr = float(guard_cfg.get('critical_slack_threshold', -60.0))
-            safe_thr = float(guard_cfg.get('safe_slack_threshold', 120.0))
-            penalty_base = float(guard_cfg.get('critical_choice_penalty', 0.5))
+            # 核心逻辑：仅在非课程学习模式，或课程学习的“完整挑战”阶段启用护栏
+            activate_guardrails = True
             
-            for agent_id, action in actions.items():
-                if action <= 0:
-                    continue
-                context = action_context.get(agent_id, {})
-                selected_part = context.get("selected_part")
-                if selected_part is None:
-                    continue
-                decision_time = context.get("decision_time", self.current_time)
-                queue_snapshot = context.get("queue_snapshot", [])
-                chosen_slack = context.get("selected_part_slack")
-                if chosen_slack is None:
-                    chosen_slack = calculate_slack_time(selected_part, decision_time)
+            # 检查是否在课程学习模式下
+            is_in_curriculum = 'stage_name' in self.config
+            if is_in_curriculum:
+                # 如果在课程学习中，只有“完整挑战”阶段才激活
+                if self.config.get('stage_name') != "完整挑战":
+                    activate_guardrails = False
+            
+            if activate_guardrails:
+                critical_thr = float(guard_cfg.get('critical_slack_threshold', -60.0))
+                safe_thr = float(guard_cfg.get('safe_slack_threshold', 120.0))
+                penalty_base = float(guard_cfg.get('critical_choice_penalty', 0.5))
                 
-                # 是否存在“火烧眉毛”的零件
-                exists_critical = any(calculate_slack_time(p, decision_time) < critical_thr for p in queue_snapshot)
-                # 选择是否“很安全”的零件
-                chosen_is_safe = chosen_slack > safe_thr
-                
-                if exists_critical and chosen_is_safe:
-                    rewards[agent_id] -= penalty_base * shaping_strength
+                for agent_id, action in actions.items():
+                    if action <= 0:
+                        continue
+                    context = action_context.get(agent_id, {})
+                    selected_part = context.get("selected_part")
+                    if selected_part is None:
+                        continue
+                    decision_time = context.get("decision_time", self.current_time)
+                    queue_snapshot = context.get("queue_snapshot", [])
+                    chosen_slack = context.get("selected_part_slack")
+                    if chosen_slack is None:
+                        chosen_slack = calculate_slack_time(selected_part, decision_time, self.queues, WORKSTATIONS)
+                    
+                    # 是否存在"火烧眉毛"的零件
+                    exists_critical = any(calculate_slack_time(p, decision_time, self.queues, WORKSTATIONS) < critical_thr for p in queue_snapshot)
+                    # 选择是否“很安全”的零件
+                    chosen_is_safe = chosen_slack > safe_thr
+                    
+                    if exists_critical and chosen_is_safe:
+                        rewards[agent_id] -= penalty_base * shaping_strength
         
         # === 3. 本地化拥堵惩罚 (替代全局惩罚) ===
         penalty_factor = REWARD_CONFIG.get("local_queue_penalty_factor", 0.0)

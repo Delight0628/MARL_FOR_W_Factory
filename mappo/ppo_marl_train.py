@@ -1083,7 +1083,7 @@ class SimplePPOTrainer:
         best_makespan = float('inf')
         
         # 🔧 V27 核心修复：为课程学习的每个阶段独立跟踪最佳分数
-        stage_best_scores = [-1.0] * len(curriculum_config["stages"]) if curriculum_enabled else []
+        stage_best_scores = [0.0] * len(curriculum_config["stages"]) if curriculum_enabled else []
         
         try:
             for episode in range(max_episodes):
@@ -1213,21 +1213,32 @@ class SimplePPOTrainer:
                     stage_episode_count += 1
                 
                 # --- 核心创新：基础训练 + 随机领域强化 叠加逻辑 ---
-                # 无论是否使用课程学习，都要经过这个额外的两阶段认证
+                # 🔧 修复：只有在课程学习完成所有阶段后，才强制使用基础认证配置
+                
+                # 检查课程学习是否已完成所有阶段
+                curriculum_completed = False
+                if curriculum_enabled:
+                    curriculum_completed = current_stage >= len(curriculum_config["stages"])
                 
                 if not self.foundation_training_completed:
-                    # 阶段1：基础能力训练阶段
-                    # 强制使用BASE_ORDERS进行训练，直到模型达到基础能力标准
-                    foundation_config = {
-                        'orders_scale': 1.0,
-                        'time_scale': 1.0,
-                        'stage_name': '基础能力认证',
-                        'custom_orders': BASE_ORDERS,
-                        'disable_failures': True
-                    }
-                    
-                    # 如果已有课程学习的配置，则基础训练阶段会覆盖它
-                    current_curriculum_config = foundation_config
+                    # 如果课程学习未启用或已完成，才使用基础能力认证配置
+                    if not curriculum_enabled or curriculum_completed:
+                        # 阶段1：基础能力训练阶段（仅在课程学习完成后）
+                        # 强制使用BASE_ORDERS进行训练，直到模型达到基础能力标准
+                        foundation_config = {
+                            'orders_scale': 1.0,
+                            'time_scale': 1.0,
+                            'stage_name': '基础能力认证',
+                            'custom_orders': BASE_ORDERS,
+                            'disable_failures': True
+                        }
+                        
+                        current_curriculum_config = foundation_config
+                        current_curriculum_config['current_episode'] = episode
+                    # 🔧 关键修复：如果课程学习正在进行，保持课程学习的配置不被覆盖
+                    elif curriculum_enabled and not curriculum_completed:
+                        if current_curriculum_config:
+                            current_curriculum_config['current_episode'] = episode
                     
                     if episode % 20 == 0:
                         foundation_criteria = self.training_flow_config["foundation_phase"]["graduation_criteria"]
@@ -1250,7 +1261,8 @@ class SimplePPOTrainer:
                         'custom_orders': random_orders,
                         'randomize_env': True,  # 启用环境扰动
                         'stage_name': f'随机领域强化-R{episode}',
-                        'disable_failures': True
+                        'disable_failures': True,
+                        'current_episode': episode
                     }
                     
                     current_curriculum_config = generalization_config
@@ -1290,10 +1302,23 @@ class SimplePPOTrainer:
                 
                 completion_rate_for_check = (kpi_results.get('mean_completed_parts', 0) / target_parts_for_check) * 100 if target_parts_for_check > 0 else 0
                 
-                # 检查基础训练是否完成
+                # 🔧 修复：只有在"完整挑战"阶段或课程学习完成后才检查基础训练完成
+                should_check_foundation_completion = False
                 if not self.foundation_training_completed:
-                    if self.check_foundation_training_completion(kpi_results, current_score):
-                        self.foundation_training_completed = True
+                    if curriculum_enabled:
+                        # 课程学习模式：只有在"完整挑战"阶段才检查基础训练完成
+                        if current_curriculum_config and current_curriculum_config.get('stage_name') == '完整挑战':
+                            should_check_foundation_completion = True
+                        # 或者课程学习已完成所有阶段
+                        elif current_stage >= len(curriculum_config["stages"]):
+                            should_check_foundation_completion = True
+                    else:
+                        # 非课程学习模式：直接检查
+                        should_check_foundation_completion = True
+                    
+                    if should_check_foundation_completion:
+                        if self.check_foundation_training_completion(kpi_results, current_score):
+                            self.foundation_training_completed = True
                 
                 # 检查泛化训练是否完成（这将触发整个训练的结束）
                 training_should_end = False
@@ -1478,39 +1503,48 @@ class SimplePPOTrainer:
 
                 # === 核心重构：模型保存逻辑 ===
                 
-                # 1. 两阶段训练的独立模型保存
                 model_update_info = ""
-                phase_model_saved = False
-                if not self.foundation_training_completed:
-                    # 基础训练阶段的模型保存
-                    if current_score > self.best_score_foundation_phase:
-                        self.best_score_foundation_phase = current_score
-                        self.best_kpi_foundation_phase = kpi_results.copy()
-                        self.best_episode_foundation_phase = episode + 1
-                        model_path = self.save_model(f"{self.models_dir}/{timestamp}base_train_best")
-                        if model_path:
-                            model_update_info = f"✅ 基础训练阶段最佳! 模型保存至: {model_path}"
-                            phase_model_saved = True
-                elif self.generalization_phase_active:
-                    # 泛化强化阶段的模型保存
-                    if current_score > self.best_score_generalization_phase:
-                        self.best_score_generalization_phase = current_score
-                        self.best_kpi_generalization_phase = kpi_results.copy()
-                        self.best_episode_generalization_phase = episode + 1
-                        model_path = self.save_model(f"{self.models_dir}/{timestamp}general_train_best")
-                        if model_path:
-                            model_update_info = f"🏆 泛化强化阶段最佳! 模型保存至: {model_path}"
-                            phase_model_saved = True
-
-                # 2. 课程学习各阶段最佳分数保存模型（仅在课程学习启用且两阶段模型未保存时执行）
-                if not phase_model_saved and curriculum_enabled:
-                    if current_score > stage_best_scores[current_stage]:
-                        stage_best_scores[current_stage] = current_score
-                        stage_name = current_curriculum_config['stage_name'].replace(" ", "_")
-                        model_path = self.save_model(f"{self.models_dir}/{timestamp}_{stage_name}_best")
-                        if model_path:
-                            stage_display_name = current_curriculum_config['stage_name']
-                            model_update_info = f"✅ {stage_display_name}阶段最佳! 模型保存至: {model_path}"
+                
+                if curriculum_enabled:
+                    # --- 启用课程学习时的保存逻辑 ---
+                    if not self.foundation_training_completed:
+                        # 1. 保存当前课程阶段的最佳模型
+                        if current_score > stage_best_scores[current_stage]:
+                            stage_best_scores[current_stage] = current_score
+                            stage_name = current_curriculum_config['stage_name'].replace(" ", "_")
+                            model_path = self.save_model(f"{self.models_dir}/{timestamp}_{stage_name}_best")
+                            if model_path:
+                                stage_display_name = current_curriculum_config['stage_name']
+                                model_update_info = f"✅ {stage_display_name}阶段最佳! 模型保存至: {model_path}"
+                    elif self.generalization_phase_active:
+                        # 2. 泛化强化阶段的模型保存
+                        if current_score > self.best_score_generalization_phase:
+                            self.best_score_generalization_phase = current_score
+                            self.best_kpi_generalization_phase = kpi_results.copy()
+                            self.best_episode_generalization_phase = episode + 1
+                            model_path = self.save_model(f"{self.models_dir}/{timestamp}general_train_best")
+                            if model_path:
+                                model_update_info = f"🏆 泛化强化阶段最佳! 模型保存至: {model_path}"
+                else:  # curriculum_enabled is False
+                    # --- 未启用课程学习时的保存逻辑 ---
+                    if not self.foundation_training_completed:
+                        # 1. 基础训练阶段的模型保存
+                        if current_score > self.best_score_foundation_phase:
+                            self.best_score_foundation_phase = current_score
+                            self.best_kpi_foundation_phase = kpi_results.copy()
+                            self.best_episode_foundation_phase = episode + 1
+                            model_path = self.save_model(f"{self.models_dir}/{timestamp}base_train_best")
+                            if model_path:
+                                model_update_info = f"✅ 基础训练阶段最佳! 模型保存至: {model_path}"
+                    elif self.generalization_phase_active:
+                        # 2. 泛化强化阶段的模型保存
+                        if current_score > self.best_score_generalization_phase:
+                            self.best_score_generalization_phase = current_score
+                            self.best_kpi_generalization_phase = kpi_results.copy()
+                            self.best_episode_generalization_phase = episode + 1
+                            model_path = self.save_model(f"{self.models_dir}/{timestamp}general_train_best")
+                            if model_path:
+                                model_update_info = f"🏆 泛化强化阶段最佳! 模型保存至: {model_path}"
                 
                 # 3. 全局"双达标"最佳模型保存（独立于所有其他逻辑）
                 #    首先，获取当前回合的正确目标零件数
@@ -1518,8 +1552,19 @@ class SimplePPOTrainer:
                 
                 completion_rate_kpi = (kpi_results.get('mean_completed_parts', 0) / target_parts_for_dual_check) * 100 if target_parts_for_dual_check > 0 else 0
                 
+                # 🔧 修复：根据课程学习状态决定是否保存"双达标"模型
+                save_condition_met = False
+                if not curriculum_enabled:
+                    # 未启用课程学习：全程允许保存
+                    save_condition_met = True
+                else:
+                    # 启用课程学习：只在"完整挑战"阶段或泛化阶段允许保存
+                    is_complete_challenge = current_curriculum_config and current_curriculum_config.get('stage_name') == '完整挑战'
+                    if is_complete_challenge or self.generalization_phase_active:
+                        save_condition_met = True
+                
                 dual_objective_model_update_info = ""
-                if completion_rate_kpi >= 100 and current_score > self.best_score_dual_objective:
+                if save_condition_met and completion_rate_kpi >= 100 and current_score > self.best_score_dual_objective:
                     self.best_score_dual_objective = current_score
                     self.best_kpi_dual_objective = kpi_results.copy()
                     self.best_episode_dual_objective = episode + 1
@@ -1527,10 +1572,11 @@ class SimplePPOTrainer:
                     if dual_objective_best_path:
                         dual_objective_model_update_info = f" ⭐完成所有零件得分最佳!模型保存至: {dual_objective_best_path}"
                         
-                        # 修复方案二：在这里重置停滞计数器（只有全局最佳模型保存时）
-                        print(f"🎉 新的全局最佳模型! 重置停滞计数。")
-                        self.epochs_without_improvement = 0
-                        self.stagnation_level = 0  # 创下新高，"警报"解除
+                        # 修复方案二：只有在特定阶段才重置停滞计数器
+                        if should_check_foundation_completion or self.generalization_phase_active:
+                            print(f"🎉 新的全局最佳模型! 重置停滞计数。")
+                            self.epochs_without_improvement = 0
+                            self.stagnation_level = 0  # 创下新高，"警报"解除
                 
                 # ------------------- 统一日志输出开始 -------------------
 
@@ -1541,22 +1587,35 @@ class SimplePPOTrainer:
                 target_parts_for_log = self._get_target_parts(current_curriculum_config)
                 stage_info_str = ""
                 if current_curriculum_config and 'stage_name' in current_curriculum_config:
-                    stage_info_str = f"   | 阶段: '{current_curriculum_config['stage_name']}'"
+                    stage_name = current_curriculum_config['stage_name']
+                    # 🔧 修复：显示两级阶段信息（课程学习阶段 + 基础训练阶段）
+                    if curriculum_enabled and not curriculum_completed:
+                        curriculum_stage_name = curriculum_config["stages"][current_stage]['name']
+                        foundation_phase = '基础训练' if not self.foundation_training_completed else '泛化训练'
+                        stage_info_str = f"   | 课程: '{curriculum_stage_name}' | 大阶段: '{foundation_phase}'"
+                    else:
+                        stage_info_str = f"   | 阶段: '{stage_name}'"
                 
                 target_parts_str = f"/{target_parts_for_log}"
                 line2 = f"📊 KPI - 总完工时间: {makespan:.1f}min  | 设备利用率: {utilization:.1%} | 延期时间: {tardiness:.1f}min |  完成零件数: {completed_parts:.0f}{target_parts_str}{stage_info_str}"
 
                 # 第三行：评分和模型更新信息
                 phase_best_str = ""
-                if not self.foundation_training_completed:
-                    phase_best_str = f" (基础阶段最佳: {self.best_score_foundation_phase:.3f})"
-                elif self.generalization_phase_active:
-                    phase_best_str = f" (泛化阶段最佳: {self.best_score_generalization_phase:.3f})"
-                
                 if curriculum_enabled:
-                    stage_best_str = f" (课程阶段最佳: {stage_best_scores[current_stage]:.3f})"
-                    line3_score = f"🚥 回合评分: {current_score:.3f} (全局最佳: {self.best_score:.3f}){phase_best_str}{stage_best_str}"
+                    # 🔧 修复：启用课程学习时，显示当前课程阶段的最佳分数
+                    if not self.foundation_training_completed:
+                        stage_display_name = current_curriculum_config.get('stage_name', '当前阶段')
+                        stage_best_str = f" ({stage_display_name}最佳: {stage_best_scores[current_stage]:.3f})"
+                        line3_score = f"🚥 回合评分: {current_score:.3f} (全局最佳: {self.best_score:.3f}){stage_best_str}"
+                    elif self.generalization_phase_active:
+                        phase_best_str = f" (泛化阶段最佳: {self.best_score_generalization_phase:.3f})"
+                        line3_score = f"🚥 回合评分: {current_score:.3f} (全局最佳: {self.best_score:.3f}){phase_best_str}"
                 else:
+                    # 🔧 修复：未启用课程学习时，显示基础训练阶段的最佳分数
+                    if not self.foundation_training_completed:
+                        phase_best_str = f" (基础阶段最佳: {self.best_score_foundation_phase:.3f})"
+                    elif self.generalization_phase_active:
+                        phase_best_str = f" (泛化阶段最佳: {self.best_score_generalization_phase:.3f})"
                     line3_score = f"🚥 回合评分: {current_score:.3f} (全局最佳: {self.best_score:.3f}){phase_best_str}"
                 
                 # 合并所有模型更新信息
@@ -1767,18 +1826,29 @@ def main():
         print("  工作站:")
         for station, config in WORKSTATIONS.items():
             print(f"    - {station}: 数量={config['count']}, 容量={config['capacity']}")
+
+        print("  奖励系统:")
+        for key, value in REWARD_CONFIG.items():
+            print(f"    - {key}: {value}")
         
         cl_config = TRAINING_FLOW_CONFIG["foundation_phase"]["curriculum_learning"]
-        if cl_config["enabled"]:
-            grad_config = cl_config["graduation_exam"]
+        
+        print("  启用/禁用模块:")
+        print(f"    - 课程学习: {'启用' if cl_config.get('enabled', False) else '禁用'}")
+        print(f"    - 设备故障: {'启用' if EQUIPMENT_FAILURE.get('enabled', False) else '禁用'}")
+        print(f"    - 紧急插单: {'启用' if EMERGENCY_ORDERS.get('enabled', False) else '禁用'}")
+        print(f"    - 启发式护栏: {'启用' if HEURISTIC_GUARDRAILS_CONFIG.get('enabled', False) else '禁用'}")
+        print(f"    - 增强观测: {'启用' if ENHANCED_OBS_CONFIG.get('enabled', False) else '禁用'}")
+        print(f"    - 紧急度排序视图: {'启用' if QUEUE_VIEW_CONFIG.get('enabled', False) else '禁用'}")
+
+        if cl_config.get("enabled", False):
+            grad_config = cl_config.get("graduation_exam", {})
             print("  课程学习毕业考试:")
             print(f"    - 考试轮数: {grad_config.get('exam_episodes', 'N/A')}")
             print(f"    - 稳定要求: {grad_config.get('stability_requirement', 'N/A')}次通过")
             print(f"    - 最大重试: {grad_config.get('max_retries', 'N/A')}次")
             print(f"    - 补课轮数: {grad_config.get('retry_extension', 'N/A')}轮")
         
-        print(f"  设备故障: {'启用' if EQUIPMENT_FAILURE.get('enabled', False) else '禁用'}")
-        print(f"  紧急插单: {'启用' if EMERGENCY_ORDERS.get('enabled', False) else '禁用'}")
         print("-" * 40)
         
         trainer = SimplePPOTrainer(

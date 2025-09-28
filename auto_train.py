@@ -5,7 +5,24 @@ import datetime
 import argparse
 import subprocess
 from pathlib import Path
-print(f"✨ 训练进程PID: {os.getpid()}", flush=True)
+import signal
+
+# 全局变量，用于存储需要监控的子进程
+child_processes = []
+
+def cleanup(signum, frame):
+    """信号处理函数，用于在脚本退出前清理子进程。"""
+    print(f"\n🚦 捕获到信号 {signum}。正在清理后台训练进程...", flush=True)
+    for p in child_processes:
+        if p.poll() is None:  # 检查进程是否仍在运行
+            try:
+                # 强制杀死子进程的整个进程组，确保完全终止
+                os.killpg(os.getpgid(p.pid), signal.SIGKILL)
+                print(f"🔪 已发送 SIGKILL 到 PID 为 {p.pid} 的进程组。", flush=True)
+            except ProcessLookupError:
+                pass  # 进程可能已经结束
+    sys.exit(0)
+
 # 模型的基础目录，相对于脚本位置
 MODELS_BASE_DIR = "mappo/ppo_models"
 
@@ -27,10 +44,22 @@ def find_new_model_dir(dirs_before, timeout=120):
     print(f"❌ 等待新模型目录超时（{timeout}秒）。", flush=True)
     return None
 
-def run_command(command):
-    """使用nohup在后台运行一个命令并打印该命令。"""
+def run_detached_command(command):
+    """在后台运行一个完全分离的命令。"""
     print(f"🚀 正在执行命令:\n   {command}", flush=True)
     subprocess.Popen(command, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+def launch_and_monitor_child(cmd_list, log_file):
+    """
+    启动一个需要被监控的子进程（例如训练脚本），并将其记录下来以便后续清理。
+    """
+    print(f"🔥 正在启动受监控的训练进程... 日志文件: {log_file}", flush=True)
+    with open(log_file, 'wb') as f:
+        # start_new_session=True 使子进程成为新会话的领导者，
+        # 这使其能抵抗SIGHUP信号（类似于nohup），并创建一个新的进程组。
+        p = subprocess.Popen(cmd_list, stdout=f, stderr=f, start_new_session=True)
+    child_processes.append(p)
+    print(f"   -> 训练进程已启动，PID: {p.pid}", flush=True)
 
 def monitor_and_launch(model_run_dir, main_dir_name, folder_name, timeout_hours=24):
     """
@@ -80,7 +109,7 @@ def monitor_and_launch(model_run_dir, main_dir_name, folder_name, timeout_hours=
                     f'--run_name "{folder_name}" '
                     f"--output_dir {marl_eval_subdir} > {eval_log} 2>&1 &"
                 )
-                run_command(eval_cmd)
+                run_detached_command(eval_cmd)
 
                 # 启动 debug_marl_behavior.py (保持不变)
                 debug_log = os.path.join(debug_dir, f'db_{base_name}.log')
@@ -88,7 +117,7 @@ def monitor_and_launch(model_run_dir, main_dir_name, folder_name, timeout_hours=
                     f"nohup python debug_marl_behavior.py "
                     f"--model_path {model_path} > {debug_log} 2>&1 &"
                 )
-                run_command(debug_cmd)
+                run_detached_command(debug_cmd)
                 
                 processed_models.add(model_file)
                 print(f"✅ 已为模型 '{model_file}' 触发评估和调试任务。", flush=True)
@@ -103,13 +132,81 @@ def monitor_and_launch(model_run_dir, main_dir_name, folder_name, timeout_hours=
 
     print("🏁 监控结束（达到超时时间或脚本被中断）。", flush=True)
 
+def launch_background_process(args):
+    """
+    作为启动器，创建目录和日志路径，并在后台重新启动脚本作为工作进程。
+    """
+    #print(f"✨ 自动化脚本启动器PID: {os.getpid()}", flush=True)
+
+    # 1. 创建主目录
+    now = datetime.datetime.now()
+    safe_folder_name = args.folder_name.replace(" ", "_").replace("/", "-")
+    main_dir_name = now.strftime('%m%d_%H%M') + '_' + safe_folder_name
+    os.makedirs(main_dir_name, exist_ok=True)
+
+    # 2. 定义日志文件路径 (使用固定、简洁的名称)
+    log_file_name = "auto_train_monitor.log"
+    log_file_path = os.path.join(main_dir_name, log_file_name)
+
+    # 3. 构建在后台运行的命令
+    # 使用 sys.executable 确保使用相同的Python解释器
+    # 使用 -u 标志确保实时输出
+    command_str = (
+        f"nohup {sys.executable} -u {__file__} "
+        f"\"{args.folder_name}\" "
+        f"--internal-run "
+        f"--main-dir \"{main_dir_name}\" "
+        f"> \"{log_file_path}\" 2>&1 &"
+    )
+
+    print(f"🚀 正在后台启动自动化脚本...")
+    subprocess.Popen(command_str, shell=True)
+    time.sleep(1)  # 等待片刻以确保进程启动
+    print(f"✅ 自动化流程已在后台开始。您可以关闭此终端。")
+    print(f"📂 所有输出（包括此脚本的日志）将保存在: {main_dir_name}")
+    print(f"📜 使用此命令查看实时日志: tail -f \"{log_file_path}\"")
+
+def run_background_tasks(args):
+    """
+    作为后台工作进程，执行主要的训练和监控任务。
+    """
+    # 注册信号处理器，以便在被kill时能够清理子进程
+    signal.signal(signal.SIGTERM, cleanup)
+    signal.signal(signal.SIGINT, cleanup) # 处理 Ctrl+C
+
+    main_dir_name = args.main_dir
+    folder_name = args.folder_name
+    safe_folder_name = folder_name.replace(" ", "_").replace("/", "-")
+
+    print(f"✨ 自动化工作进程已启动，PID: {os.getpid()}", flush=True)
+    print(f"📂 主运行目录: {main_dir_name}", flush=True)
+    
+    # 确保模型基础目录存在
+    os.makedirs(MODELS_BASE_DIR, exist_ok=True)
+    dirs_before = set(os.listdir(MODELS_BASE_DIR))
+
+    # 启动训练 (使用包含时间戳和实验名的详细日志)
+    now = datetime.datetime.now()
+    train_log_name = f"{now.strftime('%m%d_%H%M%S')}_{safe_folder_name}.log"
+    train_log = os.path.join(main_dir_name, train_log_name)
+    train_cmd_list = ["python", "-u", "mappo/ppo_marl_train.py"]
+    launch_and_monitor_child(train_cmd_list, train_log)
+    
+    time.sleep(10) 
+
+    # 查找由训练脚本创建的新目录
+    model_run_dir = find_new_model_dir(dirs_before)
+
+    if model_run_dir:
+        # 监控目录并启动其他脚本
+        monitor_and_launch(model_run_dir, main_dir_name, folder_name)
+    else:
+        print("❌ 未能找到训练输出目录。正在中止监控。", flush=True)
+        print(f"   请检查训练日志以获取错误信息: {train_log}", flush=True)
 
 def main():
     """
-    主函数，用于编排自动化训练流程。
-    1. 创建一个运行目录。
-    2. 启动训练过程。
-    3. 监控新模型的生成并触发评估和调试。
+    主函数，根据参数决定是作为启动器还是作为后台工作进程。
     """
     parser = argparse.ArgumentParser(
         description="自动化MARL模型的训练、评估和调试流程。",
@@ -120,38 +217,21 @@ def main():
         type=str,
         help="为本次训练运行提供一个描述性名称 (例如, '更改奖励函数测试')。"
     )
+    # 添加内部参数，用户无需关心
+    parser.add_argument(
+        "--internal-run", action="store_true", help=argparse.SUPPRESS
+    )
+    parser.add_argument(
+        "--main-dir", type=str, help=argparse.SUPPRESS
+    )
     args = parser.parse_args()
 
-    # 1. 设置目录和路径
-    now = datetime.datetime.now()
-    # 替换掉可能影响路径的特殊字符
-    safe_folder_name = args.folder_name.replace(" ", "_").replace("/", "-")
-    main_dir_name = now.strftime('%m%d_%H%M') + '_' + safe_folder_name
-    os.makedirs(main_dir_name, exist_ok=True)
-    print(f"📂 已创建主运行目录: {main_dir_name}", flush=True)
-
-    # 确保模型基础目录存在
-    os.makedirs(MODELS_BASE_DIR, exist_ok=True)
-    dirs_before = set(os.listdir(MODELS_BASE_DIR))
-
-    # 2. 启动训练
-    train_log = os.path.join(main_dir_name, f"{now.strftime('%m%d_%H%M%S')}_{safe_folder_name}.log")
-    train_cmd = f"nohup python mappo/ppo_marl_train.py > {train_log} 2>&1 &"
-    run_command(train_cmd)
-    print(f"🔥 训练进程已在后台启动。日志文件: {train_log}", flush=True)
-    
-    # 等待一段时间以便训练脚本启动并创建目录
-    time.sleep(10) 
-
-    # 3. 查找由训练脚本创建的新目录
-    model_run_dir = find_new_model_dir(dirs_before)
-
-    if model_run_dir:
-        # 4. 监控目录并启动其他脚本
-        monitor_and_launch(model_run_dir, main_dir_name, args.folder_name)
+    if args.internal_run:
+        # 如果有内部运行标记，则执行后台任务
+        run_background_tasks(args)
     else:
-        print("❌ 未能找到训练输出目录。正在中止监控。", flush=True)
-        print(f"   请检查训练日志以获取错误信息: {train_log}", flush=True)
+        # 否则，作为启动器，在后台重新启动自己
+        launch_background_process(args)
 
 if __name__ == "__main__":
     # 确保脚本从项目根目录运行
