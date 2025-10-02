@@ -1096,7 +1096,7 @@ class SimplePPOTrainer:
         if curriculum_config.get("enabled", False):
             print(f"📚 课程学习已启用，共{len(curriculum_config['stages'])}个阶段:")
             for i, stage in enumerate(curriculum_config["stages"]):
-                print(f"   阶段{i+1}: {stage['name']} - {stage['iterations']}轮，订单{stage['orders_scale']*100:.0f}%")
+                print(f"   阶段{i+1}: {stage['name']} - 订单 {stage['orders_scale']*100:.0f}%")
         print("=" * 80)
         
         if not validate_config():
@@ -1862,15 +1862,6 @@ def main():
         print(f"    - 启发式护栏: {'启用' if HEURISTIC_GUARDRAILS_CONFIG.get('enabled', False) else '禁用'}")
         print(f"    - 增强观测: {'启用' if ENHANCED_OBS_CONFIG.get('enabled', False) else '禁用'}")
         print(f"    - 紧急度排序视图: {'启用' if QUEUE_VIEW_CONFIG.get('enabled', False) else '禁用'}")
-
-        if cl_config.get("enabled", False):
-            grad_config = cl_config.get("graduation_exam", {})
-            print("  课程学习毕业考试:")
-            print(f"    - 考试轮数: {grad_config.get('exam_episodes', 'N/A')}")
-            print(f"    - 稳定要求: {grad_config.get('stability_requirement', 'N/A')}次通过")
-            print(f"    - 最大重试: {grad_config.get('max_retries', 'N/A')}次")
-            print(f"    - 补课轮数: {grad_config.get('retry_extension', 'N/A')}轮")
-        
         print("-" * 40)
         
         trainer = SimplePPOTrainer(
