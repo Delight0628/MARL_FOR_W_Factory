@@ -32,18 +32,19 @@ TRAINING_FLOW_CONFIG = {
         "curriculum_learning": {
             "enabled": False,  # 关键开关：是否启用课程学习
             "stages": [
-                # 🔧 修复：降低时间缩放，增加训练挑战性，避免模型在过于简单的环境中学习不足
-                {"name": "基础入门", "orders_scale": 0.4, "time_scale": 1.0, "iterations": 50, "graduation_thresholds": 100, "is_final_stage": False},
-                {"name": "能力提升", "orders_scale": 0.8, "time_scale": 1.0, "iterations": 50, "graduation_thresholds": 100, "is_final_stage": False},
-                {"name": "完整挑战", "orders_scale": 1.0, "time_scale": 1.0, "iterations": 100, "is_final_stage": True},
+                {
+                    "name": "基础入门", "orders_scale": 0.4, "time_scale": 1.0, "is_final_stage": False,
+                    "graduation_criteria": {"target_score": 0.80, "min_completion_rate": 100.0, "target_consistency": 10,"tardiness_threshold": 0.0}
+                },
+                {
+                    "name": "能力提升", "orders_scale": 0.8, "time_scale": 1.0, "is_final_stage": False,
+                    "graduation_criteria": {"target_score": 0.80, "min_completion_rate": 100.0, "target_consistency": 10,"tardiness_threshold": 0.0}
+                },
+                {
+                    "name": "完整挑战", "orders_scale": 1.0, "time_scale": 1.0, "is_final_stage": True,
+                    "graduation_criteria": {"target_score": 0.72, "min_completion_rate": 100.0, "target_consistency": 6, "tardiness_threshold": 450.0}
+                },
             ],
-            # 阶段间的毕业考试配置
-            "graduation_exam": {
-                "exam_episodes": 5,
-                "stability_requirement": 2,
-                "max_retries": 5,
-                "retry_extension": 10,
-            }
         }
     },
 

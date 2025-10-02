@@ -448,6 +448,18 @@ def run_simulation_worker(network_weights: Dict[str, List[np.ndarray]],
     except Exception:
         completed_all_worker = False
     
+    # 若worker完成全部零件但环境未在奖励阶段发放过终局奖励，则补发一次到worker累计奖励
+    try:
+        if completed_all_worker and not getattr(env.sim, 'final_bonus_awarded', False):
+            # 每个agent应获得一次final_bonus
+            final_bonus = REWARD_CONFIG.get("final_all_parts_completion_bonus", 0.0)
+            total_reward_collected += final_bonus * len(env.agents)
+            # 标记以避免其他位置重复补发
+            env.sim.final_bonus_awarded = True
+            env.sim.final_bonus_value = final_bonus * len(env.agents)
+    except Exception:
+        pass
+
     env.close()
     return buffers, total_reward_collected, next_global_state_for_bootstrap, was_truncated, completed_all_worker
 
@@ -562,6 +574,9 @@ class SimplePPOTrainer:
         self.best_score_generalization_phase = -1.0  # 泛化强化阶段最佳分数
         self.best_kpi_generalization_phase = {}       # 泛化强化阶段最佳KPI
         self.best_episode_generalization_phase = -1  # 泛化强化阶段最佳回合
+        
+        # --- 新增：课程学习阶段的自适应毕业跟踪器 ---
+        self.curriculum_stage_achievement_count = 0
         
         # 🔧 V34 初始化动态训练参数
         self.current_entropy_coeff = PPO_NETWORK_CONFIG["entropy_coeff"] # 初始化动态熵系数
@@ -1112,6 +1127,10 @@ class SimplePPOTrainer:
         # 🔧 V27 核心修复：为课程学习的每个阶段独立跟踪最佳分数
         stage_best_scores = [0.0] * len(curriculum_config["stages"]) if curriculum_enabled else []
         
+        # 🔧 初始化用于课程学习毕业检查的性能指标，毕业检查将使用上一个回合的准确数据
+        last_kpi_results = {}
+        last_current_score = 0.0
+        
         try:
             for episode in range(max_episodes):
                 iteration_start_time = time.time()
@@ -1120,98 +1139,26 @@ class SimplePPOTrainer:
                 current_curriculum_config = None
                 
                 # 首先处理课程学习逻辑（如果启用）
-                if curriculum_enabled:
+                if curriculum_enabled and not self.foundation_training_completed:
                     stage_config = curriculum_config["stages"][current_stage]
                     
-                    # 🔧 V31 强化毕业考试机制：使用新的高标准门槛，防止带病毕业
-                    if stage_episode_count >= stage_config["iterations"]:
-                        if current_stage < len(curriculum_config["stages"]) - 1:
-                            # 🔧 V33 修复：暂停训练计时，隔离考试时间
-                            iteration_pause_time = time.time()
-                            
-                            print("\n" + "="*60)
-                            print(f"🎓 阶段 '{stage_config['name']}' 训练完成，开始强化毕业考试...")
-                            
-                            # 🔧 V31 使用新的毕业门槛配置
-                            graduation_config = curriculum_config.get("graduation_exam", {})
-                            
-                            # 🔧 修复：从当前阶段配置中获取毕业阈值
-                            current_threshold = stage_config.get("graduation_thresholds", 95.0)
-                            exam_episodes = graduation_config.get("exam_episodes", 5)
-                            stability_requirement = graduation_config.get("stability_requirement", 3)
-                            max_retries = graduation_config.get("max_retries", 3)
-                            retry_extension = graduation_config.get("retry_extension", 15)
-                            
-                            # 🔧 V34 修复：毕业考试应检验当前阶段的掌握情况，而不是用下一阶段的标准
-                            current_stage_data = curriculum_config["stages"][current_stage]
-                            exam_target_parts = int(get_total_parts_count() * current_stage_data['orders_scale'])
-                            exam_config = {
-                                'orders_scale': current_stage_data.get('orders_scale', 1.0),
-                                'time_scale': current_stage_data.get('time_scale', 1.0),
-                                'stage_name': f"考试: {current_stage_data.get('name', '')}"
-                            }
-                            
-                            # 🔧 V33 修复：强化考试随机性，确保每轮考试结果独立
-                            exam_results = []
-                            for exam_round in range(exam_episodes):
-                                # 关键修复：为每轮考试设置不同的随机种子
-                                exam_seed = random.randint(0, 1000000) + exam_round * 1000
-                                
-                                # 创建独立的评估环境，避免状态污染
-                                temp_env = make_parallel_env(exam_config)
-                                temp_env.reset(seed=exam_seed)
-                                
-                                # 执行独立的评估轮次
-                                exam_kpi = self._independent_exam_evaluation(temp_env, exam_config, exam_seed)
-                                temp_env.close()
-                                
-                                exam_completed_parts = exam_kpi.get('mean_completed_parts', 0)
-                                exam_completion_rate = (exam_completed_parts / exam_target_parts) * 100 if exam_target_parts > 0 else 0
-                                exam_results.append(exam_completion_rate)
-                                print(f"   第{exam_round+1}轮考试: {exam_completed_parts:.1f}/{exam_target_parts} 零件 ({exam_completion_rate:.1f}%)")
-                            
-                            # 计算稳定性：需要连续多次达到门槛
-                            avg_completion_rate = sum(exam_results) / len(exam_results)
-                            passed_exams = sum(1 for rate in exam_results if rate >= current_threshold)
-                            stability_achieved = passed_exams >= stability_requirement
-                            
-                            print(f"   考试结果: 平均 {avg_completion_rate:.1f}% | 通过门槛: {current_threshold:.1f}% | 达标次数: {passed_exams}/{exam_episodes}")
-                            print(f"   稳定性要求: {stability_requirement}次达标")
-                            
-                            # 🔧 V37 修复：稳定性达到即通过，无需重复检查平均分数
-                            if stability_achieved:
-                                # 关键修复：需要获取下一阶段的数据来打印日志
-                                next_stage_data = curriculum_config["stages"][current_stage + 1]
-                                print(f"   ✅ 毕业考试通过！进入下一阶段: '{next_stage_data['name']}'")
-                                current_stage += 1
-                                stage_episode_count = 0
-                                if not hasattr(self, '_stage_retry_count'):
-                                    self._stage_retry_count = {}
-                                self._stage_retry_count[current_stage] = 0  # 重置重考计数
-                            else:
-                                if not hasattr(self, '_stage_retry_count'):
-                                    self._stage_retry_count = {}
-                                retry_count = self._stage_retry_count.get(current_stage, 0)
-                                
-                                if retry_count < max_retries:
-                                    self._stage_retry_count[current_stage] = retry_count + 1
-                                    print(f"   ❌ 考试未通过。延长{retry_extension}轮训练后重考 (第{retry_count+1}/{max_retries}次重考)")
-                                    stage_config["iterations"] += retry_extension
-                                else:
-                                    print(f"   ⚠️ 已达最大重考次数，强制进入下一阶段（但可能表现不佳）")
-                                    current_stage += 1
-                                    stage_episode_count = 0
-                                    self._stage_retry_count[current_stage] = 0
-                            
-                            print("="*60 + "\n")
-                            
-                            # 🔧 V33 修复：恢复训练计时，补偿考试时间
-                            exam_duration = time.time() - iteration_pause_time
-                            iteration_start_time += exam_duration  # 关键修复：补偿考试时间
-                            
-                        # 如果是最后阶段，则不再切换
+                    # 检查是否满足自适应毕业条件
+                    if self.check_curriculum_stage_graduation(last_kpi_results, last_current_score, stage_config):
+                        print(f"✅ 阶段 '{stage_config['name']}' 毕业标准达成！")
+                        
+                        if stage_config.get('is_final_stage', False):
+                            print("🏆 课程学习完成！现在开始基础能力认证，通过后进入泛化强化阶段。")
+                            # 标记课程学习部分结束，后续逻辑将接管并启动基础能力认证
+                            self.foundation_training_completed = True 
+                        else:
+                            # 晋级到下一个课程阶段
+                            current_stage += 1
+                            stage_episode_count = 0
+                            self.curriculum_stage_achievement_count = 0  # 为新阶段重置计数器
+                            next_stage_name = curriculum_config["stages"][current_stage]['name']
+                            print(f"🚀 进入下一阶段: '{next_stage_name}'")
                     
-                    # 获取当前阶段配置 (可能已更新)
+                    # 获取当前阶段配置 (阶段可能已更新)
                     stage = curriculum_config["stages"][current_stage]
                     current_curriculum_config = {
                         'orders_scale': stage.get('orders_scale', 1.0),
@@ -1219,56 +1166,50 @@ class SimplePPOTrainer:
                         'stage_name': stage.get('name', f'Stage {current_stage}')
                     }
                     
-                    # 🔧 V17增强：详细的阶段切换和状态日志
+                    # 详细的阶段切换和状态日志
                     if stage_episode_count == 0:
                         print(f"📚 [回合 {episode+1}] 🔄 课程学习阶段切换!")
                         print(f"   新阶段: {stage['name']}")
                         print(f"   订单比例: {stage['orders_scale']} (目标零件数: {int(get_total_parts_count() * stage['orders_scale'])})")
-                        print(f"   时间比例: {stage['time_scale']} (时间限制: {int(1200 * stage['time_scale'])}分钟)")
-                        print(f"   计划训练轮数: {stage['iterations']}")
-                        
-                        # 🔧 V30 关键修复：确保课程配置正确传递到所有环境
+                        print(f"   时间比例: {stage['time_scale']} (时间限制: {int(SIMULATION_TIME * stage['time_scale'])}分钟)")
                         print(f"🔧 当前课程配置将传递给所有worker: orders_scale={stage['orders_scale']}, time_scale={stage['time_scale']}")
-                        
                         print("-" * 60)
                     
                     # 🔧 V17新增：每10轮显示阶段状态
                     if episode % 10 == 0:
-                        progress = stage_episode_count / stage['iterations'] * 100
-                        print(f"📚 课程状态: {stage['name']} ({stage_episode_count}/{stage['iterations']}, {progress:.1f}%)")
-                        print(f"   当前难度: {int(get_total_parts_count() * stage['orders_scale'])}零件, {stage['time_scale']:.1f}x时间")    
+                        print(f"📚 课程状态: {stage['name']} (第 {stage_episode_count} 回合)")
+                        print(f"   当前难度: {int(get_total_parts_count() * stage['orders_scale'])}零件, {stage['time_scale']:.1f}x时间")
                     stage_episode_count += 1
                 
-                # --- 核心创新：基础训练 + 随机领域强化 叠加逻辑 ---
-                # 🔧 修复：只有在课程学习完成所有阶段后，才强制使用基础认证配置
+                # --- 核心训练阶段判断 ---
                 
                 # 检查课程学习是否已完成所有阶段
-                curriculum_completed = False
-                if curriculum_enabled:
-                    curriculum_completed = current_stage >= len(curriculum_config["stages"])
-                
-                if not self.foundation_training_completed:
-                    # 如果课程学习未启用或已完成，才使用基础能力认证配置
-                    if not curriculum_enabled or curriculum_completed:
-                        # 阶段1：基础能力训练阶段（仅在课程学习完成后）
-                        # 强制使用BASE_ORDERS进行训练，直到模型达到基础能力标准
+                curriculum_just_completed = False
+                if curriculum_enabled and self.foundation_training_completed and not self.generalization_phase_active:
+                    # 这是一个过渡状态，表示课程学习刚刚完成，但还未正式进入泛化阶段
+                    # 在这个状态下，我们将使用基础能力认证的配置
+                    curriculum_just_completed = True
+
+                if not self.foundation_training_completed or curriculum_just_completed:
+                    # 阶段1：基础能力训练阶段
+                    # 如果课程学习未启用，或刚刚完成，则使用标准的基础订单进行训练
+                    if not curriculum_enabled or curriculum_just_completed:
                         foundation_config = {
                             'orders_scale': 1.0,
                             'time_scale': 1.0,
                             'stage_name': '基础能力认证',
                             'custom_orders': BASE_ORDERS
                         }
-                        
                         current_curriculum_config = foundation_config
-                        current_curriculum_config['current_episode'] = episode
-                    # 🔧 关键修复：如果课程学习正在进行，保持课程学习的配置不被覆盖
-                    elif curriculum_enabled and not curriculum_completed:
-                        if current_curriculum_config:
-                            current_curriculum_config['current_episode'] = episode
                     
+                    # 在每个回合都添加当前回合数，供环境内部使用
+                    if current_curriculum_config:
+                        current_curriculum_config['current_episode'] = episode
+
                     if episode % 20 == 0:
+                        phase_name = "课程学习中" if curriculum_enabled and not curriculum_just_completed else "基础能力认证中"
                         foundation_criteria = self.training_flow_config["foundation_phase"]["graduation_criteria"]
-                        print(f"📚 基础训练阶段: 连续达标 {self.foundation_achievement_count}/{foundation_criteria['target_consistency']} 次")
+                        print(f"📚 {phase_name}: 连续达标 {self.foundation_achievement_count}/{foundation_criteria['target_consistency']} 次")
                 
                 elif not self.generalization_phase_active:
                     # 基础训练刚完成，准备进入泛化阶段
@@ -1316,11 +1257,15 @@ class SimplePPOTrainer:
 
                 
                 # 提前进行KPI评估，以便整合TensorBoard日志
-                kpi_results = self.quick_kpi_evaluation(num_episodes=2, curriculum_config=current_curriculum_config)
+                kpi_results = self.quick_kpi_evaluation(num_episodes=1, curriculum_config=current_curriculum_config)
                 self.kpi_history.append(kpi_results)
 
                 # 🔧 核心改造：计算当前回合的综合评分
                 current_score = calculate_episode_score(kpi_results, config=current_curriculum_config)
+                
+                # 🔧 BUG修复：保存本回合的KPI结果，供下一回合的毕业检查使用
+                last_kpi_results = kpi_results
+                last_current_score = current_score
                 
                 # --- 核心创新：检查阶段转换和训练完成条件 ---
                 target_parts_for_check = self._get_target_parts(current_curriculum_config)
@@ -1344,7 +1289,8 @@ class SimplePPOTrainer:
                         should_check_foundation_completion = True
                     
                     if should_check_foundation_completion:
-                        if self.check_foundation_training_completion(kpi_results, current_score):
+                        # 🔧 BUG修复：与课程学习逻辑统一，使用上一个回合的KPI结果来判断是否毕业
+                        if self.check_foundation_training_completion(last_kpi_results, last_current_score):
                             self.foundation_training_completed = True
                 
                 # 检查泛化训练是否完成（这将触发整个训练的结束）
@@ -1488,7 +1434,7 @@ class SimplePPOTrainer:
                     print(f"   平均完成零件: {real_completion:.1f}/{get_total_parts_count()} ({real_completion_rate:.1f}%)")
                     print(f"   平均总完工时间: {real_makespan:.1f}分钟")
                     print(f"   平均设备利用率: {real_utilization*100:.1f}%")
-                    print(f"   平均延期时间: {real_tardiness:.1f}分钟") 
+                    print(f"   平均订单延期时间: {real_tardiness:.1f}分钟") 
                     print(f"   平均奖励: {real_reward:.1f}")
                     
                     # 评估进展
@@ -1587,11 +1533,11 @@ class SimplePPOTrainer:
                 else:
                     # 启用课程学习：只在最终阶段或泛化阶段允许保存
                     is_final_curriculum_stage = False
-                    if current_stage < len(curriculum_config["stages"]):
+                    if not self.foundation_training_completed and current_stage < len(curriculum_config["stages"]):
                         current_stage_info = curriculum_config["stages"][current_stage]
                         is_final_curriculum_stage = current_stage_info.get('is_final_stage', False)
                     
-                    if is_final_curriculum_stage or self.generalization_phase_active:
+                    if is_final_curriculum_stage or self.generalization_phase_active or curriculum_just_completed:
                         save_condition_met = True
                 
                 dual_objective_model_update_info = ""
@@ -1617,7 +1563,7 @@ class SimplePPOTrainer:
                 completed_workers = getattr(self, '_last_collect_completed_workers', 0)
                 per_worker_avg_reward = (episode_reward / finished_workers) if finished_workers > 0 else episode_reward
                 line1 = (
-                    f"🔂 回合 {episode + 1:3d}/{max_episodes} | 奖励: {episode_reward:.1f}"
+                    f"🔂 训练回合 {episode + 1:3d}/{max_episodes} | 奖励: {episode_reward:.1f}"
                     f" (均值/worker: {per_worker_avg_reward:.1f}, 完成全部: {completed_workers}/{finished_workers})"
                     f" | Actor损失: {losses['actor_loss']:.4f}| ⏱️本轮用时: {iteration_duration:.1f}s"
                     f" (CPU采集: {collect_duration:.1f}s, GPU更新: {update_duration:.1f}s)"
@@ -1629,7 +1575,7 @@ class SimplePPOTrainer:
                 if current_curriculum_config and 'stage_name' in current_curriculum_config:
                     stage_name = current_curriculum_config['stage_name']
                     # 🔧 修复：显示两级阶段信息（课程学习阶段 + 基础训练阶段）
-                    if curriculum_enabled and not curriculum_completed:
+                    if curriculum_enabled and not curriculum_just_completed:
                         curriculum_stage_name = curriculum_config["stages"][current_stage]['name']
                         foundation_phase = '基础训练' if not self.foundation_training_completed else '泛化训练'
                         stage_info_str = f"   | 课程: '{curriculum_stage_name}' | 大阶段: '{foundation_phase}'"
@@ -1637,7 +1583,7 @@ class SimplePPOTrainer:
                         stage_info_str = f"   | 阶段: '{stage_name}'"
                 
                 target_parts_str = f"/{target_parts_for_log}"
-                line2 = f"📊 KPI - 总完工时间: {makespan:.1f}min  | 设备利用率: {utilization:.1%} | 延期时间: {tardiness:.1f}min |  完成零件数: {completed_parts:.0f}{target_parts_str}{stage_info_str}"
+                line2 = f"📊 此回合KPI评估 - 总完工时间: {makespan:.1f}min  | 设备利用率: {utilization:.1%} | 订单延期时间: {tardiness:.1f}min |  完成零件数: {completed_parts:.0f}{target_parts_str}{stage_info_str}"
 
                 # 第三行：评分和模型更新信息
                 phase_best_str = ""
@@ -1720,7 +1666,7 @@ class SimplePPOTrainer:
             print(f"   完成零件: {best_kpi.get('mean_completed_parts', 0):.1f} / {target_parts_final} ({completion_rate_final:.1f}%)")
             print(f"   总完工时间: {best_kpi.get('mean_makespan', 0):.1f} 分钟")
             print(f"   设备利用率: {best_kpi.get('mean_utilization', 0):.1%}")
-            print(f"   总延期时间: {best_kpi.get('mean_tardiness', 0):.1f} 分钟")
+            print(f"   订单延期时间: {best_kpi.get('mean_tardiness', 0):.1f} 分钟")
             print("="*40)
             
             # --- 核心修复：输出每个阶段的最佳KPI ---
@@ -1738,7 +1684,7 @@ class SimplePPOTrainer:
                 print(f"   完成零件: {best_kpi.get('mean_completed_parts', 0):.1f} / {target_parts} ({completion_rate:.1f}%)")
                 print(f"   总完工时间: {best_kpi.get('mean_makespan', 0):.1f} 分钟")
                 print(f"   设备利用率: {best_kpi.get('mean_utilization', 0):.1%}")
-                print(f"   总延期时间: {best_kpi.get('mean_tardiness', 0):.1f} 分钟")
+                print(f"   订单延期时间: {best_kpi.get('mean_tardiness', 0):.1f} 分钟")
                 print(f"   综合评分: {self.best_score_foundation_phase:.3f}")
 
             # 泛化强化阶段最佳
@@ -1750,7 +1696,7 @@ class SimplePPOTrainer:
                 print(f"   完成零件: {best_kpi.get('mean_completed_parts', 0):.1f}")
                 print(f"   总完工时间: {best_kpi.get('mean_makespan', 0):.1f} 分钟")
                 print(f"   设备利用率: {best_kpi.get('mean_utilization', 0):.1%}")
-                print(f"   总延期时间: {best_kpi.get('mean_tardiness', 0):.1f} 分钟")
+                print(f"   订单延期时间: {best_kpi.get('mean_tardiness', 0):.1f} 分钟")
                 print(f"   综合评分: {self.best_score_generalization_phase:.3f}")
             
             # 新增：如果启用了课程学习，则展示每个课程阶段的最佳分数
@@ -1782,7 +1728,7 @@ class SimplePPOTrainer:
                 print(f"   完成零件: {best_kpi.get('mean_completed_parts', 0):.1f} / {target_parts_final} ({completion_rate_final:.1f}%)")
                 print(f"   总完工时间: {best_kpi.get('mean_makespan', 0):.1f} 分钟")
                 print(f"   设备利用率: {best_kpi.get('mean_utilization', 0):.1%}")
-                print(f"   总延期时间: {best_kpi.get('mean_tardiness', 0):.1f} 分钟")
+                print(f"   订单延期时间: {best_kpi.get('mean_tardiness', 0):.1f} 分钟")
                 print(f"   综合评分: {self.best_score_dual_objective:.3f}")
             else:
                 print("   ⚠️ 本次训练未产生满足'完成所有零件'条件的最佳模型。")
@@ -1829,6 +1775,42 @@ class SimplePPOTrainer:
         else:
             # 默认或基础训练阶段
             return get_total_parts_count()
+
+    def check_curriculum_stage_graduation(self, kpi_results: Dict[str, float], current_score: float, stage_config: Dict[str, Any]) -> bool:
+        """检查当前课程学习阶段是否达到毕业标准"""
+        criteria = stage_config.get("graduation_criteria")
+        if not criteria:
+            return False # 如果没有定义标准，则无法毕业
+
+        # 获取当前阶段的目标零件数
+        target_parts = int(get_total_parts_count() * stage_config.get('orders_scale', 1.0))
+        completion_rate_kpi = (kpi_results.get('mean_completed_parts', 0) / target_parts) * 100 if target_parts > 0 else 0
+        
+        target_score = criteria["target_score"]
+        stability_goal = criteria["target_consistency"]
+        min_completion_rate = criteria["min_completion_rate"]
+        # 新增：处理延期阈值
+        tardiness_threshold = criteria.get("tardiness_threshold")
+        current_tardiness = kpi_results.get('mean_tardiness', float('inf'))
+
+        conditions_met = {
+            f"完成率(>={min_completion_rate}%)": completion_rate_kpi >= min_completion_rate,
+            f"分数(>={target_score})": current_score >= target_score,
+        }
+        
+        if tardiness_threshold is not None:
+            conditions_met[f"延期(<={tardiness_threshold}min)"] = current_tardiness <= tardiness_threshold
+
+        if all(conditions_met.values()):
+            self.curriculum_stage_achievement_count += 1
+            print(f"[CURRICULUM] 阶段 '{stage_config['name']}' 达标: 完成率 {completion_rate_kpi:.1f}%, 分数 {current_score:.3f} (连续第{self.curriculum_stage_achievement_count}/{stability_goal}次)")
+        else:
+            if self.curriculum_stage_achievement_count > 0:
+                reasons = [k for k, v in conditions_met.items() if not v]
+                print(f"[CURRICULUM] 阶段 '{stage_config['name']}' 连续达标中断. 未达标项: {', '.join(reasons)}")
+            self.curriculum_stage_achievement_count = 0
+
+        return self.curriculum_stage_achievement_count >= stability_goal
 
 def main():
     

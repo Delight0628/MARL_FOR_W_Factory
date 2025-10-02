@@ -181,6 +181,10 @@ class WFactorySim:
             'queue_lengths': defaultdict(list),
             'total_parts': 0
         }
+
+        # 终局奖励发放标记（防重复）
+        self.final_bonus_awarded = False
+        self.final_bonus_value = 0.0
         
         # 用于快速查找下游工作站的缓存
         self._downstream_map = self._create_downstream_map()
@@ -229,6 +233,10 @@ class WFactorySim:
             'queue_lengths': defaultdict(list),
             'total_parts': 0
         }
+
+        # 重置终局奖励标记
+        self.final_bonus_awarded = False
+        self.final_bonus_value = 0.0
     
     def _initialize_resources(self):
         """初始化设备资源和队列"""
@@ -908,9 +916,13 @@ class WFactorySim:
         if self.is_done():
             total_required = sum(order.quantity for order in self.orders)
             if len(self.completed_parts) >= total_required:
-                final_bonus = REWARD_CONFIG.get("final_all_parts_completion_bonus", 0.0)
-                for agent_id in rewards:
-                    rewards[agent_id] += final_bonus
+                # 防重复发放：仅首次触发时发放终局奖励
+                if not self.final_bonus_awarded:
+                    final_bonus = REWARD_CONFIG.get("final_all_parts_completion_bonus", 0.0)
+                    for agent_id in rewards:
+                        rewards[agent_id] += final_bonus
+                    self.final_bonus_awarded = True
+                    self.final_bonus_value = final_bonus * len(rewards)
         
         # 更新订单进度与统计
         self._update_order_progress()
@@ -1011,7 +1023,7 @@ class WFactorySim:
                 makespan = max(part.completion_time for part in self.completed_parts if part.completion_time is not None)
             else:
                 # 关键：如果没有零件完成，显示0而不是1200
-                makespan = self.current_time
+                makespan = 0
             self.stats['timeout_occurred'] = True
             self.stats['incomplete_parts'] = total_required - len(self.completed_parts)
         
