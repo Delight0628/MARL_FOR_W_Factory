@@ -30,11 +30,12 @@ TRAINING_FLOW_CONFIG = {
         
         # 可选：在基础训练内部启用课程学习，以循序渐进的方式达到最终目标
         "curriculum_learning": {
-            "enabled": True,  # 关键开关：是否启用课程学习
+            "enabled": False,  # 关键开关：是否启用课程学习
             "stages": [
-                {"name": "入门阶段", "orders_scale": 0.4, "time_scale": 1.4, "iterations": 50, "graduation_thresholds": 100},
-                {"name": "提升阶段", "orders_scale": 0.8, "time_scale": 1.2, "iterations": 50, "graduation_thresholds": 100},
-                {"name": "完整挑战", "orders_scale": 1.0, "time_scale": 1.0, "iterations": 100},
+                # 🔧 修复：降低时间缩放，增加训练挑战性，避免模型在过于简单的环境中学习不足
+                {"name": "基础入门", "orders_scale": 0.4, "time_scale": 1.0, "iterations": 50, "graduation_thresholds": 100, "is_final_stage": False},
+                {"name": "能力提升", "orders_scale": 0.8, "time_scale": 1.0, "iterations": 50, "graduation_thresholds": 100, "is_final_stage": False},
+                {"name": "完整挑战", "orders_scale": 1.0, "time_scale": 1.0, "iterations": 100, "is_final_stage": True},
             ],
             # 阶段间的毕业考试配置
             "graduation_exam": {
@@ -151,8 +152,6 @@ BASE_ORDERS = [
     {"product": "樱桃木椅子", "quantity": 6, "priority": 1, "due_date": 250},    
 ]
 
-# 随机订单生成参数 (已移至TRAINING_FLOW_CONFIG)
-
 # 队列设置
 # 🔧 缺陷修复：动态计算队列容量以防止死锁
 # 容量基于基础订单和随机订单可能产生的最大零件数，并乘以2作为安全系数
@@ -173,6 +172,7 @@ EMERGENCY_ORDERS = {
 # 5. 强化学习环境参数 (RL Environment Parameters)
 # =============================================================================
 
+# 🔧 V2 修复：重构的、信息更丰富的观测空间配置
 ENHANCED_OBS_CONFIG = {
     "enabled": True,
     "obs_slot_size": 5,                     # 观测队列中前5个工件
@@ -183,9 +183,9 @@ ENHANCED_OBS_CONFIG = {
     "w_station_capacity_norm": 10.0,        # 用于归一化队列长度的基准值
 }
 
-# 队列视图配置：启用按紧急度排序以去除"索引偏置"
+# 队列视图配置：启用按紧急度排序以去除“索引偏置”
 QUEUE_VIEW_CONFIG = {
-    "enabled": True,        # 若为True，则状态与动作均基于"紧急度排序视图"
+    "enabled": True,        # 若为True，则状态与动作均基于“紧急度排序视图”
 }
 
 # 动作空间配置，与观测空间保持一致
@@ -198,7 +198,7 @@ ACTION_CONFIG_ENHANCED = {
 
 
 # =============================================================================
-# 6. 奖励系统配置 (Reward System) - 简洁目标导向设计
+# 6. 奖励系统配置 (Reward System) - V2：稠密、目标导向的设计
 # =============================================================================
 
 # 奖励退火配置（用于逐步关闭启发式护栏）
@@ -221,7 +221,6 @@ REWARD_CONFIG = {
 
     # === 行为塑造惩罚 (Behavior Shaping Penalties) ===
     "unnecessary_idle_penalty": -0.5,        # 在有工件排队时选择“空闲”动作的惩罚
-    "wip_penalty_factor": -0.01,             # 对每个在制品(WIP)的持续惩罚，鼓励减少在制品数量、加快流动
 
     # === 终局奖励 (Episode End Bonus) ===
     "final_all_parts_completion_bonus": 1000.0, # 全部完成时给予的巨大奖励，激励完成所有任务
@@ -433,67 +432,6 @@ def validate_config() -> bool:
     
     print("配置文件验证通过！")
     return True
-
-def calculate_average_station_times() -> Dict[str, float]:
-    """
-    计算每个工作站处理单个零件的平均时间。
-    这是基于所有产品工艺路线的加权平均值。
-    """
-    import numpy as np
-    station_times: Dict[str, List[float]] = {station: [] for station in WORKSTATIONS}
-    for route in PRODUCT_ROUTES.values():
-        for step in route:
-            station_name = step["station"]
-            if station_name in station_times:
-                station_times[station_name].append(step["time"])
-    
-    avg_times = {}
-    for station, times in station_times.items():
-        if times:
-            avg_times[station] = np.mean(times)
-        else:
-            avg_times[station] = 0.0  # 如果一个工作站从未被使用，则平均时间为0
-            
-    return avg_times
-
-# 导出计算出的平均时间常量
-AVERAGE_STATION_TIMES = calculate_average_station_times()
-
-def calculate_estimated_waiting_time(part, current_time: float, queues: Dict[str, Any], workstations: Dict[str, Dict]) -> float:
-    """
-    估算零件在其剩余工艺路线上的总等待时间
-    这是对松弛时间计算的重要改进，避免过于乐观的估计
-    
-    Args:
-        part: 零件对象
-        current_time: 当前时间
-        queues: 工作站队列字典
-        workstations: 工作站配置字典
-    
-    Returns:
-        估算的总等待时间（分钟）
-    """
-    total_estimated_waiting = 0.0
-    route = get_route_for_product(part.product_type)
-    
-    # 从当前工序开始，估算每个后续工序的等待时间
-    for step_idx in range(part.current_step, len(route)):
-        station_name = route[step_idx]["station"]
-        
-        if station_name in queues and station_name in AVERAGE_STATION_TIMES:
-            # 获取队列长度
-            queue_length = len(queues[station_name].items) if hasattr(queues[station_name], 'items') else 0
-            
-            # 获取工作站容量（并行设备数量）
-            station_capacity = workstations.get(station_name, {}).get("count", 1)
-            
-            # 估算等待时间 = (队列长度 / 设备数量) * 平均处理时间
-            avg_processing_time = AVERAGE_STATION_TIMES.get(station_name, 10.0)  # 默认10分钟
-            estimated_wait = (queue_length / station_capacity) * avg_processing_time
-            
-            total_estimated_waiting += estimated_wait
-    
-    return total_estimated_waiting
 
 # 在模块加载时验证配置
 if __name__ == "__main__":

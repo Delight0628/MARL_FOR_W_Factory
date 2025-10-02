@@ -902,16 +902,7 @@ class WFactorySim:
                     if exists_critical and chosen_is_safe:
                         rewards[agent_id] -= penalty_base * shaping_strength
         
-        # === 3. 本地化拥堵惩罚 (替代全局惩罚) ===
-        penalty_factor = REWARD_CONFIG.get("local_queue_penalty_factor", 0.0)
-        if penalty_factor != 0.0:
-            for agent_id in self.agents:
-                context = action_context.get(agent_id, {})
-                # 使用决策时的队列长度进行惩罚
-                queue_len_before = context.get("queue_len_before", 0)
-                if queue_len_before > 0:
-                    # 惩罚与队列长度成正比
-                    rewards[agent_id] += queue_len_before * penalty_factor
+        # === 3. 本地化拥堵惩罚 (已移除，保持奖励配置一致性) ===
         
         # === 4. 终局大奖（全部完成） ===
         if self.is_done():
@@ -998,12 +989,12 @@ class WFactorySim:
                     tardiness = completion_time - order.due_date
                     total_tardiness += tardiness
                     late_orders_count += 1
-            # else:
-            #     # 订单未完成，延期时间从交期算到仿真结束
-            #     tardiness = max(0, self.current_time - order.due_date)
-            #     total_tardiness += tardiness
-            #     if tardiness > 0:
-            #         late_orders_count += 1
+            else:
+                # 订单未完成，延期时间从交期算到仿真结束
+                tardiness = max(0, self.current_time - order.due_date)
+                total_tardiness += tardiness
+                if tardiness > 0:
+                    late_orders_count += 1
         
         total_required = sum(order.quantity for order in self.orders)
         
