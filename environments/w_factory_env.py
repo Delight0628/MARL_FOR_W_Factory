@@ -43,17 +43,6 @@ def calculate_slack_time(part: 'Part', current_time: float, queues: Dict[str, An
     # 基础松弛时间（原始计算）
     basic_slack = (part.due_date - current_time) - remaining_processing_time
     
-    # 如果提供了队列和工作站信息，则考虑等待时间
-    if queues is not None and workstations is not None:
-        try:
-            from .w_factory_config import calculate_estimated_waiting_time, WORKSTATIONS
-            estimated_waiting = calculate_estimated_waiting_time(part, current_time, queues, WORKSTATIONS)
-            # 修正后的松弛时间 = 基础松弛时间 - 估算等待时间
-            return basic_slack - estimated_waiting
-        except (ImportError, Exception):
-            # 如果导入失败或计算出错，回退到基础计算
-            pass
-    
     return basic_slack
 
 # =============================================================================
@@ -1178,7 +1167,12 @@ def make_parallel_env(config: Dict[str, Any] = None):
     """直接创建PettingZoo环境"""
     # 仅在主进程中显示环境创建日志，避免worker重复输出
     import os
-    if config and any(key in config for key in ['orders_scale', 'time_scale', 'stage_name']) and os.getpid() == os.getppid():
+    try:
+        import multiprocessing as _mp
+        is_main_process = (_mp.current_process().name == 'MainProcess')
+    except Exception:
+        is_main_process = True
+    if config and any(key in config for key in ['orders_scale', 'time_scale', 'stage_name']) and is_main_process:
         print(f"🏭 创建环境 - 课程学习配置: {config.get('stage_name', 'Unknown')}")
         print(f"   订单比例: {config.get('orders_scale', 1.0)}, 时间比例: {config.get('time_scale', 1.0)}")
     

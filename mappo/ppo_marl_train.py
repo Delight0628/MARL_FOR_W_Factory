@@ -1,6 +1,5 @@
 """
 纯净的多智能体PPO训练脚本
-专注于核心训练功能，移除复杂的评估和可视化
 """
 
 import os
@@ -14,17 +13,14 @@ import time
 import random
 import numpy as np
 import tensorflow as tf
+import socket
 from typing import Dict, List, Tuple, Any, Optional
 from datetime import datetime
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import multiprocessing
 
-# 🔧 V12 新增：TensorBoard支持
-try:
-    from tensorflow.python.summary.writer.writer import FileWriter
-    TENSORBOARD_AVAILABLE = True
-except ImportError:
-    TENSORBOARD_AVAILABLE = False
+# 🔧 V12 新增：TensorBoard支持（基于 TF2 正确检测）
+TENSORBOARD_AVAILABLE = hasattr(tf.summary, "create_file_writer")
 
 # 添加环境路径
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -288,14 +284,15 @@ class PPONetwork:
             probs = self.actor(states)
             # 🔧 修复：添加数值稳定性保护
             probs = tf.clip_by_value(probs, 1e-8, 1.0)
-            dist = tf.compat.v1.distributions.Categorical(probs=probs)
-            
-            new_probs = dist.prob(actions)
+            # 计算选择动作的概率 new_probs
+            batch_indices = tf.range(tf.shape(actions)[0], dtype=tf.int32)
+            indices = tf.stack([batch_indices, tf.cast(actions, tf.int32)], axis=1)
+            new_probs = tf.gather_nd(probs, indices)
             # 🔧 修复：防止除零和数值爆炸
             ratio = new_probs / (old_probs + 1e-8)
             ratio = tf.clip_by_value(ratio, 0.01, 100.0)  # 防止极端ratio
             
-            # 🔧 修复：正确计算KL散度
+            # 🔧 修复：正确计算KL散度（基于被选动作的近似）
             old_log_probs = tf.math.log(old_probs + 1e-8)
             new_log_probs = tf.math.log(new_probs + 1e-8)
             approx_kl = tf.reduce_mean(old_log_probs - new_log_probs)
@@ -307,7 +304,9 @@ class PPONetwork:
             clipped_ratio = tf.clip_by_value(ratio, 1 - clip_ratio, 1 + clip_ratio)
             actor_loss = -tf.reduce_mean(tf.minimum(ratio * advantages, clipped_ratio * advantages))
             
-            entropy = tf.reduce_mean(dist.entropy())
+            # 计算分类熵：-sum p*log p
+            entropy_per_sample = -tf.reduce_sum(probs * tf.math.log(probs + 1e-8), axis=1)
+            entropy = tf.reduce_mean(entropy_per_sample)
             actor_loss -= current_entropy_coeff * entropy
             
         actor_grads = tape.gradient(actor_loss, self.actor.trainable_variables)
@@ -500,6 +499,8 @@ class SimplePPOTrainer:
         # 🔧 V26 终极修复：移除动态参数调整
         optimized_episodes = total_train_episodes
         optimized_steps = steps_per_episode
+        # 统一评估/采集最大步数
+        self.max_steps_for_eval = int(optimized_steps)
         
         # 🔧 V32 使用配置文件的学习率调度配置
         self.lr_schedule = tf.keras.optimizers.schedules.PolynomialDecay(
@@ -537,7 +538,12 @@ class SimplePPOTrainer:
         self.final_stage_best_episode = -1 # 🔧 新增：记录最佳KPI的回合数
         
         # 🔧 核心改造：新增"双达标"最佳KPI跟踪器
-        self.best_kpi_dual_objective = self.final_stage_best_kpi.copy()
+        self.best_kpi_dual_objective = {
+            'mean_completed_parts': -1.0,
+            'mean_makespan': float('inf'),
+            'mean_utilization': 0.0,
+            'mean_tardiness': float('inf')
+        }
         self.best_score_dual_objective = -1.0
         self.best_episode_dual_objective = -1
 
@@ -602,7 +608,16 @@ class SimplePPOTrainer:
         if TENSORBOARD_AVAILABLE:
             self.train_writer = None
             self.current_tensorboard_run_name = None
-            print(f"📊 TensorBoard命令: tensorboard --logdir=\"{self.tensorboard_dir}\"")
+            # 为本次运行分配唯一端口
+            try:
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.bind(("127.0.0.1", 0))
+                self.tensorboard_port = sock.getsockname()[1]
+                sock.close()
+            except Exception:
+                # 回退到常见端口范围内的伪随机端口
+                self.tensorboard_port = 6006 + (hash(self.timestamp) % 1000)
+            print(f"📊 TensorBoard命令: tensorboard --logdir=\"{self.tensorboard_dir}\" --port={self.tensorboard_port}")
         else:
             self.train_writer = None
             print("⚠️  TensorBoard不可用")
@@ -721,6 +736,8 @@ class SimplePPOTrainer:
             config['time_scale'] = stage.get('time_scale', 1.0)
             print(f"📚 课程学习阶段 {curriculum_stage+1}: {stage['name']} (订单比例: {stage['orders_scale']}, 时间倍数: {stage['time_scale']})")
         
+        # 统一注入 MAX_SIM_STEPS
+        config['MAX_SIM_STEPS'] = self.max_steps_for_eval
         env = make_parallel_env(config)
         buffers = {
             agent: ExperienceBuffer() 
@@ -739,19 +756,22 @@ class SimplePPOTrainer:
             'actor': self.shared_network.actor.get_weights(),
             'critic': self.shared_network.critic.get_weights()
         }
-        # 🔧 关键修复：统一训练和评估的步数限制，确保一致性
-        # 让每个worker都有足够的步数完成任务，而不是简单平分
-        steps_per_worker = 1200  # 与评估保持一致
+        # 🔧 关键修复：使用入参作为每个 worker 的最大步数
+        steps_per_worker = int(num_steps)
         
         total_reward = 0
         
         # 初始化用于聚合所有worker数据的列表
         all_states, all_global_states, all_actions, all_old_probs, all_advantages, all_returns = [], [], [], [], [], []
 
-        with ProcessPoolExecutor(max_workers=self.num_workers) as executor:
+        # 🔧 使用 spawn 上下文，避免 TF 在 fork 下的不安全
+        with ProcessPoolExecutor(max_workers=self.num_workers, mp_context=multiprocessing.get_context("spawn")) as executor:
             futures = []
             for i in range(self.num_workers):
                 seed = random.randint(0, 1_000_000)
+                # 为 worker 传入统一的 MAX_SIM_STEPS
+                worker_config = (curriculum_config.copy() if curriculum_config else {})
+                worker_config['MAX_SIM_STEPS'] = steps_per_worker
                 future = executor.submit(
                     run_simulation_worker,
                     network_weights,
@@ -761,7 +781,7 @@ class SimplePPOTrainer:
                     seed,
                     self.global_state_dim,
                     PPO_NETWORK_CONFIG.copy(),
-                    curriculum_config
+                    worker_config
                 )
                 futures.append(future)
 
@@ -932,7 +952,7 @@ class SimplePPOTrainer:
         episode_reward = 0
         step_count = 0
         
-        while step_count < 1200:
+        while step_count < self.max_steps_for_eval:
             actions = {}
             
             # 使用确定性策略，但基于新的随机环境状态
@@ -986,7 +1006,7 @@ class SimplePPOTrainer:
             step_count = 0
             
             # 🔧 修复：使用与训练一致的步数限制
-            while step_count < 1200:
+            while step_count < self.max_steps_for_eval:
                 actions = {}
                 
                 # 使用确定性策略评估
@@ -1043,7 +1063,7 @@ class SimplePPOTrainer:
             episode_reward = 0
             step_count = 0
             
-            while step_count < 1200:
+            while step_count < self.max_steps_for_eval:
                 actions = {}
                 
                 # 使用确定性策略评估
@@ -1246,7 +1266,17 @@ class SimplePPOTrainer:
                 
                 # 🔧 V6 安全的策略更新（包含内存检查）
                 update_start_time = time.time()
-                losses = self.update_policy(batch, entropy_coeff=self.current_entropy_coeff)
+                if batch is not None:
+                    losses = self.update_policy(batch, entropy_coeff=self.current_entropy_coeff)
+                else:
+                    # 空批次防御：提供安全的默认指标并跳过更新
+                    losses = {
+                        'actor_loss': 0.0,
+                        'critic_loss': 0.0,
+                        'entropy': float(self.current_entropy_coeff),
+                        'approx_kl': 0.0,
+                        'clip_fraction': 0.0,
+                    }
                 update_duration = time.time() - update_start_time
                 
                 # 记录统计
@@ -1309,11 +1339,20 @@ class SimplePPOTrainer:
                 # 3. 自适应熵调整逻辑（修正版）
                 # 修复：使用简化的硬编码配置，避免依赖不存在的ADAPTIVE_ENTROPY_CONFIG
                 adaptive_entropy_enabled = True  # 默认启用
-                start_episode = 100  # 第10回合后开始
-                patience = 50  # 20回合停滞后触发
-                boost_factor = 0.1  # 每次提升20%
+                start_episode = 100  # 第100回合后开始统计
+                patience = 50  # 连续50回合无改进后触发
+                boost_factor = 0.1  # 每次提升10%
                 
-                if adaptive_entropy_enabled and episode > start_episode:
+                # 课程学习下：仅当处于最终阶段或已经进入泛化阶段才触发；
+                # 非课程学习：保持原逻辑。
+                curriculum_is_final_stage = False
+                if curriculum_enabled and not self.foundation_training_completed and current_stage < len(curriculum_config["stages"]):
+                    curriculum_is_final_stage = bool(curriculum_config["stages"][current_stage].get("is_final_stage", False))
+
+                allow_entropy_increase = (not curriculum_enabled) or curriculum_is_final_stage or self.generalization_phase_active
+
+                # 正确的触发点：在第 start_episode + patience 回合之后才可能触发
+                if adaptive_entropy_enabled and allow_entropy_increase and episode >= (start_episode + patience):
                     # 当前的完成率，用于判断是否需要降低熵
                     target_parts_for_entropy = self._get_target_parts(current_curriculum_config)
                     completion_rate_for_entropy = kpi_results['mean_completed_parts'] / (target_parts_for_entropy + 1e-6)
@@ -1650,14 +1689,23 @@ class SimplePPOTrainer:
             print("🏆 最终最佳KPI表现 (双重标准最佳) 🏆")
             print("="*40)
             
-            # 检查是否有模型达到了双重标准
+            # 检查是否有模型达到了双重标准，并实现优雅降级
             if self.best_episode_dual_objective != -1:
                 best_kpi = self.best_kpi_dual_objective
                 best_episode_to_report = self.best_episode_dual_objective
+            elif self.best_episode_generalization_phase != -1:
+                print("⚠️ 未找到双重标准模型，将报告【泛化阶段】的最佳模型。")
+                best_kpi = self.best_kpi_generalization_phase
+                best_episode_to_report = self.best_episode_generalization_phase
+            elif self.best_episode_foundation_phase != -1:
+                print("⚠️ 未找到双重标准或泛化阶段模型，将报告【基础训练阶段】的最佳模型。")
+                best_kpi = self.best_kpi_foundation_phase
+                best_episode_to_report = self.best_episode_foundation_phase
             else:
-                print("⚠️ 未找到同时满足100%完成率和目标分数的模型，将报告最终阶段的最佳分数模型。")
-                best_kpi = self.final_stage_best_kpi
-                best_episode_to_report = self.final_stage_best_episode
+                print("⚠️ 未能记录任何阶段的最佳模型。")
+                # 使用一个空的KPI字典来避免错误
+                best_kpi = self.best_kpi_dual_objective 
+                best_episode_to_report = -1
 
             target_parts_final = get_total_parts_count() # 最终评估总是基于完整任务
             completion_rate_final = (best_kpi.get('mean_completed_parts', 0) / target_parts_final) * 100 if target_parts_final > 0 else 0
@@ -1739,7 +1787,7 @@ class SimplePPOTrainer:
                 'training_time': total_training_time,
                 'kpi_history': self.kpi_history,
                 'iteration_times': self.iteration_times,
-                'best_kpi': self.best_kpi_dual_objective if self.best_episode_dual_objective != -1 else self.final_stage_best_kpi
+                'best_kpi': best_kpi
             }
             
         except Exception as e:
