@@ -145,12 +145,14 @@ def evaluate_marl_model(model_path: str, config: dict = STATIC_EVAL_CONFIG, gene
             if agent in obs:
                 state = tf.expand_dims(obs[agent], 0)
                 action_probs = actor_model(state, training=False)
-                # 🔧 重要修复：评估时使用微软随机策略，避免完全卡死
-                # 根据概率分布采样，但主要选择高概率动作
-                if np.random.random() < 0.2:  # 20%概率使用概率采样
-                    action = tf.random.categorical(tf.math.log(action_probs + 1e-8), 1)[0, 0].numpy()
-                else:  # 80%概率使用确定性
-                    action = int(tf.argmax(action_probs[0]))
+                # # 🔧 重要修复：评估时使用微软随机策略，避免完全卡死
+                # # 根据概率分布采样，但主要选择高概率动作
+                # if np.random.random() < 0.2:  # 20%概率使用概率采样
+                #     action = tf.random.categorical(tf.math.log(action_probs + 1e-8), 1)[0, 0].numpy()
+                # else:  # 80%概率使用确定性
+                #     action = int(tf.argmax(action_probs[0]))
+                # 评估时使用纯确定性策略（argmax）
+                action = int(tf.argmax(action_probs[0]))
                 actions[agent] = action
         return actions
 
@@ -229,8 +231,16 @@ def evaluate_heuristic(heuristic_name: str, config: dict = STATIC_EVAL_CONFIG, g
                 
                 # 在排序视图中根据启发式规则选择零件
                 if heuristic_name == 'FIFO':
-                    # 先进先出: 选择排序视图中的第一个 (最紧急的)
-                    best_view_index = 0
+                    # 先进先出：应选择物理队列的第一个（orig_index==0）
+                    # 在排序视图中查找orig_index==0对应的元素位置
+                    best_view_index = None
+                    for idx, item in enumerate(sorted_view):
+                        if item.get("orig_index", -1) == 0:
+                            best_view_index = idx
+                            break
+                    # 若物理队列第一个未出现在可见top-k中，退化为选择可见集合中orig_index最小者
+                    if best_view_index is None:
+                        best_view_index = int(np.argmin([item.get("orig_index", 1e9) for item in sorted_view]))
                 elif heuristic_name == 'EDD':
                     # 最早交期: 在排序视图中选择交期最小的
                     best_view_index = np.argmin([item["part"].due_date for item in sorted_view])

@@ -30,7 +30,7 @@ TRAINING_FLOW_CONFIG = {
         
         # 可选：在基础训练内部启用课程学习，以循序渐进的方式达到最终目标
         "curriculum_learning": {
-            "enabled": False,  # 关键开关：是否启用课程学习
+            "enabled": True,  # 关键开关：是否启用课程学习
             "stages": [
                 {
                     "name": "基础入门", "orders_scale": 0.4, "time_scale": 1.0, "is_final_stage": False,
@@ -38,7 +38,7 @@ TRAINING_FLOW_CONFIG = {
                 },
                 {
                     "name": "能力提升", "orders_scale": 0.8, "time_scale": 1.0, "is_final_stage": False,
-                    "graduation_criteria": {"target_score": 0.80, "min_completion_rate": 100.0, "target_consistency": 10,"tardiness_threshold": 0.0}
+                    "graduation_criteria": {"target_score": 0.80, "min_completion_rate": 100.0, "target_consistency": 10,"tardiness_threshold": 225.0}
                 },
                 {
                     "name": "完整挑战", "orders_scale": 1.0, "time_scale": 1.0, "is_final_stage": True,
@@ -72,6 +72,8 @@ TRAINING_FLOW_CONFIG = {
     # --- 通用训练参数 ---
     "general_params": {
         "max_episodes": 1000,
+        "steps_per_episode": 1500,          # 🔧 新增：每回合最大步数
+        "eval_frequency": 20,               # 🔧 新增：评估频率
         "early_stop_patience": 100,
         "performance_window": 15
     }
@@ -217,15 +219,15 @@ HEURISTIC_GUARDRAILS_CONFIG = {
 
 REWARD_CONFIG = {
     # === 事件驱动奖励 (Event-driven Rewards) ===
-    "on_time_completion_reward": 5.0,        # 按时或提前完成一个工件的基础奖励
-    "tardiness_penalty_scaler": -1.0,        # 延期惩罚的缩放系数，最终惩罚 = 此系数 * (延期分钟数 / 480)
+    "on_time_completion_reward": 10.0,        # 按时或提前完成一个工件的基础奖励
+    "tardiness_penalty_scaler": -10.0,        # 延期惩罚的缩放系数，最终惩罚 = 此系数 * (延期分钟数 / 480)
 
     # === 行为塑造惩罚 (Behavior Shaping Penalties) ===
-    "unnecessary_idle_penalty": -0.5,        # 在有工件排队时选择“空闲”动作的惩罚
+    "unnecessary_idle_penalty": -10.0,        # 在有工件排队时选择“空闲”动作的惩罚
 
     # === 终局奖励 (Episode End Bonus) ===
     "final_all_parts_completion_bonus": 1000.0, # 全部完成时给予的巨大奖励，激励完成所有任务
-    "invalid_action_penalty": -2.0,          # 选择一个无效的动作（比如队列为空的槽位）
+    "invalid_action_penalty": -5.0,          # 选择一个无效的动作（比如队列为空的槽位）
 }
 
 
@@ -242,6 +244,14 @@ PPO_NETWORK_CONFIG = {
     "entropy_coeff": 0.05,
     "ppo_epochs": 10,                    # 专家修复：重命名，明确其为Epochs
     "num_minibatches": 4,                # 专家修复：新增Mini-batch数量
+}
+
+# 🔧 新增：自适应熵调整配置
+ADAPTIVE_ENTROPY_CONFIG = {
+    "enabled": True,             # 是否启用
+    "start_episode": 100,        # 从第几回合开始启用
+    "patience": 50,              # 连续多少回合无改进则提升熵
+    "boost_factor": 0.1,         # 每次提升熵的比例
 }
 
 # 学习率调度配置

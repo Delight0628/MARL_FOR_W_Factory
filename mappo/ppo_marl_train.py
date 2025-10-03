@@ -29,7 +29,7 @@ sys.path.append(parent_dir)
 
 from environments.w_factory_env import make_parallel_env, WFactoryEnv
 from environments.w_factory_config import *
-from environments.w_factory_config import validate_config, get_total_parts_count, generate_random_orders, calculate_episode_score
+from environments.w_factory_config import validate_config, get_total_parts_count, generate_random_orders, calculate_episode_score, ADAPTIVE_ENTROPY_CONFIG
 
 class ExperienceBuffer:
     """🔧 MAPPO经验缓冲区 - 支持全局状态"""
@@ -534,7 +534,7 @@ class SimplePPOTrainer:
             'mean_utilization': 0.0,
             'mean_tardiness': float('inf')
         }
-        self.final_stage_best_score = -1.0
+        self.final_stage_best_score = float('-inf')
         self.final_stage_best_episode = -1 # 🔧 新增：记录最佳KPI的回合数
         
         # 🔧 核心改造：新增"双达标"最佳KPI跟踪器
@@ -544,7 +544,7 @@ class SimplePPOTrainer:
             'mean_utilization': 0.0,
             'mean_tardiness': float('inf')
         }
-        self.best_score_dual_objective = -1.0
+        self.best_score_dual_objective = float('-inf')
         self.best_episode_dual_objective = -1
 
         # 🔧 核心重构：训练流程由配置文件驱动
@@ -573,11 +573,11 @@ class SimplePPOTrainer:
         self.generalization_achievement_count = 0  # 泛化阶段连续达标次数
         
         # --- 新增：为新两阶段方案的独立模型保存追踪 ---
-        self.best_score_foundation_phase = -1.0    # 基础训练阶段最佳分数
+        self.best_score_foundation_phase = float('-inf')    # 基础训练阶段最佳分数
         self.best_kpi_foundation_phase = {}         # 基础训练阶段最佳KPI
         self.best_episode_foundation_phase = -1    # 基础训练阶段最佳回合
         
-        self.best_score_generalization_phase = -1.0  # 泛化强化阶段最佳分数
+        self.best_score_generalization_phase = float('-inf')  # 泛化强化阶段最佳分数
         self.best_kpi_generalization_phase = {}       # 泛化强化阶段最佳KPI
         self.best_episode_generalization_phase = -1  # 泛化强化阶段最佳回合
         
@@ -965,6 +965,15 @@ class SimplePPOTrainer:
                         action = int(tf.random.categorical(tf.math.log(action_probs + 1e-8), 1)[0])
                     else:
                         action = int(tf.argmax(action_probs[0]))
+                    # # 评估保底：若动作=IDLE且队列非空，则改为"最紧急"动作（1）
+                    # if action == 0:
+                    #     station_name = agent.replace("agent_", "")
+                    #     try:
+                    #         queue_len = len(env.sim.queues[station_name].items)
+                    #         if queue_len > 0:
+                    #             action = 1
+                    #     except Exception:
+                    #         pass
                     actions[agent] = action
             
             observations, rewards, terminations, truncations, infos = env.step(actions)
@@ -989,6 +998,7 @@ class SimplePPOTrainer:
         # 🔧 V39修复：创建环境时传递课程配置，包括静默模式
         # 课程配置直接通过make_parallel_env传递，由环境内部处理
         if curriculum_config:
+            curriculum_config = curriculum_config.copy()
             env = make_parallel_env(curriculum_config)
         else:
             # 🔧 V39 修复一个潜在bug：正确解包create_environment的返回值
@@ -1015,6 +1025,15 @@ class SimplePPOTrainer:
                         state = tf.expand_dims(observations[agent], 0)
                         action_probs = self.shared_network.actor(state)
                         action = int(tf.argmax(action_probs[0]))
+                        # # 评估保底：若动作=IDLE且队列非空，则改为"最紧急"动作（1）
+                        # if action == 0:
+                        #     station_name = agent.replace("agent_", "")
+                        #     try:
+                        #         queue_len = len(env.sim.queues[station_name].items)
+                        #         if queue_len > 0:
+                        #             action = 1
+                        #     except Exception:
+                        #         pass
                         actions[agent] = action
                 
                 observations, rewards, terminations, truncations, infos = env.step(actions)
@@ -1072,6 +1091,15 @@ class SimplePPOTrainer:
                         state = tf.expand_dims(observations[agent], 0)
                         action_probs = self.shared_network.actor(state)
                         action = int(tf.argmax(action_probs[0]))
+                        # # 评估保底：若动作=IDLE且队列非空，则改为"最紧急"动作（1）
+                        # if action == 0:
+                        #     station_name = agent.replace("agent_", "")
+                        #     try:
+                        #         queue_len = len(env.sim.queues[station_name].items)
+                        #         if queue_len > 0:
+                        #             action = 1
+                        #     except Exception:
+                        #         pass
                         actions[agent] = action
                 
                 observations, rewards, terminations, truncations, infos = env.step(actions)
@@ -1145,7 +1173,7 @@ class SimplePPOTrainer:
         best_makespan = float('inf')
         
         # 🔧 V27 核心修复：为课程学习的每个阶段独立跟踪最佳分数
-        stage_best_scores = [0.0] * len(curriculum_config["stages"]) if curriculum_enabled else []
+        stage_best_scores = [float('-inf')] * len(curriculum_config["stages"]) if curriculum_enabled else []
         
         # 🔧 初始化用于课程学习毕业检查的性能指标，毕业检查将使用上一个回合的准确数据
         last_kpi_results = {}
@@ -1338,10 +1366,10 @@ class SimplePPOTrainer:
                 
                 # 3. 自适应熵调整逻辑（修正版）
                 # 修复：使用简化的硬编码配置，避免依赖不存在的ADAPTIVE_ENTROPY_CONFIG
-                adaptive_entropy_enabled = True  # 默认启用
-                start_episode = 100  # 第100回合后开始统计
-                patience = 50  # 连续50回合无改进后触发
-                boost_factor = 0.1  # 每次提升10%
+                adaptive_entropy_enabled = ADAPTIVE_ENTROPY_CONFIG["enabled"]
+                start_episode = ADAPTIVE_ENTROPY_CONFIG["start_episode"]
+                patience = ADAPTIVE_ENTROPY_CONFIG["patience"]
+                boost_factor = ADAPTIVE_ENTROPY_CONFIG["boost_factor"]
                 
                 # 课程学习下：仅当处于最终阶段或已经进入泛化阶段才触发；
                 # 非课程学习：保持原逻辑。
@@ -1751,7 +1779,7 @@ class SimplePPOTrainer:
             if curriculum_enabled:
                  print("\n--- 课程学习各阶段最佳分数 ---")
                  for i, score in enumerate(stage_best_scores):
-                     if score != -1.0:
+                     if score > -np.inf:
                          stage_name = curriculum_config["stages"][i]['name']
                          print(f"   阶段 '{stage_name}': {score:.3f}")
                      else:
@@ -1872,7 +1900,8 @@ def main():
     try:
         # 核心重构：从TRAINING_FLOW_CONFIG获取训练参数
         max_episodes = TRAINING_FLOW_CONFIG["general_params"]["max_episodes"]
-        steps_per_episode = 1500  # 与评估保持一致的步数
+        steps_per_episode = TRAINING_FLOW_CONFIG["general_params"]["steps_per_episode"]
+        eval_frequency = TRAINING_FLOW_CONFIG["general_params"]["eval_frequency"]
         
         # 训练目标现在分散在TRAINING_FLOW_CONFIG中，不再需要独立的training_targets字典
         
@@ -1923,7 +1952,7 @@ def main():
         results = trainer.train(
             max_episodes=max_episodes,
             steps_per_episode=steps_per_episode,
-            eval_frequency=20,
+            eval_frequency=eval_frequency,
             adaptive_mode=True
         )
         

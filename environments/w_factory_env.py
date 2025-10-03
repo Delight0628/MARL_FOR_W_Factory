@@ -61,8 +61,6 @@ class Part:
         self.current_step = 0
         self.start_time = 0
         self.completion_time = None
-        self.processing_history = []
-        # 专家修复 V3：追踪贡献时间，用于加权信用分配
         self.contribution_map: Dict[str, float] = {}
         
     def get_current_station(self) -> Optional[str]:
@@ -1011,8 +1009,8 @@ class WFactorySim:
                 # 如果有零件完成，显示最后完成零件的时间
                 makespan = max(part.completion_time for part in self.completed_parts if part.completion_time is not None)
             else:
-                # 关键：如果没有零件完成，显示0而不是1200
-                makespan = 0
+                # 关键：如果没有零件完成，则将makespan设为当前耗尽的时间
+                makespan = self.current_time
             self.stats['timeout_occurred'] = True
             self.stats['incomplete_parts'] = total_required - len(self.completed_parts)
         
@@ -1172,8 +1170,4 @@ def make_parallel_env(config: Dict[str, Any] = None):
         is_main_process = (_mp.current_process().name == 'MainProcess')
     except Exception:
         is_main_process = True
-    if config and any(key in config for key in ['orders_scale', 'time_scale', 'stage_name']) and is_main_process:
-        print(f"🏭 创建环境 - 课程学习配置: {config.get('stage_name', 'Unknown')}")
-        print(f"   订单比例: {config.get('orders_scale', 1.0)}, 时间比例: {config.get('time_scale', 1.0)}")
-    
     return WFactoryEnv(config) 
