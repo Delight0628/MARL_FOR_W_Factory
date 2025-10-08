@@ -2,13 +2,32 @@
 *
 
 # 但不忽略这些文件
+!.gitignore
+
+# Directories
 !environments/
 !mappo/
+!.specstory/
+!app/
+!app/**
+!答疑/
+
+# Python scripts
 !auto_train.py
 !advanced_optimization.py
 !debug_marl_behavior.py
 !evaluation.py
 !log_parser.py
 !plotting.py
-!答疑
-!.specstory/
+!app_scheduler.py
+
+# Documentation
+!README.md
+!奖励显示.md
+!rule.mdc
+
+# Dependencies
+!requirements.txt
+
+# Explicitly ignored items
+0918_2340_0.3lateness/

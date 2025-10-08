@@ -29,7 +29,7 @@ sys.path.append(parent_dir)
 
 from environments.w_factory_env import make_parallel_env, WFactoryEnv
 from environments.w_factory_config import *
-from environments.w_factory_config import validate_config, get_total_parts_count, generate_random_orders, calculate_episode_score, ADAPTIVE_ENTROPY_CONFIG
+from environments.w_factory_config import validate_config, get_total_parts_count, generate_random_orders, calculate_episode_score, ADAPTIVE_ENTROPY_CONFIG, EVALUATION_CONFIG
 
 class ExperienceBuffer:
     """🔧 MAPPO经验缓冲区 - 支持全局状态"""
@@ -54,8 +54,8 @@ class ExperienceBuffer:
         self.dones.append(done)
         self.truncateds.append(truncated)
     
-    def get_batch(self, gamma=0.99, lam=0.95, next_value_if_truncated=None):
-        """🔧 MAPPO改进：正确处理轨迹截断"""
+    def get_batch(self, gamma=0.99, lam=0.95, next_value_if_truncated=None, advantage_clip_val: Optional[float] = None):
+        """🔧 MAPPO改进：正确处理轨迹截断，并支持优势裁剪"""
         states = np.array(self.states, dtype=np.float32)
         global_states = np.array(self.global_states, dtype=np.float32)
         actions = np.array(self.actions)
@@ -103,8 +103,9 @@ class ExperienceBuffer:
                 advantages = advantages - adv_mean
         # 单样本情况：不进行任何标准化，保持原值
         
-        # 🔧 新增：优势裁剪，防止极端值（但保留足够的动态范围）
-        advantages = np.clip(advantages, -5, 5)
+        # 🔧 缺陷修复：使用配置化的优势裁剪
+        if advantage_clip_val is not None:
+            advantages = np.clip(advantages, -advantage_clip_val, advantage_clip_val)
         
         return states, global_states, actions, action_probs, advantages, returns
     
@@ -311,7 +312,8 @@ class PPONetwork:
             
         actor_grads = tape.gradient(actor_loss, self.actor.trainable_variables)
         # 🔧 新增：梯度裁剪以提高训练稳定性
-        actor_grads, _ = tf.clip_by_global_norm(actor_grads, 1.0)  # 增加到1.0，允许更大梯度
+        grad_clip_norm = PPO_NETWORK_CONFIG.get("grad_clip_norm", 1.0)
+        actor_grads, _ = tf.clip_by_global_norm(actor_grads, grad_clip_norm)
         self.actor_optimizer.apply_gradients(zip(actor_grads, self.actor.trainable_variables))
         
         # Critic更新 (使用全局状态)
@@ -319,8 +321,8 @@ class PPONetwork:
             values = self.critic(global_states)
             critic_loss = tf.reduce_mean(tf.square(returns - values))
         critic_grads = tape.gradient(critic_loss, self.critic.trainable_variables)
-        # 🔧 新增：梯度裁剪
-        critic_grads, _ = tf.clip_by_global_norm(critic_grads, 1.0)  # 与actor保持一致
+        # 🔧 新增：梯度裁剪（使用配置值）
+        critic_grads, _ = tf.clip_by_global_norm(critic_grads, grad_clip_norm)
         self.critic_optimizer.apply_gradients(zip(critic_grads, self.critic.trainable_variables))
         
         return {
@@ -425,7 +427,7 @@ def run_simulation_worker(network_weights: Dict[str, List[np.ndarray]],
         observations = next_observations
 
         # 🔧 修复：与评估一致的终止条件
-        if any(terminations.values()) or any(truncations.values()) or step_count >= 1200:
+        if any(terminations.values()) or any(truncations.values()):
             
             # 🔧 MAPPO关键修复：正确处理截断时的bootstrap价值
             # 注意：这里暂时不处理，让buffer自己在get_batch时处理
@@ -812,9 +814,11 @@ class SimplePPOTrainer:
                             else:
                                 bootstrap_value = None
 
-                            # 使用正确的引导价值处理该轨迹
+                            # 🔧 缺陷修复：将配置中的优势裁剪值传递给get_batch
+                            advantage_clip_val = PPO_NETWORK_CONFIG.get("advantage_clip_val")
                             states, global_states, actions, old_probs, advantages, returns = buffer.get_batch(
-                                next_value_if_truncated=bootstrap_value
+                                next_value_if_truncated=bootstrap_value,
+                                advantage_clip_val=advantage_clip_val
                             )
                             
                             # 将处理好的数据聚合到总批次中
@@ -961,7 +965,7 @@ class SimplePPOTrainer:
                     state = tf.expand_dims(observations[agent], 0)
                     action_probs = self.shared_network.actor(state)
                     # 🔧 使用确定性评估，但保留少量探索
-                    if random.random() < 0.1:  # 10%概率探索，避免完全卡死
+                    if random.random() < EVALUATION_CONFIG["exploration_rate"]:
                         action = int(tf.random.categorical(tf.math.log(action_probs + 1e-8), 1)[0])
                     else:
                         action = int(tf.argmax(action_probs[0]))
@@ -1398,15 +1402,15 @@ class SimplePPOTrainer:
                         # 核心修复：重置计数器，给予模型适应新熵值的窗口期
                         self.epochs_without_improvement = 0
                     
-                    # 如果完成率很高，可以适当降低熵以进行微调
-                    elif completion_rate_for_entropy > 0.95:
+                    # 🔧 缺陷四修复：使用配置化的熵衰减逻辑
+                    elif completion_rate_for_entropy > ADAPTIVE_ENTROPY_CONFIG["high_completion_threshold"]:
                         self.current_entropy_coeff = max(
-                            self.current_entropy_coeff * 0.999,
-                            0.005  # 最小熵值
+                            self.current_entropy_coeff * ADAPTIVE_ENTROPY_CONFIG["high_completion_decay"],
+                            ADAPTIVE_ENTROPY_CONFIG["min_entropy"]
                         )
                 
                 # 确保熵不会低于设定的最小值
-                self.current_entropy_coeff = max(self.current_entropy_coeff, 0.005)
+                self.current_entropy_coeff = max(self.current_entropy_coeff, ADAPTIVE_ENTROPY_CONFIG["min_entropy"])
 
                 
                 # 🔧 V36 统一TensorBoard日志记录，并根据课程阶段动态切换run

@@ -322,6 +322,9 @@ class WFactorySim:
     
     def _part_process(self, part: Part):
         """零件的生产流程进程 - 简化版本"""
+        # 在达到计划到达时间前等待
+        if hasattr(part, 'start_time') and part.start_time > self.env.now:
+            yield self.env.timeout(part.start_time - self.env.now)
         # 将零件放入第一个工作站的队列
         first_station = part.get_current_station()
         if first_station:
@@ -605,8 +608,8 @@ class WFactorySim:
         active_parts_ratio = len(self.active_parts) / total_parts_in_system if total_parts_in_system > 0 else 0.0
         global_features.extend([completed_parts_ratio, active_parts_ratio])
         
-        # 3. 所有工作站的汇总状态（固定顺序）
-        for station_name in sorted(WORKSTATIONS.keys()):
+        # 3. 所有工作站的汇总状态（顺序与agents一致）
+        for station_name in WORKSTATIONS.keys():
             # 队列长度归一化
             queue_len = len(self.queues[station_name].items)
             queue_len_norm = queue_len / ENHANCED_OBS_CONFIG["w_station_capacity_norm"]

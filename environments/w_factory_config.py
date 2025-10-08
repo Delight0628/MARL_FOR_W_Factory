@@ -30,7 +30,7 @@ TRAINING_FLOW_CONFIG = {
         
         # 可选：在基础训练内部启用课程学习，以循序渐进的方式达到最终目标
         "curriculum_learning": {
-            "enabled": True,  # 关键开关：是否启用课程学习
+            "enabled": False,  # 关键开关：是否启用课程学习
             "stages": [
                 {
                     "name": "基础入门", "orders_scale": 0.4, "time_scale": 1.0, "is_final_stage": False,
@@ -219,8 +219,8 @@ HEURISTIC_GUARDRAILS_CONFIG = {
 
 REWARD_CONFIG = {
     # === 事件驱动奖励 (Event-driven Rewards) ===
-    "on_time_completion_reward": 10.0,        # 按时或提前完成一个工件的基础奖励
-    "tardiness_penalty_scaler": -10.0,        # 延期惩罚的缩放系数，最终惩罚 = 此系数 * (延期分钟数 / 480)
+    "on_time_completion_reward": 100.0,        # 按时或提前完成一个工件的基础奖励
+    "tardiness_penalty_scaler": -5.0,        # 延期惩罚的缩放系数，最终惩罚 = 此系数 * (延期分钟数 / 480)
 
     # === 行为塑造惩罚 (Behavior Shaping Penalties) ===
     "unnecessary_idle_penalty": -10.0,        # 在有工件排队时选择“空闲”动作的惩罚
@@ -244,6 +244,8 @@ PPO_NETWORK_CONFIG = {
     "entropy_coeff": 0.05,
     "ppo_epochs": 10,                    # 专家修复：重命名，明确其为Epochs
     "num_minibatches": 4,                # 专家修复：新增Mini-batch数量
+    "grad_clip_norm": 1.0,               # 🔧 新增：梯度裁剪的范数
+    "advantage_clip_val": 5.0,           # 🔧 新增：优势函数的裁剪值
 }
 
 # 🔧 新增：自适应熵调整配置
@@ -252,6 +254,14 @@ ADAPTIVE_ENTROPY_CONFIG = {
     "start_episode": 100,        # 从第几回合开始启用
     "patience": 50,              # 连续多少回合无改进则提升熵
     "boost_factor": 0.1,         # 每次提升熵的比例
+    "high_completion_decay": 0.999, # 🔧 新增：当完成率高时，用于熵的衰减因子
+    "high_completion_threshold": 0.95, # 🔧 新增：定义“高完成率”的阈值
+    "min_entropy": 0.005,        # 🔧 新增：允许的最小熵系数
+}
+
+# 🔧 新增：评估流程配置
+EVALUATION_CONFIG = {
+    "exploration_rate": 0.05,  # 评估时使用的随机探索率，设置为0则为纯粹的确定性评估
 }
 
 # 学习率调度配置
