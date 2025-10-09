@@ -26,7 +26,7 @@ if project_root not in sys.path:
 from environments.w_factory_env import WFactoryEnv
 from environments.w_factory_config import (
     PRODUCT_ROUTES, WORKSTATIONS, get_total_parts_count,
-    calculate_episode_score
+    calculate_episode_score, generate_random_orders
 )
 
 # ============================================================================
@@ -39,13 +39,39 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# 隐藏右上角的Deploy按钮和菜单
+# 隐藏右上角的Deploy按钮和菜单，并优化样式
 hide_streamlit_style = """
     <style>
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
     header {visibility: hidden;}
     .stDeployButton {display: none;}
+    
+    /* 移除顶部空白 */
+    .block-container {
+        padding-top: 2rem !important;
+    }
+    
+    /* 增大一级标题字号 */
+    h1 {
+        font-size: 2.5rem !important;
+        font-weight: 700 !important;
+        margin-bottom: 1.5rem !important;
+    }
+    
+    /* 二级标题字号 */
+    h2 {
+        font-size: 1.8rem !important;
+        font-weight: 600 !important;
+        margin-top: 2rem !important;
+        margin-bottom: 1rem !important;
+    }
+    
+    /* 三级标题字号 */
+    h3 {
+        font-size: 1.3rem !important;
+        font-weight: 500 !important;
+    }
     </style>
 """
 st.markdown(hide_streamlit_style, unsafe_allow_html=True)
@@ -53,6 +79,28 @@ st.markdown(hide_streamlit_style, unsafe_allow_html=True)
 # ============================================================================
 # 辅助函数
 # ============================================================================
+
+def load_custom_products():
+    """从文件加载自定义产品配置"""
+    config_file = os.path.join(app_dir, "custom_products.json")
+    if os.path.exists(config_file):
+        try:
+            with open(config_file, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except:
+            return {}
+    return {}
+
+def save_custom_products(products):
+    """保存自定义产品配置到文件"""
+    config_file = os.path.join(app_dir, "custom_products.json")
+    try:
+        with open(config_file, 'w', encoding='utf-8') as f:
+            json.dump(products, f, ensure_ascii=False, indent=2)
+        return True
+    except Exception as e:
+        st.error(f"保存失败：{e}")
+        return False
 
 @st.cache_resource
 def load_model(model_path):
@@ -88,43 +136,78 @@ def find_available_models(base_dir="mappo/ppo_models"):
                     })
     return models
 
-def run_scheduling(actor_model, orders_config, max_steps=1500):
+def run_scheduling(actor_model, orders_config, custom_products=None, max_steps=1500, progress_bar=None, status_text=None):
     """运行调度仿真"""
-    config = {
-        'custom_orders': orders_config,
-        'disable_failures': True,
-        'stage_name': '用户自定义调度'
-    }
+    # 如果有自定义产品，临时添加到PRODUCT_ROUTES
+    from environments import w_factory_config
+    original_routes = None
     
-    env = WFactoryEnv(config=config)
-    obs, info = env.reset(seed=42)
+    if custom_products:
+        original_routes = w_factory_config.PRODUCT_ROUTES.copy()
+        w_factory_config.PRODUCT_ROUTES.update(custom_products)
     
-    step_count = 0
-    total_reward = 0
-    
-    while step_count < max_steps:
-        actions = {}
-        for agent in env.agents:
-            if agent in obs:
-                state = tf.expand_dims(obs[agent], 0)
-                action_probs = actor_model(state, training=False)
-                action = int(tf.argmax(action_probs[0]))
-                actions[agent] = action
+    try:
+        config = {
+            'custom_orders': orders_config,
+            'disable_failures': True,
+            'stage_name': '用户自定义调度'
+        }
         
-        obs, rewards, terminations, truncations, info = env.step(actions)
-        total_reward += sum(rewards.values())
-        step_count += 1
+        if status_text:
+            status_text.text("🔄 初始化环境...")
         
-        if any(terminations.values()) or any(truncations.values()):
-            break
-    
-    final_stats = env.sim.get_final_stats()
-    gantt_history = env.sim.gantt_chart_history
-    score = calculate_episode_score(final_stats, config)
-    
-    env.close()
-    
-    return final_stats, gantt_history, score, total_reward
+        env = WFactoryEnv(config=config)
+        obs, info = env.reset(seed=42)
+        
+        step_count = 0
+        total_reward = 0
+        
+        if status_text:
+            status_text.text("🚀 开始调度仿真...")
+        
+        while step_count < max_steps:
+            actions = {}
+            for agent in env.agents:
+                if agent in obs:
+                    state = tf.expand_dims(obs[agent], 0)
+                    action_probs = actor_model(state, training=False)
+                    action = int(tf.argmax(action_probs[0]))
+                    actions[agent] = action
+            
+            obs, rewards, terminations, truncations, info = env.step(actions)
+            total_reward += sum(rewards.values())
+            step_count += 1
+            
+            # 更新进度条
+            if progress_bar and step_count % 10 == 0:
+                progress = min(step_count / max_steps, 1.0)
+                progress_bar.progress(progress)
+                if status_text:
+                    status_text.text(f"⚙️ 调度中... ({step_count}/{max_steps} 步)")
+            
+            if any(terminations.values()) or any(truncations.values()):
+                break
+        
+        if status_text:
+            status_text.text("📊 生成结果...")
+        
+        if progress_bar:
+            progress_bar.progress(1.0)
+        
+        final_stats = env.sim.get_final_stats()
+        gantt_history = env.sim.gantt_chart_history
+        score = calculate_episode_score(final_stats, config)
+        
+        env.close()
+        
+        if status_text:
+            status_text.text("✅ 调度完成!")
+        
+        return final_stats, gantt_history, score, total_reward
+    finally:
+        # 恢复原始产品路线
+        if original_routes is not None:
+            w_factory_config.PRODUCT_ROUTES = original_routes
 
 def create_gantt_chart(history):
     """创建交互式甘特图"""
@@ -279,31 +362,110 @@ def main():
     
     st.divider()
     
+    # 自定义产品工艺路线管理（移到系统配置部分）
+    with st.expander("🔧 自定义产品工艺路线", expanded=False):
+        st.caption("添加新的产品类型并定义其工艺路线（保存后可在订单配置中使用）")
+        
+        # 初始化自定义产品路线
+        if 'custom_products' not in st.session_state:
+            st.session_state['custom_products'] = load_custom_products()
+        
+        col1, col2 = st.columns([3, 1])
+        
+        with col1:
+            new_product_name = st.text_input("新产品名称", placeholder="例如：橡木办公桌")
+        
+        with col2:
+            st.write("")  # 空行对齐
+        
+        st.write("**工艺路线定义**（按加工顺序）")
+        
+        # 显示可用工作站
+        st.caption(f"可用工作站：{', '.join(WORKSTATIONS.keys())}")
+        
+        # 工艺步骤输入
+        num_steps = st.number_input("工序数量", min_value=1, max_value=10, value=3, key="custom_steps")
+        
+        route_steps = []
+        for i in range(num_steps):
+            col1, col2 = st.columns([2, 1])
+            with col1:
+                station = st.selectbox(
+                    f"工序 {i+1} - 工作站",
+                    options=list(WORKSTATIONS.keys()),
+                    key=f"custom_station_{i}"
+                )
+            with col2:
+                time = st.number_input(
+                    f"工序 {i+1} - 时间(分钟)",
+                    min_value=1,
+                    max_value=100,
+                    value=10,
+                    key=f"custom_time_{i}"
+                )
+            route_steps.append({"station": station, "time": time})
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("➕ 添加自定义产品"):
+                if new_product_name:
+                    if new_product_name in PRODUCT_ROUTES:
+                        st.error(f"产品 '{new_product_name}' 已存在于系统内置产品中")
+                    else:
+                        st.session_state['custom_products'][new_product_name] = route_steps
+                        save_custom_products(st.session_state['custom_products'])
+                        st.success(f"✅ 已添加产品：{new_product_name}")
+                        st.rerun()
+                else:
+                    st.error("请输入产品名称")
+        
+        # 显示已添加的自定义产品
+        if st.session_state['custom_products']:
+            st.divider()
+            st.write("**已添加的自定义产品：**")
+            
+            for prod_name, route in st.session_state['custom_products'].items():
+                col1, col2 = st.columns([4, 1])
+                with col1:
+                    route_str = " → ".join([f"{s['station']}({s['time']}min)" for s in route])
+                    st.text(f"• {prod_name}: {route_str}")
+                with col2:
+                    if st.button("🗑️", key=f"del_{prod_name}"):
+                        del st.session_state['custom_products'][prod_name]
+                        save_custom_products(st.session_state['custom_products'])
+                        st.rerun()
+    
+    st.divider()
+    
     # 步骤2：订单配置
     st.header("📝 订单配置")
     
-    # 提供两种配置方式
+    # 提供三种配置方式
     config_method = st.radio(
         "选择配置方式",
-        ["可视化配置", "JSON配置"],
+        ["可视化配置", "JSON配置", "随机生成订单"],
         horizontal=True
     )
     
     if config_method == "可视化配置":
-        st.subheader("添加订单")
-        
         # 初始化订单列表
         if 'orders' not in st.session_state:
             st.session_state['orders'] = []
         
+        st.subheader("添加订单")
+        
+        # 合并系统产品和自定义产品
+        custom_products = st.session_state.get('custom_products', {})
+        all_products = list(PRODUCT_ROUTES.keys()) + list(custom_products.keys())
+        
         # 添加订单表单
         with st.form("add_order_form"):
-            col1, col2, col3, col4 = st.columns(4)
+            col1, col2, col3, col4, col5 = st.columns(5)
             
             with col1:
                 product = st.selectbox(
                     "产品类型",
-                    options=list(PRODUCT_ROUTES.keys())
+                    options=all_products
                 )
             
             with col2:
@@ -331,57 +493,36 @@ def main():
                     value=300
                 )
             
+            with col5:
+                arrival_time = st.number_input(
+                    "到达时间(分钟)",
+                    min_value=0,
+                    max_value=500,
+                    value=0,
+                    help="订单到达时间，0表示立即到达"
+                )
+            
             submitted = st.form_submit_button("➕ 添加订单")
             if submitted:
                 order = {
                     "product": product,
                     "quantity": int(quantity),
                     "priority": int(priority),
-                    "due_date": float(due_date)
+                    "due_date": int(due_date),
+                    "arrival_time": int(arrival_time)
                 }
                 st.session_state['orders'].append(order)
-                st.success(f"已添加订单：{product} x{quantity}")
-        
-        # 显示当前订单列表
-        if st.session_state['orders']:
-            st.subheader("当前订单列表")
-            
-            orders_df = pd.DataFrame(st.session_state['orders'])
-            orders_df.index = range(1, len(orders_df) + 1)
-            orders_df.columns = ['产品', '数量', '优先级', '交期(分钟)']
-            
-            st.dataframe(orders_df, use_container_width=True)
-            
-            # 订单管理按钮
-            col1, col2, col3 = st.columns([1, 1, 3])
-            with col1:
-                if st.button("🗑️ 清空所有订单"):
-                    st.session_state['orders'] = []
-                    st.rerun()
-            
-            with col2:
-                # 导出订单配置
-                if st.button("💾 导出配置"):
-                    config_json = json.dumps(st.session_state['orders'], indent=2, ensure_ascii=False)
-                    st.download_button(
-                        label="下载JSON配置",
-                        data=config_json,
-                        file_name=f"orders_config_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
-                        mime="application/json"
-                    )
-            
-            # 显示订单统计
-            total_parts = sum(order['quantity'] for order in st.session_state['orders'])
-            st.info(f"📦 订单总数：{len(st.session_state['orders'])} | 总零件数：{total_parts}")
-            
-    else:  # JSON配置
+                st.success(f"已添加订单：{product} x{quantity} (到达时间:{arrival_time}min)")
+                st.rerun()
+    
+    elif config_method == "JSON配置":
         st.subheader("JSON格式配置")
         
         # 提供示例
         example_json = [
-            {"product": "黑胡桃木餐桌", "quantity": 6, "priority": 1, "due_date": 300.0},
-            {"product": "橡木书柜", "quantity": 6, "priority": 2, "due_date": 400.0},
-            {"product": "松木床架", "quantity": 6, "priority": 1, "due_date": 350.0}
+            {"product": "黑胡桃木餐桌", "quantity": 6, "priority": 1, "due_date": 300, "arrival_time": 0},
+            {"product": "橡木书柜", "quantity": 6, "priority": 2, "due_date": 400, "arrival_time": 0},
+            {"product": "松木床架", "quantity": 6, "priority": 1, "due_date": 350, "arrival_time": 20}
         ]
         
         st.caption("示例格式：")
@@ -398,11 +539,17 @@ def main():
             if st.button("✅ 加载JSON配置"):
                 try:
                     orders = json.loads(json_input)
-                    # 验证配置
+                    # 验证配置并添加默认值
                     for order in orders:
                         if not all(k in order for k in ['product', 'quantity', 'priority', 'due_date']):
-                            st.error("配置格式错误：缺少必要字段")
+                            st.error("配置格式错误：缺少必要字段(product, quantity, priority, due_date)")
                             break
+                        # 添加默认arrival_time
+                        if 'arrival_time' not in order:
+                            order['arrival_time'] = 0
+                        # 确保交期和到达时间是整数
+                        order['due_date'] = int(order['due_date'])
+                        order['arrival_time'] = int(order['arrival_time'])
                     else:
                         st.session_state['orders'] = orders
                         st.success(f"成功加载 {len(orders)} 个订单")
@@ -416,38 +563,124 @@ def main():
                 st.success("已加载示例配置")
                 st.rerun()
     
+    else:  # 随机生成订单
+        st.subheader("随机订单生成")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            num_orders = st.slider("订单数量", min_value=3, max_value=10, value=5)
+            min_quantity = st.number_input("每个订单最小零件数", min_value=1, max_value=20, value=3)
+            max_quantity = st.number_input("每个订单最大零件数", min_value=1, max_value=50, value=10)
+        
+        with col2:
+            min_due = st.number_input("最短交期(分钟)", min_value=100, max_value=1000, value=200)
+            max_due = st.number_input("最长交期(分钟)", min_value=200, max_value=2000, value=700)
+        
+        if st.button("🎲 生成随机订单", type="primary"):
+            # 自定义配置
+            config = {
+                "min_orders": num_orders,
+                "max_orders": num_orders,
+                "min_quantity_per_order": min_quantity,
+                "max_quantity_per_order": max_quantity,
+                "due_date_range": (min_due, max_due),
+                "priority_weights": [0.3, 0.5, 0.2]
+            }
+            
+            # 临时修改全局配置
+            from environments import w_factory_config
+            import random
+            original_config = w_factory_config.TRAINING_FLOW_CONFIG["generalization_phase"]["random_orders_config"]
+            w_factory_config.TRAINING_FLOW_CONFIG["generalization_phase"]["random_orders_config"] = config
+            
+            try:
+                random_orders = generate_random_orders()
+                # 修正：确保交期是整数，并添加随机到达时间
+                for order in random_orders:
+                    order['due_date'] = int(order['due_date'])
+                    order['arrival_time'] = int(random.uniform(0, 50))  # 0-50分钟的随机到达时间
+                st.session_state['orders'] = random_orders
+                st.success(f"✅ 已生成 {len(random_orders)} 个随机订单")
+                st.rerun()
+            finally:
+                # 恢复原配置
+                w_factory_config.TRAINING_FLOW_CONFIG["generalization_phase"]["random_orders_config"] = original_config
+    
+    # 显示当前订单列表（所有模式通用）
+    if st.session_state.get('orders'):
+        st.divider()
+        st.subheader("📋 当前订单列表")
+        
+        orders_df = pd.DataFrame(st.session_state['orders'])
+        orders_df.index = range(1, len(orders_df) + 1)
+        
+        # 根据列数设置列名
+        if len(orders_df.columns) == 5:
+            orders_df.columns = ['产品', '数量', '优先级', '交期(分钟)', '到达时间(分钟)']
+        else:
+            orders_df.columns = ['产品', '数量', '优先级', '交期(分钟)']
+        
+        st.dataframe(orders_df, use_container_width=True)
+        
+        # 订单管理按钮
+        col1, col2, col3 = st.columns([1, 1, 3])
+        with col1:
+            if st.button("🗑️ 清空订单"):
+                st.session_state['orders'] = []
+                st.rerun()
+        
+        with col2:
+            config_json = json.dumps(st.session_state['orders'], indent=2, ensure_ascii=False)
+            st.download_button(
+                label="💾 导出配置",
+                data=config_json,
+                file_name=f"orders_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
+                mime="application/json"
+            )
+        
+        # 显示订单统计
+        total_parts = sum(order['quantity'] for order in st.session_state['orders'])
+        st.info(f"📦 订单总数：{len(st.session_state['orders'])} | 总零件数：{total_parts}")
+    
     # 开始调度按钮和结果展示区域
     st.divider()
     
     if 'actor_model' not in st.session_state:
-        st.warning("⚠️ 请先在左侧加载模型")
+        st.warning("⚠️ 请先在上方加载模型")
     elif not st.session_state.get('orders', []):
         st.warning("⚠️ 请先配置订单")
     else:
         if st.button("🚀 开始调度仿真", type="primary", use_container_width=True):
-            with st.spinner("正在运行调度仿真，请稍候..."):
-                try:
-                    actor_model = st.session_state['actor_model']
-                    orders = st.session_state['orders']
-                    
-                    final_stats, gantt_history, score, total_reward = run_scheduling(
-                        actor_model, orders
-                    )
-                    
-                    # 保存结果到session state
-                    st.session_state['final_stats'] = final_stats
-                    st.session_state['gantt_history'] = gantt_history
-                    st.session_state['score'] = score
-                    st.session_state['total_reward'] = total_reward
-                    st.session_state['show_results'] = True
-                    
-                    st.success("✅ 调度仿真完成！")
-                    st.rerun()
-                    
-                except Exception as e:
-                    st.error(f"调度仿真失败：{str(e)}")
-                    import traceback
-                    st.code(traceback.format_exc())
+            try:
+                actor_model = st.session_state['actor_model']
+                orders = st.session_state['orders']
+                custom_products = st.session_state.get('custom_products', {})
+                
+                # 创建进度条和状态文本
+                progress_bar = st.progress(0)
+                status_text = st.empty()
+                
+                final_stats, gantt_history, score, total_reward = run_scheduling(
+                    actor_model, orders, custom_products, 
+                    progress_bar=progress_bar, 
+                    status_text=status_text
+                )
+                
+                # 保存结果到session state
+                st.session_state['final_stats'] = final_stats
+                st.session_state['gantt_history'] = gantt_history
+                st.session_state['score'] = score
+                st.session_state['total_reward'] = total_reward
+                st.session_state['show_results'] = True
+                
+                st.success("✅ 调度仿真完成！")
+                st.rerun()
+                
+            except Exception as e:
+                st.error(f"调度仿真失败：{str(e)}")
+                import traceback
+                st.code(traceback.format_exc())
     
     # 显示调度结果（在按钮下方）
     if st.session_state.get('show_results', False) and 'final_stats' in st.session_state:
