@@ -282,7 +282,7 @@ class PPONetwork:
         
         # Actor更新
         with tf.GradientTape() as tape:
-            probs = self.actor(states)
+            probs = self.actor(states, training=True)
             # 🔧 修复：添加数值稳定性保护
             probs = tf.clip_by_value(probs, 1e-8, 1.0)
             # 计算选择动作的概率 new_probs
@@ -291,7 +291,6 @@ class PPONetwork:
             new_probs = tf.gather_nd(probs, indices)
             # 🔧 修复：防止除零和数值爆炸
             ratio = new_probs / (old_probs + 1e-8)
-            ratio = tf.clip_by_value(ratio, 0.01, 100.0)  # 防止极端ratio
             
             # 🔧 修复：正确计算KL散度（基于被选动作的近似）
             old_log_probs = tf.math.log(old_probs + 1e-8)
@@ -318,8 +317,9 @@ class PPONetwork:
         
         # Critic更新 (使用全局状态)
         with tf.GradientTape() as tape:
-            values = self.critic(global_states)
-            critic_loss = tf.reduce_mean(tf.square(returns - values))
+            values = self.critic(global_states, training=True)
+            returns_tf = tf.expand_dims(tf.convert_to_tensor(returns, dtype=tf.float32), 1)
+            critic_loss = tf.reduce_mean(tf.square(returns_tf - values))
         critic_grads = tape.gradient(critic_loss, self.critic.trainable_variables)
         # 🔧 新增：梯度裁剪（使用配置值）
         critic_grads, _ = tf.clip_by_global_norm(critic_grads, grad_clip_norm)
@@ -438,7 +438,8 @@ def run_simulation_worker(network_weights: Dict[str, List[np.ndarray]],
             break
 
     # 🔧 核心修复：返回最后一个全局状态和截断标志，用于价值引导
-    was_truncated = any(truncations.values())
+    # 只要trajectory未真正终止（即存在截断或仅因采样步数达到上限而退出），就提供bootstrap价值
+    was_truncated = any(truncations.values()) or not any(terminations.values())
     # 返回基础全局状态（不含one-hot），主进程将为各agent添加one-hot后计算bootstrap
     next_global_state_for_bootstrap = global_state if was_truncated else None
     
@@ -460,7 +461,7 @@ def run_simulation_worker(network_weights: Dict[str, List[np.ndarray]],
             env.sim.final_bonus_value = final_bonus * len(env.agents)
     except Exception:
         pass
-
+    
     env.close()
     return buffers, total_reward_collected, next_global_state_for_bootstrap, was_truncated, completed_all_worker
 
@@ -565,7 +566,6 @@ class SimplePPOTrainer:
         }
         # --- 方案二：升级自适应熵所需变量 ---
         self.epochs_without_improvement = 0
-        self.global_best_score_for_entropy = -np.inf
         self.stagnation_level = 0  # 新增：停滞等级，用于阶梯式提升熵
         
         # --- 新增：基础训练 + 随机领域强化 阶段管理 ---
@@ -1230,7 +1230,7 @@ class SimplePPOTrainer:
                     # 🔧 V17新增：每10轮显示阶段状态
                     if episode % 10 == 0:
                         print(f"📚 课程状态: {stage['name']} (第 {stage_episode_count} 回合)")
-                        print(f"   当前难度: {int(get_total_parts_count() * stage['orders_scale'])}零件, {stage['time_scale']:.1f}x时间")
+                        print(f"   当前难度: {int(get_total_parts_count() * stage['orders_scale'])}零件, {stage['time_scale']:.1f}x时间")    
                     stage_episode_count += 1
                 
                 # --- 核心训练阶段判断 ---
@@ -1255,9 +1255,9 @@ class SimplePPOTrainer:
                         current_curriculum_config = foundation_config
                     
                     # 在每个回合都添加当前回合数，供环境内部使用
-                    if current_curriculum_config:
-                        current_curriculum_config['current_episode'] = episode
-
+                        if current_curriculum_config:
+                            current_curriculum_config['current_episode'] = episode
+                    
                     if episode % 20 == 0:
                         phase_name = "课程学习中" if curriculum_enabled and not curriculum_just_completed else "基础能力认证中"
                         foundation_criteria = self.training_flow_config["foundation_phase"]["graduation_criteria"]
@@ -1361,27 +1361,29 @@ class SimplePPOTrainer:
                     if self.check_generalization_training_completion(current_score, completion_rate_for_check):
                         training_should_end = True
                 
-                # --- 修复方案二：修正自适应熵的触发与重置逻辑 ---
-                # 1. 默认情况下，每个回合都增加停滞计数
-                self.epochs_without_improvement += 1
-                
-                # 2. 只有在保存新的全局最佳模型时，才重置停滞计数器
-                # （注意：这个逻辑将在模型保存部分处理）
-                
-                # 3. 自适应熵调整逻辑（修正版）
-                # 修复：使用简化的硬编码配置，避免依赖不存在的ADAPTIVE_ENTROPY_CONFIG
-                adaptive_entropy_enabled = ADAPTIVE_ENTROPY_CONFIG["enabled"]
-                start_episode = ADAPTIVE_ENTROPY_CONFIG["start_episode"]
-                patience = ADAPTIVE_ENTROPY_CONFIG["patience"]
-                boost_factor = ADAPTIVE_ENTROPY_CONFIG["boost_factor"]
-                
-                # 课程学习下：仅当处于最终阶段或已经进入泛化阶段才触发；
-                # 非课程学习：保持原逻辑。
+                # --- 🔧 修复：自适应熵的停滞计数器仅在允许熵增加的阶段累积 ---
+                # 1. 判断是否处于允许熵增加的阶段
+                # 课程学习下：仅当处于最终阶段或已经进入泛化阶段才允许；
+                # 非课程学习：全程允许。
                 curriculum_is_final_stage = False
                 if curriculum_enabled and not self.foundation_training_completed and current_stage < len(curriculum_config["stages"]):
                     curriculum_is_final_stage = bool(curriculum_config["stages"][current_stage].get("is_final_stage", False))
 
                 allow_entropy_increase = (not curriculum_enabled) or curriculum_is_final_stage or self.generalization_phase_active
+                
+                # 2. 只在允许熵增加的阶段才累积停滞计数
+                if allow_entropy_increase:
+                    self.epochs_without_improvement += 1
+                else:
+                    # 非熵增加阶段，重置计数器（避免累积无意义的停滞）
+                    self.epochs_without_improvement = 0
+                    self.stagnation_level = 0
+                
+                # 3. 自适应熵调整逻辑
+                adaptive_entropy_enabled = ADAPTIVE_ENTROPY_CONFIG["enabled"]
+                start_episode = ADAPTIVE_ENTROPY_CONFIG["start_episode"]
+                patience = ADAPTIVE_ENTROPY_CONFIG["patience"]
+                boost_factor = ADAPTIVE_ENTROPY_CONFIG["boost_factor"]
 
                 # 正确的触发点：在第 start_episode + patience 回合之后才可能触发
                 if adaptive_entropy_enabled and allow_entropy_increase and episode >= (start_episode + patience):
@@ -1560,6 +1562,10 @@ class SimplePPOTrainer:
                             if model_path:
                                 stage_display_name = current_curriculum_config['stage_name']
                                 model_update_info = f"✅ {stage_display_name}阶段最佳! 模型保存至: {model_path}"
+                                # 🔧 修复：只在最终阶段重置停滞计数器
+                                if curriculum_is_final_stage:
+                                    self.epochs_without_improvement = 0
+                                    self.stagnation_level = 0
                     elif self.generalization_phase_active:
                         # 2. 泛化强化阶段的模型保存
                         if current_score > self.best_score_generalization_phase:
@@ -1569,6 +1575,9 @@ class SimplePPOTrainer:
                             model_path = self.save_model(f"{self.models_dir}/{timestamp}general_train_best")
                             if model_path:
                                 model_update_info = f"🏆 泛化强化阶段最佳! 模型保存至: {model_path}"
+                                # 🔧 修复：泛化阶段保存最佳模型时重置停滞计数器
+                                self.epochs_without_improvement = 0
+                                self.stagnation_level = 0
                 else:  # curriculum_enabled is False
                     # --- 未启用课程学习时的保存逻辑 ---
                     if not self.foundation_training_completed:
@@ -1580,6 +1589,9 @@ class SimplePPOTrainer:
                             model_path = self.save_model(f"{self.models_dir}/{timestamp}base_train_best")
                             if model_path:
                                 model_update_info = f"✅ 基础训练阶段最佳! 模型保存至: {model_path}"
+                                # 🔧 修复：非课程学习模式下，基础阶段也可以重置（因为allow_entropy_increase=True）
+                                self.epochs_without_improvement = 0
+                                self.stagnation_level = 0
                     elif self.generalization_phase_active:
                         # 2. 泛化强化阶段的模型保存
                         if current_score > self.best_score_generalization_phase:
@@ -1589,6 +1601,9 @@ class SimplePPOTrainer:
                             model_path = self.save_model(f"{self.models_dir}/{timestamp}general_train_best")
                             if model_path:
                                 model_update_info = f"🏆 泛化强化阶段最佳! 模型保存至: {model_path}"
+                                # 🔧 修复：泛化阶段保存最佳模型时重置停滞计数器
+                                self.epochs_without_improvement = 0
+                                self.stagnation_level = 0
                 
                 # 3. 全局"双达标"最佳模型保存（独立于所有其他逻辑）
                 #    首先，获取当前回合的正确目标零件数
@@ -1620,9 +1635,9 @@ class SimplePPOTrainer:
                     if dual_objective_best_path:
                         dual_objective_model_update_info = f" ⭐完成所有零件得分最佳!模型保存至: {dual_objective_best_path}"
                         
-                        # 修复方案二：只有在特定阶段才重置停滞计数器
-                        if save_condition_met:
-                            print(f"🎉 新的全局最佳模型! 重置停滞计数。")
+                        # 🔧 修复：双达标模型保存时重置停滞计数器（如果处于允许熵增加的阶段）
+                        if allow_entropy_increase:
+                            print(f"🎉 新的双达标最佳模型! 重置停滞计数。")
                             self.epochs_without_improvement = 0
                             self.stagnation_level = 0  # 创下新高，"警报"解除
                 

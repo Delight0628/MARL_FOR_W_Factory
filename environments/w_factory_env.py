@@ -27,7 +27,7 @@ def _calculate_part_total_remaining_processing_time(part: 'Part') -> float:
 
 def calculate_slack_time(part: 'Part', current_time: float, queues: Dict[str, Any] = None, workstations: Dict[str, Dict] = None) -> float:
     """
-    计算零件的松弛时间 (Slack Time) - 改进版本，考虑队列等待时间
+    计算零件的松弛时间 (Slack Time) - 改进版本
     
     Args:
         part: 零件对象
@@ -423,16 +423,17 @@ class WFactorySim:
     
     def get_state_for_agent(self, agent_id: str) -> np.ndarray:
         """
-        V3 融合版：获取智能体的最优观测状态
-        - 包含三大部分：
-          1. 智能体自身特征 (我是谁，我的状态如何)
-          2. 全局宏观特征 (工厂整体情况如何)
-          3. 队列中工件的详细特征 (我面前的任务是什么)
+        方案B：全局优化观测状态
+        - 包含四大部分：
+          1. 智能体自身特征 (8维)
+          2. 全局宏观特征 (7维)
+          3. 当前队列摘要统计 (40维)
+          4. 候选工件详细特征 (150维)
+        总维度 = 205维
         """
         station_name = agent_id.replace("agent_", "")
         
-        # --- 1. 智能体自身特征 (Agent Features) ---
-        # 恢复智能体身份和能力信息
+        # --- 1. 智能体自身特征 (Agent Features) - 8维 ---
         agent_features_list = []
         station_types = list(WORKSTATIONS.keys())
         station_index = station_types.index(station_name)
@@ -447,66 +448,310 @@ class WFactorySim:
         
         agent_features = np.array(agent_features_list, dtype=np.float32)
 
-        # --- 2. 全局宏观特征 (Global Features) ---
-        # 采用新版更优的全局特征
+        # --- 2. 全局宏观特征 (Global Features) - 7维 ---
         time_normalized = self.env.now / SIMULATION_TIME
         total_parts_in_system = sum(order.quantity for order in self.orders)
         wip_normalized = len(self.active_parts) / total_parts_in_system if total_parts_in_system > 0 else 0.0
         
+        # 计算全局最小/平均松弛度
+        if self.active_parts:
+            slack_times = [calculate_slack_time(p, self.env.now, self.queues, WORKSTATIONS) 
+                          for p in self.active_parts]
+            min_slack_normalized = min(slack_times) / ENHANCED_OBS_CONFIG["time_slack_norm"]
+            avg_slack_normalized = np.mean(slack_times) / ENHANCED_OBS_CONFIG["time_slack_norm"]
+            
+            # 延期零件数占比
+            late_parts_ratio = sum(1 for s in slack_times if s < 0) / len(slack_times)
+        else:
+            min_slack_normalized = 0.0
+            avg_slack_normalized = 0.0
+            late_parts_ratio = 0.0
+        
+        # 瓶颈工作站拥堵度
+        max_queue_len = max(len(self.queues[s].items) for s in WORKSTATIONS.keys())
+        bottleneck_congestion = max_queue_len / ENHANCED_OBS_CONFIG["w_station_capacity_norm"]
+        
+        # 当前队列长度
+        current_queue_len = len(self.queues[station_name].items)
+        queue_len_normalized = current_queue_len / ENHANCED_OBS_CONFIG["w_station_capacity_norm"]
+        
         global_features = np.array([
             time_normalized,
-            wip_normalized
+            wip_normalized,
+            np.clip(min_slack_normalized, -1.0, 1.0),
+            np.clip(avg_slack_normalized, -1.0, 1.0),
+            np.clip(bottleneck_congestion, 0, 1.0),
+            late_parts_ratio,
+            np.clip(queue_len_normalized, 0, 1.0),
         ], dtype=np.float32)
 
-        # --- 3. 队列中工件的详细特征 (Workpiece Features) ---
-        # 专家修复 V3：由于One-Hot编码导致特征维度变化，需重新计算空槽位的维度
-        workpiece_feature_dim = 8 + len(PRODUCT_ROUTES)
+        # --- 3. 当前队列摘要统计 (Queue Summary) - 40维 ---
+        queue_summary = self._get_queue_summary_features(station_name)
         
-        workpiece_features_list = []
-        
-        # 🔧 关键修复：确保观测空间与动作空间一致
-        # 如果启用了排序视图，则状态观测也必须基于排序后的队列
-        queue_view_enabled = bool(globals().get('QUEUE_VIEW_CONFIG', {}).get("enabled", False))
-
-        if queue_view_enabled:
-            # 使用排序后的视图来构建观测
-            sorted_view = self._get_sorted_queue_view(station_name)
-            for i in range(ENHANCED_OBS_CONFIG["obs_slot_size"]):
-                if i < len(sorted_view):
-                    # 从排序后的视图中获取零件
-                    part = sorted_view[i]["part"]
-                    workpiece_features = self._get_workpiece_obs(part)
-                else:
-                    # 空槽位用0填充
-                    workpiece_features = np.zeros(workpiece_feature_dim, dtype=np.float32)
-                workpiece_features_list.append(workpiece_features)
-        else:
-            # 保持原始逻辑：使用原始队列顺序
-            queue = self.queues[station_name].items
-            for i in range(ENHANCED_OBS_CONFIG["obs_slot_size"]):
-                if i < len(queue):
-                    part = queue[i]
-                    workpiece_features = self._get_workpiece_obs(part)
-                else:
-                    # 使用0填充空槽位, 第一个特征"exists"为0
-                    workpiece_features = np.zeros(workpiece_feature_dim, dtype=np.float32)
-                workpiece_features_list.append(workpiece_features)
-        obs_queue = np.concatenate(workpiece_features_list)
+        # --- 4. 候选工件详细特征 (Candidate Workpieces) - 150维 ---
+        candidate_features = self._get_candidate_features(station_name)
         
         # 组合所有特征
-        full_obs = np.concatenate([agent_features, global_features, obs_queue])
+        full_obs = np.concatenate([agent_features, global_features, queue_summary, candidate_features])
         return full_obs.flatten()
-
+    def _get_queue_summary_features(self, station_name: str) -> np.ndarray:
+        """
+        方案B：获取队列摘要统计特征 (40维 = 8特征 × 5统计量)
+        对队列中所有工件计算统计特征
+        """
+        queue = self.queues[station_name].items
+        
+        if not queue:
+            # 空队列返回零向量
+            return np.zeros(40, dtype=np.float32)
+        
+        # 收集各种特征
+        slack_times = []
+        processing_times = []
+        remaining_ops = []
+        remaining_total_times = []
+        downstream_congestions = []
+        priorities = []
+        is_late_flags = []
+        is_final_ops = []
+        
+        for part in queue:
+            slack = calculate_slack_time(part, self.env.now, self.queues, WORKSTATIONS)
+            slack_times.append(slack)
+            processing_times.append(part.get_processing_time())
+            
+            route = get_route_for_product(part.product_type)
+            remaining_ops_count = len(route) - part.current_step
+            remaining_ops.append(remaining_ops_count)
+            
+            remaining_total_times.append(_calculate_part_total_remaining_processing_time(part))
+            
+            # 下游拥堵
+            if part.current_step < len(route) - 1:
+                downstream_station = route[part.current_step + 1]["station"]
+                congestion = len(self.queues[downstream_station].items)
+                downstream_congestions.append(congestion)
+            else:
+                downstream_congestions.append(0)
+            
+            priorities.append(part.priority)
+            is_late_flags.append(1.0 if slack < 0 else 0.0)
+            is_final_ops.append(1.0 if remaining_ops_count <= 1 else 0.0)
+        
+        # 计算5种统计量：min, max, mean, std, median
+        def compute_stats(values):
+            if not values:
+                return [0.0, 0.0, 0.0, 0.0, 0.0]
+            arr = np.array(values)
+            return [
+                float(np.min(arr)),
+                float(np.max(arr)),
+                float(np.mean(arr)),
+                float(np.std(arr)),
+                float(np.median(arr)),
+            ]
+        
+        # 归一化并收集统计
+        features = []
+        
+        # 1. 松弛度统计
+        slack_norm = [s / ENHANCED_OBS_CONFIG["time_slack_norm"] for s in slack_times]
+        features.extend(compute_stats(slack_norm))
+        
+        # 2. 加工时间统计
+        proc_norm = [p / ENHANCED_OBS_CONFIG["max_op_duration_norm"] for p in processing_times]
+        features.extend(compute_stats(proc_norm))
+        
+        # 3. 剩余工序统计
+        ops_norm = [o / ENHANCED_OBS_CONFIG["max_bom_ops_norm"] for o in remaining_ops]
+        features.extend(compute_stats(ops_norm))
+        
+        # 4. 剩余总时间统计
+        time_norm = [t / ENHANCED_OBS_CONFIG["total_remaining_time_norm"] for t in remaining_total_times]
+        features.extend(compute_stats(time_norm))
+        
+        # 5. 下游拥堵统计
+        cong_norm = [c / ENHANCED_OBS_CONFIG["w_station_capacity_norm"] for c in downstream_congestions]
+        features.extend(compute_stats(cong_norm))
+        
+        # 6. 优先级统计
+        prio_norm = [p / 5.0 for p in priorities]
+        features.extend(compute_stats(prio_norm))
+        
+        # 7. 延期标记统计
+        features.extend(compute_stats(is_late_flags))
+        
+        # 8. 最终工序标记统计
+        features.extend(compute_stats(is_final_ops))
+        
+        return np.array(features, dtype=np.float32)
+    
+    def _get_candidate_features(self, station_name: str) -> np.ndarray:
+        """
+        方案B：获取候选工件详细特征 (150维 = 15维 × 10工件)
+        采用多样性采样策略
+        """
+        candidates = self._get_candidate_workpieces(station_name)
+        
+        feature_list = []
+        candidate_dim = ENHANCED_OBS_CONFIG["candidate_feature_dim"]
+        
+        for i in range(ENHANCED_OBS_CONFIG["num_candidate_workpieces"]):
+            if i < len(candidates):
+                part = candidates[i]['part']
+                features = self._get_workpiece_obs(part, current_station=station_name)
+            else:
+                # 空槽位用零填充
+                features = np.zeros(candidate_dim, dtype=np.float32)
+            feature_list.append(features)
+        
+        return np.concatenate(feature_list)
+    
+    def _get_candidate_workpieces(self, station_name: str) -> List[Dict[str, Any]]:
+        """
+        方案B：获取候选工件列表（多样性采样）
+        
+        核心思想：打破FIFO锁定，提供全局视野
+        - 通过多样性采样确保agent能看到队列中不同类型的工件
+        - 不再受限于队列前几个位置，实现真正的全局优化
+        
+        采样策略：
+        1. 最紧急的N个：按EDD策略选择（松弛度最小）
+        2. 最短的N个：按SPT策略选择（加工时间最短）
+        3. 随机N个：随机采样（保证探索多样性）
+        
+        返回格式：[{"part": Part, "index": int, "category": str}, ...]
+        """
+        queue = self.queues[station_name].items
+        
+        if not queue:
+            return []
+        
+        candidates = []
+        used_indices = set()
+        
+        # 1. 最紧急的N个工件
+        num_urgent = ENHANCED_OBS_CONFIG["num_urgent_candidates"]
+        sorted_by_slack = sorted(enumerate(queue), 
+                                key=lambda x: calculate_slack_time(x[1], self.env.now, self.queues, WORKSTATIONS))
+        for idx, part in sorted_by_slack[:num_urgent]:
+            if idx not in used_indices:
+                candidates.append({"part": part, "index": idx, "category": "urgent"})
+                used_indices.add(idx)
+        
+        # 2. 最短加工时间的N个工件
+        num_short = ENHANCED_OBS_CONFIG["num_short_candidates"]
+        sorted_by_time = sorted(enumerate(queue), 
+                               key=lambda x: x[1].get_processing_time())
+        for idx, part in sorted_by_time[:num_short]:
+            if idx not in used_indices:
+                candidates.append({"part": part, "index": idx, "category": "short"})
+                used_indices.add(idx)
+        
+        # 3. 随机采样N个工件（确保多样性）
+        num_random = ENHANCED_OBS_CONFIG["num_random_candidates"]
+        available_indices = [i for i in range(len(queue)) if i not in used_indices]
+        if available_indices:
+            sample_size = min(num_random, len(available_indices))
+            sampled_indices = random.sample(available_indices, sample_size)
+            for idx in sampled_indices:
+                candidates.append({"part": queue[idx], "index": idx, "category": "random"})
+                used_indices.add(idx)
+        
+        return candidates
+    
+    def _select_workpiece_by_action(self, station_name: str, action: int) -> Optional[Tuple[Part, int]]:
+        """
+        方案B：根据动作选择工件（全局优化核心）
+        
+        关键创新：动作直接映射到全局工件选择策略
+        - 不再通过FIFO索引选择，而是通过策略或候选列表选择
+        - 彻底打破了SimPy队列的FIFO约束
+        
+        动作映射：
+        - 0: IDLE（不处理）
+        - 1: URGENT（选择全队列最紧急的工件）
+        - 2: SHORT（选择全队列最短的工件）
+        - 3: BALANCE（选择下游最空闲的工件）
+        - 4: FIFO（选择队首工件，作为baseline）
+        - 5: RANDOM（随机选择）
+        - 6-15: 候选工件1-10（从多样性采样列表中选择）
+        
+        返回：(选中的工件, 在队列中的索引) 或 None
+        """
+        queue = self.queues[station_name].items
+        
+        if not queue or action == 0:
+            return None
+        
+        # 策略型动作
+        if action == 1:  # URGENT (EDD)
+            min_slack = float('inf')
+            selected_idx = 0
+            for idx, part in enumerate(queue):
+                slack = calculate_slack_time(part, self.env.now, self.queues, WORKSTATIONS)
+                if slack < min_slack:
+                    min_slack = slack
+                    selected_idx = idx
+            return (queue[selected_idx], selected_idx)
+        
+        elif action == 2:  # SHORT (SPT)
+            min_time = float('inf')
+            selected_idx = 0
+            for idx, part in enumerate(queue):
+                proc_time = part.get_processing_time()
+                if proc_time < min_time:
+                    min_time = proc_time
+                    selected_idx = idx
+            return (queue[selected_idx], selected_idx)
+        
+        elif action == 3:  # BALANCE (负载均衡)
+            # 选择下游负载最轻的工件
+            min_downstream_load = float('inf')
+            selected_idx = 0
+            for idx, part in enumerate(queue):
+                route = get_route_for_product(part.product_type)
+                if part.current_step < len(route) - 1:
+                    downstream_station = route[part.current_step + 1]["station"]
+                    downstream_load = len(self.queues[downstream_station].items)
+                else:
+                    downstream_load = 0
+                if downstream_load < min_downstream_load:
+                    min_downstream_load = downstream_load
+                    selected_idx = idx
+            return (queue[selected_idx], selected_idx)
+        
+        elif action == 4:  # FIFO
+            return (queue[0], 0)
+        
+        elif action == 5:  # RANDOM
+            selected_idx = random.randint(0, len(queue) - 1)
+            return (queue[selected_idx], selected_idx)
+        
+        # 候选工件动作 (6-15)
+        elif 6 <= action <= 15:
+            candidates = self._get_candidate_workpieces(station_name)
+            candidate_idx = action - 6
+            if candidate_idx < len(candidates):
+                candidate_info = candidates[candidate_idx]
+                part = candidate_info['part']
+                # 需要找到这个工件在当前队列中的实际索引
+                for idx, queue_part in enumerate(queue):
+                    if queue_part.part_id == part.part_id:
+                        return (part, idx)
+        
+        return None
+    
     def _get_sorted_queue_view(self, station_name: str, queue_items: Optional[List['Part']] = None):
         """
         返回按"紧急度优先"排序后的视图（仅用于状态与动作映射）：
         排序键: (是否已/将延期优先, 松弛时间小优先, 残余工序少优先, 下游拥堵小优先)
-        返回: 列表[ {"part": Part, "orig_index": int, "features": np.ndarray(9,), "key": tuple } ]
+        返回: 列表[ {"part": Part, "orig_index": int, "features": np.ndarray, "key": tuple } ]
         """
         queue_items = queue_items if queue_items is not None else self.queues[station_name].items
         view = []
         for idx, part in enumerate(queue_items):
-            feats = self._get_workpiece_obs(part)  # 9维
+            feats = self._get_workpiece_obs(part, current_station=station_name)
             # 从特征中提取排序关键信息
             slack_norm = feats[1]  # 时间松弛度
             rem_ops_norm = feats[2]  # 剩余工序数
@@ -522,16 +767,19 @@ class WFactorySim:
             view.append({"part": part, "orig_index": idx, "features": feats, "key": key})
         
         view.sort(key=lambda x: x["key"]) 
-        top_k = ENHANCED_OBS_CONFIG["obs_slot_size"]
+        # 方案B不使用此函数，但保留以防需要
+        top_k = ENHANCED_OBS_CONFIG.get("obs_slot_size", 10)
         return view[:top_k]
 
-    def _get_workpiece_obs(self, part: Part) -> np.ndarray:
-        """V3 融合版：获取单个工件的最优观测特征"""
-        
+    def _get_workpiece_obs(self, part: Part, current_station: str = None) -> np.ndarray:
+        """
+        方案B：获取单个工件的特征 (15维)
+        简化版本，不包含one-hot编码
+        """
         # 特征1: 是否存在
         exists = 1.0
         
-        # 特征2: 时间松弛度（改进版本，考虑队列等待时间）
+        # 特征2: 时间松弛度
         time_slack = calculate_slack_time(part, self.env.now, self.queues, WORKSTATIONS)
         normalized_time_slack = time_slack / ENHANCED_OBS_CONFIG["time_slack_norm"]
         
@@ -548,37 +796,45 @@ class WFactorySim:
         current_op_duration = part.get_processing_time()
         normalized_op_duration = current_op_duration / ENHANCED_OBS_CONFIG["max_op_duration_norm"]
         
-        # 特征6: 是否即将延期 (二进制信号) - V4版优化: 移除此冗余特征
-        # is_late_soon = 1.0 if time_slack < 0 else 0.0
-
-        # 特征7: 下游拥堵情况 (现为特征6) —— 按零件工艺动态计算下一工位
+        # 特征6: 下游拥堵情况
         downstream_congestion = 0.0
-        route = get_route_for_product(part.product_type)
         if part.current_step < len(route) - 1:
             downstream_station = route[part.current_step + 1]["station"]
             if downstream_station in self.queues:
                 congestion = len(self.queues[downstream_station].items) / ENHANCED_OBS_CONFIG["w_station_capacity_norm"]
                 downstream_congestion = np.clip(congestion, 0, 1.0)
         
-        # --- 恢复的关键特征 ---
-        # 特征8: 订单优先级 (现为特征7)
-        priority = part.priority / 5.0 # 假设最高优先级为5
+        # 特征7: 订单优先级
+        priority = part.priority / 5.0
 
-        # 特征9: 是否为最终工序 (现为特征8)
+        # 特征8: 是否为最终工序
         is_final_op = 1.0 if remaining_ops <= 1 else 0.0
-
-        # 特征10: 零件类型编码 (现为特征9)
+        
+        # 特征9-12: 产品类型编码（简化为产品ID）
         product_types = list(PRODUCT_ROUTES.keys())
-        product_index = product_types.index(part.product_type) if part.product_type in product_types else -1
-        product_type_encoded = (product_index + 1) / len(product_types)
-
-        # 专家修复 V3：实现产品类型的One-Hot编码
-        product_types = list(PRODUCT_ROUTES.keys())
-        num_product_types = len(product_types)
-        product_type_one_hot = np.zeros(num_product_types, dtype=np.float32)
+        product_id = 0.0
         if part.product_type in product_types:
-            product_index = product_types.index(part.product_type)
-            product_type_one_hot[product_index] = 1.0
+            product_id = float(product_types.index(part.product_type)) / len(product_types)
+        
+        # 特征13: 是否延期
+        is_late = 1.0 if time_slack < 0 else 0.0
+        
+        # 特征14: 瓶颈感知
+        is_next_bottleneck = 0.0
+        if part.current_step < len(route) - 1:
+            next_station = route[part.current_step + 1]["station"]
+            max_queue_len = max(len(self.queues[s].items) for s in WORKSTATIONS.keys()) if WORKSTATIONS else 1
+            next_queue_len = len(self.queues[next_station].items)
+            if next_queue_len >= max_queue_len * 0.8:
+                is_next_bottleneck = 1.0
+        
+        # 特征15: 全局紧急度对比
+        relative_urgency = 0.0
+        if self.active_parts:
+            min_slack = min(calculate_slack_time(p, self.env.now, self.queues, WORKSTATIONS) 
+                           for p in self.active_parts)
+            if abs(min_slack) > 1e-6:
+                relative_urgency = np.clip(time_slack / min_slack, -2.0, 2.0)
 
         feature_list = [
             exists,
@@ -589,9 +845,13 @@ class WFactorySim:
             downstream_congestion,
             priority,
             is_final_op,
+            product_id,
+            is_late,
+            is_next_bottleneck,
+            relative_urgency,
         ]
         
-        return np.concatenate([np.array(feature_list, dtype=np.float32), product_type_one_hot])
+        return np.array(feature_list, dtype=np.float32)
 
 
     def get_global_state(self) -> np.ndarray:
@@ -668,14 +928,15 @@ class WFactorySim:
         return np.array(global_features, dtype=np.float32)
 
     def step_with_actions(self, actions: Dict[str, int]) -> Dict[str, float]:
-        """执行一步仿真，传入智能体动作"""
+        """
+        方案B：执行一步仿真，使用全局工件选择
+        """
         # 记录执行前状态
         prev_completed = len(self.completed_parts)
         prev_total_steps = sum(part.current_step for part in self.active_parts)
         
         # 执行智能体动作
         actions_executed = 0
-        queue_view_enabled = bool(globals().get('QUEUE_VIEW_CONFIG', {}).get("enabled", False))
         decision_time = self.env.now
         action_context: Dict[str, Dict[str, Any]] = {}
 
@@ -693,36 +954,33 @@ class WFactorySim:
             }
             action_context[agent_id] = context
 
-            # V8 支持紧急度排序视图的动作空间 (0=IDLE, 1=处理最紧急, 2=处理次紧急, ...)
+            # 方案B：使用新的全局工件选择机制
             if action > 0:
-                chosen_view_idx = action - 1
-                if queue_view_enabled:
-                    sorted_view = self._get_sorted_queue_view(station_name, queue_items=pre_queue_snapshot)
-                    context["sorted_view"] = sorted_view
-                    if chosen_view_idx < len(sorted_view):
-                        orig_index = sorted_view[chosen_view_idx]["orig_index"]
-                        if orig_index < len(self.queues[station_name].items):
-                            selected_part = sorted_view[chosen_view_idx]["part"]
-                            context["selected_part"] = selected_part
-                            context["selected_part_slack"] = calculate_slack_time(selected_part, decision_time, self.queues, WORKSTATIONS)
-                            context["orig_index_before"] = orig_index
-                            self._process_part_at_station(station_name, part_index=orig_index)
-                            context["processed"] = True
-                else:
-                    if chosen_view_idx < len(pre_queue_snapshot):
-                        selected_part = pre_queue_snapshot[chosen_view_idx]
-                        context["selected_part"] = selected_part
-                        context["selected_part_slack"] = calculate_slack_time(selected_part, decision_time, self.queues, WORKSTATIONS)
-                        context["orig_index_before"] = chosen_view_idx
-                        self._process_part_at_station(station_name, part_index=chosen_view_idx)
-                        context["processed"] = True
-
+                result = self._select_workpiece_by_action(station_name, action)
+                if result is not None:
+                    selected_part, part_index = result
+                    context["selected_part"] = selected_part
+                    context["selected_part_slack"] = calculate_slack_time(selected_part, decision_time, self.queues, WORKSTATIONS)
+                    context["orig_index_before"] = part_index
+                    self._process_part_at_station(station_name, part_index=part_index)
+                    context["processed"] = True
+                    # 🔧 并行能力修复：在同一步根据相同策略尽可能填满并行设备
+                    while self.equipment_status[station_name]['busy_count'] < WORKSTATIONS[station_name]['count']:
+                        # 若队列为空则停止
+                        if len(self.queues[station_name].items) == 0:
+                            break
+                        extra = self._select_workpiece_by_action(station_name, action)
+                        if extra is None:
+                            break
+                        _, extra_index = extra
+                        self._process_part_at_station(station_name, part_index=extra_index)
+                        actions_executed += 1
             if context.get("processed"):
                 actions_executed += 1
         
-        # 推进仿真 - 减少步长以获得更精细的控制
+        # 推进仿真
         try:
-            self.env.run(until=self.env.now + 1)  # 每步推进1分钟而不是5分钟
+            self.env.run(until=self.env.now + 1)
         except simpy.core.EmptySchedule:
             self.simulation_ended = True
         
@@ -812,7 +1070,7 @@ class WFactorySim:
                     yield self.queues[next_station].put(part)
     
     def get_rewards(self, actions: Dict[str, int], action_context: Dict[str, Dict[str, Any]]) -> Dict[str, float]:
-        """融合版奖励函数：子目标主干 + 行为底线 + WIP + 启发式护栏(退火)"""
+        """融合版奖励函数：子目标主干 + 行为底线 + WIP + 启发式护栏(退火) + 超越EDD塑造"""
         rewards = {f"agent_{station}": 0.0 for station in WORKSTATIONS.keys()}
         
         # 读取退火与护栏配置
@@ -834,6 +1092,72 @@ class WFactorySim:
                 if queue_len_before > 0:
                     rewards[agent_id] += REWARD_CONFIG.get("unnecessary_idle_penalty", 0.0)
         
+        # === 🔧 新增0.5：瓶颈感知奖励 ===
+        bottleneck_bonus = REWARD_CONFIG.get("bottleneck_awareness_bonus", 0.0)
+        if bottleneck_bonus > 0:
+            # 识别瓶颈工作站（队列最长的）
+            max_queue_len = 0
+            bottleneck_station = None
+            for station_name in WORKSTATIONS.keys():
+                queue_len = len(self.queues[station_name].items)
+                if queue_len > max_queue_len:
+                    max_queue_len = queue_len
+                    bottleneck_station = station_name
+            
+            # 奖励那些处理了即将进入瓶颈的零件的agent
+            if bottleneck_station:
+                for agent_id, action in actions.items():
+                    if action > 0:
+                        context = action_context.get(agent_id, {})
+                        selected_part = context.get("selected_part")
+                        if selected_part:
+                            route = get_route_for_product(selected_part.product_type)
+                            # 检查该零件的下一个工作站是否是瓶颈
+                            if selected_part.current_step < len(route) - 1:
+                                next_station = route[selected_part.current_step + 1]["station"]
+                                if next_station == bottleneck_station:
+                                    rewards[agent_id] += bottleneck_bonus
+        
+        # === 🔧 新增0.6：短工序优先奖励（SPT策略融合）===
+        sjf_bonus = REWARD_CONFIG.get("short_job_first_bonus", 0.0)
+        if sjf_bonus > 0:
+            for agent_id, action in actions.items():
+                if action > 0:  # 非闲置动作
+                    context = action_context.get(agent_id, {})
+                    selected_part = context.get("selected_part")
+                    if selected_part:
+                        # 计算选中零件的当前工序时长
+                        current_op_duration = selected_part.get_processing_time()
+                        # 计算时间松弛度（正值表示宽裕）
+                        time_slack = calculate_slack_time(selected_part, self.env.now, self.queues, WORKSTATIONS)
+                        
+                        # 只有在交期较宽裕（松弛度>60分钟）且选择了短工序时才奖励
+                        # 这避免了为了短工序而牺牲紧急订单
+                        if time_slack > 60 and current_op_duration <= 20:  # 短工序定义：≤20分钟
+                            # 工序越短，奖励越高
+                            bonus_scale = (20 - current_op_duration) / 20.0  # 0-1之间
+                            rewards[agent_id] += sjf_bonus * bonus_scale
+        
+        # === 🔧 新增0.7：负载均衡奖励 ===
+        lb_bonus = REWARD_CONFIG.get("load_balancing_bonus", 0.0)
+        if lb_bonus > 0:
+            for agent_id, action in actions.items():
+                if action > 0:
+                    context = action_context.get(agent_id, {})
+                    selected_part = context.get("selected_part")
+                    if selected_part:
+                        route = get_route_for_product(selected_part.product_type)
+                        # 检查下一个工位是否会因此次决策过载
+                        if selected_part.current_step + 1 < len(route):
+                            next_station = route[selected_part.current_step + 1]["station"]
+                            next_queue_len = len(self.queues[next_station].items)
+                            # 计算所有工作站的平均队列长度
+                            avg_queue_len = sum(len(q.items) for q in self.queues.values()) / len(self.queues)
+                            
+                            # 如果下游队列显著低于平均水平，给予奖励
+                            if next_queue_len < avg_queue_len * 0.8:
+                                rewards[agent_id] += lb_bonus
+        
         # === 1. 事件驱动奖励：新完成零件按时/延期 ===
         # 专家修复 V3：实现基于贡献时间的加权信用分配
         current_completed = len(self.completed_parts)
@@ -845,11 +1169,20 @@ class WFactorySim:
             for part in recent_completed:
                 tardiness = max(0.0, part.completion_time - part.due_date)
                 
+                # 🔧 新增：提前完成奖励
+                early_bonus_mult = REWARD_CONFIG.get("early_completion_bonus_multiplier", 1.0)
+                
                 # 确定奖励值
                 if tardiness > 0:
                     part_reward = REWARD_CONFIG.get("tardiness_penalty_scaler", -1.0) * (tardiness / 480.0)
                 else:
-                    part_reward = REWARD_CONFIG.get("on_time_completion_reward", 0.0)
+                    base_reward = REWARD_CONFIG.get("on_time_completion_reward", 0.0)
+                    # 提前完成的时间越多，奖励越高
+                    early_time = part.due_date - part.completion_time
+                    if early_time > 0:
+                        part_reward = base_reward * (1.0 + (early_time / part.due_date) * (early_bonus_mult - 1.0))
+                    else:
+                        part_reward = base_reward
                 
                 # 🔧 修复：基于调度决策重要性的均匀信用分配
                 # 避免按加工时间分配造成的学习信号偏差

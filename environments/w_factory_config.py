@@ -175,28 +175,72 @@ EMERGENCY_ORDERS = {
 # 5. 强化学习环境参数 (RL Environment Parameters)
 # =============================================================================
 
-# 🔧 V2 修复：重构的、信息更丰富的观测空间配置
+# 🔧 方案B：全局优化观测空间配置
+# 观测空间结构：
+#   [1] Agent自身特征 (8维): 身份one-hot(5) + 容量(1) + 繁忙率(1) + 故障状态(1)
+#   [2] 全局宏观特征 (7维): 时间、WIP、松弛度统计、瓶颈、延期率、队列长度
+#   [3] 当前队列摘要 (40维): 8种特征 × 5种统计量 (min/max/mean/std/median)
+#   [4] 候选工件详细 (150维): 15维特征 × 10个候选工件
+#   总维度 = 8 + 7 + 40 + 150 = 205维
+#
+# 💡 如何增加候选工件数量：
+#   1. 修改 num_candidate_workpieces (如改为15)
+#   2. 调整采样比例: num_urgent_candidates + num_short_candidates + num_random_candidates = num_candidate_workpieces
+#   3. 同步修改动作空间: ACTION_CONFIG_ENHANCED["action_space_size"] = 6 + num_candidate_workpieces
+#   4. 新的观测维度 = 8 + 7 + 40 + (15 × num_candidate_workpieces)
 ENHANCED_OBS_CONFIG = {
     "enabled": True,
-    "obs_slot_size": 5,                     # 观测队列中前5个工件
+    
+    # 候选工件配置（多样性采样策略）
+    "num_candidate_workpieces": 10,         # 候选工件数量（用于详细特征）
+    "num_urgent_candidates": 3,             # 最紧急的工件数（按松弛度排序）
+    "num_short_candidates": 2,              # 最短加工时间的工件数（按SPT排序）
+    "num_random_candidates": 5,             # 随机采样的工件数（保证多样性）
+    
+    # 归一化参数
     "max_op_duration_norm": 60.0,           # 用于归一化操作时长的最大值
     "max_bom_ops_norm": 20,                 # 用于归一化剩余工步数的最大值
     "time_slack_norm": 480.0,               # 用于归一化松弛时间的基准值 (一个8小时班次)
     "total_remaining_time_norm": 960.0,     # 用于归一化总剩余加工时间的基准值 (两个8小时班次)
     "w_station_capacity_norm": 10.0,        # 用于归一化队列长度的基准值
+    
+    # 队列摘要统计特征数量
+    "queue_summary_features": 8,            # 每种统计量的特征数（松弛度、加工时间等）
+    "queue_summary_stats": 5,               # 统计类型数量（min, max, mean, std, median）
+    
+    # 候选工件特征维度
+    "candidate_feature_dim": 12,            # 每个候选工件的特征维度（简化版，无one-hot）
 }
 
 # 队列视图配置：启用按紧急度排序以去除“索引偏置”
 QUEUE_VIEW_CONFIG = {
-    "enabled": True,        # 若为True，则状态与动作均基于“紧急度排序视图”
+    "enabled": False,       # 🔧 方案B：禁用排序视图，使用全局选择机制
+                            # 注意：原排序视图代码已保留，可通过此开关切换回原方案
+                            # True = 原方案（排序视图）/ False = 方案B（全局优化）
 }
 
-# 动作空间配置，与观测空间保持一致
+# 🔧 方案B：策略型动作空间配置
+# 动作空间设计理念：
+#   [1] 策略型动作 (1-5): 让agent学习使用不同调度策略的时机
+#   [2] 候选动作 (6-15): 让agent从多样性采样的候选工件中精细选择
+#   [3] IDLE动作 (0): 允许agent选择等待
+# 这种设计既提供了高层策略选择，又保留了细粒度控制能力
 ACTION_CONFIG_ENHANCED = {
     "enabled": True,
-    # 动作空间自动适应观测配置
-    "action_space_size": ENHANCED_OBS_CONFIG["obs_slot_size"] + 1,
-    "action_names": ["IDLE"] + [f"PROCESS_MOST_URGENT_{i+1}" for i in range(ENHANCED_OBS_CONFIG["obs_slot_size"])],
+    "action_space_size": 16,  # 0=IDLE, 1-5=策略, 6-15=候选工件
+    "action_names": [
+        "IDLE",                          # 0: 不处理（等待）
+        "URGENT_EDD",                    # 1: 最紧急（EDD策略，按松弛度）
+        "SHORT_SPT",                     # 2: 最短加工（SPT策略，按加工时间）
+        "BALANCE",                       # 3: 负载均衡（选择下游最空闲的工件）
+        "FIFO",                          # 4: FIFO基线（先进先出）
+        "RANDOM",                        # 5: 随机探索（随机选择）
+        "CANDIDATE_1", "CANDIDATE_2",    # 6-7: 候选工件1-2（多样性采样）
+        "CANDIDATE_3", "CANDIDATE_4",    # 8-9: 候选工件3-4
+        "CANDIDATE_5", "CANDIDATE_6",    # 10-11: 候选工件5-6
+        "CANDIDATE_7", "CANDIDATE_8",    # 12-13: 候选工件7-8
+        "CANDIDATE_9", "CANDIDATE_10",   # 14-15: 候选工件9-10
+    ],
 }
 
 
@@ -211,7 +255,7 @@ REWARD_ANNEALING_CONFIG = {
 
 # 启发式护栏配置（只在错误极端时介入，且随训练退火）
 HEURISTIC_GUARDRAILS_CONFIG = {
-    "enabled": True,
+    "enabled": False,  # 🔧 关闭！护栏强制执行EDD策略，与"让模型自主学习"的目标冲突
     "critical_choice_penalty": 0.5, # 专家修复：名称调整并增加惩罚力度
     "critical_slack_threshold": -60.0,  # 分钟；更紧急
     "safe_slack_threshold": 120.0,      # 分钟；更安全
@@ -219,15 +263,22 @@ HEURISTIC_GUARDRAILS_CONFIG = {
 
 REWARD_CONFIG = {
     # === 事件驱动奖励 (Event-driven Rewards) ===
-    "on_time_completion_reward": 100.0,        # 按时或提前完成一个工件的基础奖励
-    "tardiness_penalty_scaler": -5.0,        # 延期惩罚的缩放系数，最终惩罚 = 此系数 * (延期分钟数 / 480)
+    "on_time_completion_reward": 10.0,         # 🔧 100→10：降低10倍，避免主导学习信号
+    "tardiness_penalty_scaler": -50.0,         # 🔧 -5→-50：提升10倍，让延期成为关键学习信号
+
 
     # === 行为塑造惩罚 (Behavior Shaping Penalties) ===
-    "unnecessary_idle_penalty": -10.0,        # 在有工件排队时选择“空闲”动作的惩罚
+    "unnecessary_idle_penalty": -5.0,          # 保持适度约束
 
     # === 终局奖励 (Episode End Bonus) ===
-    "final_all_parts_completion_bonus": 1000.0, # 全部完成时给予的巨大奖励，激励完成所有任务
-    "invalid_action_penalty": -5.0,          # 选择一个无效的动作（比如队列为空的槽位）
+    "final_all_parts_completion_bonus": 500.0, # 🔧 1000→100：降低10倍，避免过度奖励"仅完成"
+    "invalid_action_penalty": -5.0,
+    
+    # === 🔧 超越EDD的奖励塑造（同步提升权重）===
+    "bottleneck_awareness_bonus": 15.0,        # 🔧 5→15：提升3倍，与新尺度匹配
+    "short_job_first_bonus": 12.0,             # 🔧 4→12：提升3倍
+    "load_balancing_bonus": 10.0,              # 🔧 3→10：提升3倍
+    "early_completion_bonus_multiplier": 1.5,  # 🔧 1.2→1.5：提高激励
 }
 
 
@@ -241,8 +292,8 @@ PPO_NETWORK_CONFIG = {
     "hidden_sizes": [1024, 512, 256],    # 🔧 关键：增加网络深度和宽度
     "dropout_rate": 0.1,
     "clip_ratio": 0.25,
-    "entropy_coeff": 0.05,
-    "ppo_epochs": 10,                    # 专家修复：重命名，明确其为Epochs
+    "entropy_coeff": 0.10,               # 🔧 关闭排序视图后提高到0.10，增强探索（原0.05）
+    "ppo_epochs": 12,                    # 🔧 提高到12，更充分学习新策略（原10）
     "num_minibatches": 4,                # 专家修复：新增Mini-batch数量
     "grad_clip_norm": 1.0,               # 🔧 新增：梯度裁剪的范数
     "advantage_clip_val": 5.0,           # 🔧 新增：优势函数的裁剪值
@@ -261,7 +312,7 @@ ADAPTIVE_ENTROPY_CONFIG = {
 
 # 🔧 新增：评估流程配置
 EVALUATION_CONFIG = {
-    "exploration_rate": 0.05,  # 评估时使用的随机探索率，设置为0则为纯粹的确定性评估
+    "exploration_rate": 0.0,  # 评估时使用的随机探索率，设置为0则为纯粹的确定性评估
 }
 
 # 学习率调度配置
