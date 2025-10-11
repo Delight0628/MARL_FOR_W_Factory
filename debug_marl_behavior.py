@@ -32,28 +32,38 @@ from environments.w_factory_config import (
 
 
 def decode_observation(obs_vector: np.ndarray, agent_id: str) -> str:
-    """将扁平的观测向量解码为人类可读的格式"""
+    """
+    🔧 动态适配方案B：将扁平的观测向量解码为人类可读的格式
+    自动从配置中读取观测空间结构，无需硬编码
+    """
     if obs_vector is None or obs_vector.size == 0:
         return "  - 观测向量为空"
 
-    decoded_lines = ["[Observation Vector]"]
-    
-    # 从配置中获取维度信息
+    # 🔧 动态计算各部分维度
     station_types = list(WORKSTATIONS.keys())
     product_types = list(PRODUCT_ROUTES.keys())
     num_stations = len(station_types)
-    obs_slot_size = ENHANCED_OBS_CONFIG["obs_slot_size"]
-    workpiece_feature_count = 10  # V3版工件特征数量为10
+    num_candidates = ENHANCED_OBS_CONFIG["num_candidate_workpieces"]
+    candidate_feature_dim = ENHANCED_OBS_CONFIG["candidate_feature_dim"]
+    queue_summary_dim = ENHANCED_OBS_CONFIG["queue_summary_features"] * ENHANCED_OBS_CONFIG["queue_summary_stats"]
+    
+    # 计算期望的总维度
+    expected_dim = 8 + 7 + queue_summary_dim + (candidate_feature_dim * num_candidates)
+    
+    decoded_lines = [
+        f"[Observation Vector - 总维度: {len(obs_vector)} (期望: {expected_dim})]",
+        f"  结构: 8(Agent) + 7(Global) + {queue_summary_dim}(Queue) + {candidate_feature_dim}×{num_candidates}(Candidates)"
+    ]
 
     current_idx = 0
     try:
-        # --- 1. Agent Features ---
-        decoded_lines.append("  --- 1. 智能体自身特征 ---")
+        # --- 1. Agent自身特征 (8维) ---
+        decoded_lines.append("  --- 1. 智能体自身特征 (8维) ---")
         
-        # Agent ID (one-hot)
+        # Agent ID (one-hot, 5维)
         agent_id_one_hot = obs_vector[current_idx : current_idx + num_stations]
         station_idx = np.argmax(agent_id_one_hot)
-        decoded_lines.append(f"    - 智能体身份: {station_types[station_idx]} (one-hot)")
+        decoded_lines.append(f"    - 智能体身份: {station_types[station_idx]}")
         current_idx += num_stations
 
         # Capacity
@@ -64,47 +74,75 @@ def decode_observation(obs_vector: np.ndarray, agent_id: str) -> str:
         # Status
         busy_ratio = obs_vector[current_idx]
         is_failed = obs_vector[current_idx + 1] > 0.5
-        decoded_lines.append(f"    - 设备状态: [繁忙率: {busy_ratio:.1%}, 是否故障: {'是' if is_failed else '否'}]")
+        decoded_lines.append(f"    - 设备状态: [繁忙率: {busy_ratio:.1%}, 故障: {'是' if is_failed else '否'}]")
         current_idx += 2
         
-        # --- 2. Global Features ---
-        decoded_lines.append("  --- 2. 全局宏观特征 ---")
+        # --- 2. 全局宏观特征 (7维) ---
+        decoded_lines.append("  --- 2. 全局宏观特征 (7维) ---")
         time_prog = obs_vector[current_idx]
         wip_ratio = obs_vector[current_idx + 1]
-        decoded_lines.append(f"    - 全局信息: [时间进度: {time_prog:.1%}, WIP率: {wip_ratio:.1%}]")
-        current_idx += 2
+        min_slack_norm = obs_vector[current_idx + 2]
+        avg_slack_norm = obs_vector[current_idx + 3]
+        bottleneck_cong = obs_vector[current_idx + 4]
+        late_parts_ratio = obs_vector[current_idx + 5]
+        queue_len_norm = obs_vector[current_idx + 6]
         
-        # --- 3. Workpiece Features ---
-        decoded_lines.append("  --- 3. 队列中工件的详细特征 ---")
-        for i in range(obs_slot_size):
-            part_vec = obs_vector[current_idx : current_idx + workpiece_feature_count]
+        min_slack = min_slack_norm * ENHANCED_OBS_CONFIG["time_slack_norm"]
+        avg_slack = avg_slack_norm * ENHANCED_OBS_CONFIG["time_slack_norm"]
+        
+        decoded_lines.append(f"    - 时间进度: {time_prog:.1%}")
+        decoded_lines.append(f"    - WIP率: {wip_ratio:.1%}")
+        decoded_lines.append(f"    - 松弛度: [最小: {min_slack:.1f}min, 平均: {avg_slack:.1f}min]")
+        decoded_lines.append(f"    - 瓶颈拥堵度: {bottleneck_cong:.1%}")
+        decoded_lines.append(f"    - 延期零件率: {late_parts_ratio:.1%}")
+        decoded_lines.append(f"    - 当前队列长度(归一化): {queue_len_norm:.2f}")
+        current_idx += 7
+        
+        # --- 3. 当前队列摘要 (40维 = 8特征 × 5统计量) ---
+        decoded_lines.append(f"  --- 3. 当前队列摘要统计 ({queue_summary_dim}维) ---")
+        decoded_lines.append("    (8种特征的min/max/mean/std/median统计，此处简化显示)")
+        current_idx += queue_summary_dim
+        
+        # --- 4. 候选工件详细特征 (candidate_feature_dim × num_candidates) ---
+        decoded_lines.append(f"  --- 4. 候选工件详细特征 ({candidate_feature_dim}维 × {num_candidates}工件) ---")
+        for i in range(num_candidates):
+            part_vec = obs_vector[current_idx : current_idx + candidate_feature_dim]
             exists = part_vec[0]
 
             if exists > 0.5:
-                # Unpack all 10 features from V3 state space
-                (exists, norm_slack, norm_rem_ops, norm_rem_time, 
-                 norm_op_dur, is_late, downstream_cong, priority, 
-                 is_final, prod_type_enc) = part_vec
+                # 🔧 动态解析12维特征
+                norm_slack = part_vec[1]
+                norm_rem_ops = part_vec[2]
+                norm_rem_time = part_vec[3]
+                norm_op_dur = part_vec[4]
+                downstream_cong = part_vec[5]
+                priority = part_vec[6]
+                is_final = part_vec[7]
+                prod_type_enc = part_vec[8]
+                is_late = part_vec[9]
+                is_next_bottleneck = part_vec[10]
+                relative_urgency = part_vec[11]
                 
-                # Decode product type
-                prod_idx = int(round(prod_type_enc * len(product_types))) - 1
+                # 解码产品类型
+                prod_idx = int(prod_type_enc * len(product_types))
                 product_name = product_types[prod_idx] if 0 <= prod_idx < len(product_types) else "未知"
                 
-                # Un-normalize values for readability
+                # 反归一化
                 time_slack = norm_slack * ENHANCED_OBS_CONFIG["time_slack_norm"]
                 
                 decoded_lines.append(
-                    f"    槽位 {i+1} ({product_name}):\n"
-                    f"      - 状态: [松弛时间: {time_slack:.1f}, 将延期: {'是' if is_late > 0.5 else '否'}, 最终工序: {'是' if is_final > 0.5 else '否'}]\n"
-                    f"      - 属性: [优先级: {priority*5.0:.1f}, 下游拥堵: {downstream_cong:.1%}]"
+                    f"    候选工件 {i+1} ({product_name}):\n"
+                    f"      - 松弛时间: {time_slack:.1f}min, 延期: {'是' if is_late > 0.5 else '否'}, 最终工序: {'是' if is_final > 0.5 else '否'}\n"
+                    f"      - 优先级: {priority*5.0:.1f}, 下游拥堵: {downstream_cong:.1%}, 下一站是瓶颈: {'是' if is_next_bottleneck > 0.5 else '否'}"
                 )
             else:
-                decoded_lines.append(f"    槽位 {i+1}: (空)")
+                decoded_lines.append(f"    候选工件 {i+1}: (空)")
             
-            current_idx += workpiece_feature_count
+            current_idx += candidate_feature_dim
 
-    except IndexError:
-        decoded_lines.append("  - (!! 观测向量维度不匹配，部分信息无法解析 !!)")
+    except IndexError as e:
+        decoded_lines.append(f"  - (!! 观测向量维度不匹配: 期望{current_idx}维，实际{len(obs_vector)}维 !!)")
+        decoded_lines.append(f"  - 错误详情: {e}")
     except Exception as e:
         decoded_lines.append(f"  - (!! 解析时发生未知错误: {e} !!)")
 

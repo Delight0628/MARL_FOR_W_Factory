@@ -969,15 +969,6 @@ class SimplePPOTrainer:
                         action = int(tf.random.categorical(tf.math.log(action_probs + 1e-8), 1)[0])
                     else:
                         action = int(tf.argmax(action_probs[0]))
-                    # # 评估保底：若动作=IDLE且队列非空，则改为"最紧急"动作（1）
-                    # if action == 0:
-                    #     station_name = agent.replace("agent_", "")
-                    #     try:
-                    #         queue_len = len(env.sim.queues[station_name].items)
-                    #         if queue_len > 0:
-                    #             action = 1
-                    #     except Exception:
-                    #         pass
                     actions[agent] = action
             
             observations, rewards, terminations, truncations, infos = env.step(actions)
@@ -1029,15 +1020,6 @@ class SimplePPOTrainer:
                         state = tf.expand_dims(observations[agent], 0)
                         action_probs = self.shared_network.actor(state)
                         action = int(tf.argmax(action_probs[0]))
-                        # # 评估保底：若动作=IDLE且队列非空，则改为"最紧急"动作（1）
-                        # if action == 0:
-                        #     station_name = agent.replace("agent_", "")
-                        #     try:
-                        #         queue_len = len(env.sim.queues[station_name].items)
-                        #         if queue_len > 0:
-                        #             action = 1
-                        #     except Exception:
-                        #         pass
                         actions[agent] = action
                 
                 observations, rewards, terminations, truncations, infos = env.step(actions)
@@ -1095,15 +1077,6 @@ class SimplePPOTrainer:
                         state = tf.expand_dims(observations[agent], 0)
                         action_probs = self.shared_network.actor(state)
                         action = int(tf.argmax(action_probs[0]))
-                        # # 评估保底：若动作=IDLE且队列非空，则改为"最紧急"动作（1）
-                        # if action == 0:
-                        #     station_name = agent.replace("agent_", "")
-                        #     try:
-                        #         queue_len = len(env.sim.queues[station_name].items)
-                        #         if queue_len > 0:
-                        #             action = 1
-                        #     except Exception:
-                        #         pass
                         actions[agent] = action
                 
                 observations, rewards, terminations, truncations, infos = env.step(actions)

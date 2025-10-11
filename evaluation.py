@@ -209,66 +209,95 @@ def evaluate_heuristic(heuristic_name: str, config: dict = STATIC_EVAL_CONFIG, g
         print(f"📦 自定义订单: {len(config['custom_orders'])}个订单, 总计{total_parts}个零件", flush=True)
 
     def heuristic_policy(obs, env):
+        """
+        🔧 动态适配方案B：使用策略型动作而非索引型动作
+        方案B动作空间：
+          0: IDLE
+          1: URGENT_EDD (最紧急)
+          2: SHORT_SPT (最短加工)
+          3: BALANCE (负载均衡)
+          4: FIFO (先进先出)
+          5: RANDOM (随机)
+          6-15: CANDIDATE_1 ~ CANDIDATE_10
+        """
         sim = env.sim
         actions = {}
+        
+        # 🔧 从配置中读取策略型动作的映射
+        action_names = ACTION_CONFIG_ENHANCED.get("action_names", [])
+        
+        # 🔧 动态查找策略动作的ID
+        action_map = {}
+        for idx, name in enumerate(action_names):
+            action_map[name] = idx
         
         for agent_id in env.agents:
             station_name = agent_id.replace("agent_", "")
             queue = sim.queues[station_name].items
             
             if not queue:
-                actions[agent_id] = 0 # IDLE
+                actions[agent_id] = 0  # IDLE
                 continue
 
-            # 🔧 关键修复：根据是否启用排序视图来选择不同的策略
-            if QUEUE_VIEW_CONFIG.get("enabled", False):
-                # 使用排序视图：获取按紧急度排序的队列视图
-                sorted_view = sim._get_sorted_queue_view(station_name)
+            # # 🔧 关键修复：根据是否启用排序视图来选择不同的策略
+            # if QUEUE_VIEW_CONFIG.get("enabled", False):
+            #     # 使用排序视图：获取按紧急度排序的队列视图
+            #     sorted_view = sim._get_sorted_queue_view(station_name)
                 
-                if not sorted_view:
-                    actions[agent_id] = 0 # IDLE
-                    continue
+            #     if not sorted_view:
+            #         actions[agent_id] = 0 # IDLE
+            #         continue
                 
-                # 在排序视图中根据启发式规则选择零件
-                if heuristic_name == 'FIFO':
-                    # 先进先出：应选择物理队列的第一个（orig_index==0）
-                    # 在排序视图中查找orig_index==0对应的元素位置
-                    best_view_index = None
-                    for idx, item in enumerate(sorted_view):
-                        if item.get("orig_index", -1) == 0:
-                            best_view_index = idx
-                            break
-                    # 若物理队列第一个未出现在可见top-k中，退化为选择可见集合中orig_index最小者
-                    if best_view_index is None:
-                        best_view_index = int(np.argmin([item.get("orig_index", 1e9) for item in sorted_view]))
-                elif heuristic_name == 'EDD':
-                    # 最早交期: 在排序视图中选择交期最小的
-                    best_view_index = np.argmin([item["part"].due_date for item in sorted_view])
-                elif heuristic_name == 'SPT':
-                    # 最短处理时间: 在排序视图中选择当前工序处理时间最短的
-                    best_view_index = np.argmin([item["part"].get_processing_time() for item in sorted_view])
-                else:
-                    raise ValueError(f"未知的启发式规则: {heuristic_name}")
+            #     # 在排序视图中根据启发式规则选择零件
+            #     if heuristic_name == 'FIFO':
+            #         # 先进先出：应选择物理队列的第一个（orig_index==0）
+            #         # 在排序视图中查找orig_index==0对应的元素位置
+            #         best_view_index = None
+            #         for idx, item in enumerate(sorted_view):
+            #             if item.get("orig_index", -1) == 0:
+            #                 best_view_index = idx
+            #                 break
+            #         # 若物理队列第一个未出现在可见top-k中，退化为选择可见集合中orig_index最小者
+            #         if best_view_index is None:
+            #             best_view_index = int(np.argmin([item.get("orig_index", 1e9) for item in sorted_view]))
+            #     elif heuristic_name == 'EDD':
+            #         # 最早交期: 在排序视图中选择交期最小的
+            #         best_view_index = np.argmin([item["part"].due_date for item in sorted_view])
+            #     elif heuristic_name == 'SPT':
+            #         # 最短处理时间: 在排序视图中选择当前工序处理时间最短的
+            #         best_view_index = np.argmin([item["part"].get_processing_time() for item in sorted_view])
+            #     else:
+            #         raise ValueError(f"未知的启发式规则: {heuristic_name}")
                 
-                # 动作ID = 排序视图索引 + 1
-                actions[agent_id] = best_view_index + 1
+            #     # 动作ID = 排序视图索引 + 1
+            #     actions[agent_id] = best_view_index + 1
                 
-            else:
-                # 使用物理队列：原有的逻辑
-                if heuristic_name == 'FIFO':
-                    # 先进先出: 直接选择队列头的第一个 (index 0)
-                    best_part_index = 0
-                elif heuristic_name == 'EDD':
-                    # 最早交期: 选择交期最小的
-                    best_part_index = np.argmin([part.due_date for part in queue])
-                elif heuristic_name == 'SPT':
-                    # 最短处理时间: 选择当前工序处理时间最短的
-                    best_part_index = np.argmin([part.get_processing_time() for part in queue])
-                else:
-                    raise ValueError(f"未知的启发式规则: {heuristic_name}")
+            # else:
+            #     # 使用物理队列：原有的逻辑
+            #     if heuristic_name == 'FIFO':
+            #         # 先进先出: 直接选择队列头的第一个 (index 0)
+            #         best_part_index = 0
+            #     elif heuristic_name == 'EDD':
+            #         # 最早交期: 选择交期最小的
+            #         best_part_index = np.argmin([part.due_date for part in queue])
+            #     elif heuristic_name == 'SPT':
+            #         # 最短处理时间: 选择当前工序处理时间最短的
+            #         best_part_index = np.argmin([part.get_processing_time() for part in queue])
+            #     else:
+            #         raise ValueError(f"未知的启发式规则: {heuristic_name}")
 
-                # 动作ID = 零件索引 + 1
-                actions[agent_id] = best_part_index + 1
+            #     # 动作ID = 零件索引 + 1
+            #     actions[agent_id] = best_part_index + 1
+            
+            # 🔧 方案B：直接使用策略型动作
+            if heuristic_name == 'FIFO':
+                actions[agent_id] = action_map.get("FIFO", 4)  # 默认为4
+            elif heuristic_name == 'EDD':
+                actions[agent_id] = action_map.get("URGENT_EDD", 1)  # 默认为1
+            elif heuristic_name == 'SPT':
+                actions[agent_id] = action_map.get("SHORT_SPT", 2)  # 默认为2
+            else:
+                raise ValueError(f"未知的启发式规则: {heuristic_name}")
             
         return actions
 

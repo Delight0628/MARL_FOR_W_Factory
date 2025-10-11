@@ -742,35 +742,6 @@ class WFactorySim:
         
         return None
     
-    def _get_sorted_queue_view(self, station_name: str, queue_items: Optional[List['Part']] = None):
-        """
-        返回按"紧急度优先"排序后的视图（仅用于状态与动作映射）：
-        排序键: (是否已/将延期优先, 松弛时间小优先, 残余工序少优先, 下游拥堵小优先)
-        返回: 列表[ {"part": Part, "orig_index": int, "features": np.ndarray, "key": tuple } ]
-        """
-        queue_items = queue_items if queue_items is not None else self.queues[station_name].items
-        view = []
-        for idx, part in enumerate(queue_items):
-            feats = self._get_workpiece_obs(part, current_station=station_name)
-            # 从特征中提取排序关键信息
-            slack_norm = feats[1]  # 时间松弛度
-            rem_ops_norm = feats[2]  # 剩余工序数
-            downstream = feats[5]  # 下游拥堵情况
-            
-            # 判断是否已延期或即将延期
-            time_slack = calculate_slack_time(part, self.env.now, self.queues, WORKSTATIONS)
-            is_late_soon = 1.0 if time_slack < 0 else 0.0
-            
-            # 已/将延期优先 -> late_flag 越小越优
-            late_flag = 0.0 if is_late_soon >= 0.5 else 1.0
-            key = (late_flag, slack_norm, rem_ops_norm, downstream)
-            view.append({"part": part, "orig_index": idx, "features": feats, "key": key})
-        
-        view.sort(key=lambda x: x["key"]) 
-        # 方案B不使用此函数，但保留以防需要
-        top_k = ENHANCED_OBS_CONFIG.get("obs_slot_size", 10)
-        return view[:top_k]
-
     def _get_workpiece_obs(self, part: Part, current_station: str = None) -> np.ndarray:
         """
         方案B：获取单个工件的特征 (15维)
@@ -964,9 +935,11 @@ class WFactorySim:
                     context["orig_index_before"] = part_index
                     self._process_part_at_station(station_name, part_index=part_index)
                     context["processed"] = True
-                    # 🔧 并行能力修复：在同一步根据相同策略尽可能填满并行设备
-                    while self.equipment_status[station_name]['busy_count'] < WORKSTATIONS[station_name]['count']:
-                        # 若队列为空则停止
+                    # 🔧 修复：仅在当前决策步“乐观预估可用名额”范围内补充启动，避免预加载清空队列
+                    available_capacity = max(0, WORKSTATIONS[station_name]['count'] - self.equipment_status[station_name]['busy_count'])
+                    # 已经启动了一个
+                    remaining_slots = max(0, available_capacity - 1)
+                    for _ in range(remaining_slots):
                         if len(self.queues[station_name].items) == 0:
                             break
                         extra = self._select_workpiece_by_action(station_name, action)
@@ -974,7 +947,7 @@ class WFactorySim:
                             break
                         _, extra_index = extra
                         self._process_part_at_station(station_name, part_index=extra_index)
-                        actions_executed += 1
+                        # 不重复累计 actions_executed，这些属于同一次决策下的并行启动
             if context.get("processed"):
                 actions_executed += 1
         
@@ -1081,6 +1054,21 @@ class WFactorySim:
         anneal_end = max(1, int(anneal_cfg.get('ANNEALING_END_EPISODE', 500)))
         shaping_strength = max(0.0, 1.0 - (current_episode / anneal_end))
         
+        # === -1. 迟期稠密化惩罚（主信号） ===
+        # 计算系统内所有已延期（slack<0）的绝对分钟数之和，并按配置转换为惩罚；
+        # 惩罚均分到所有agent，避免单站点奖励波动过大。
+        dense_penalty_coeff = REWARD_CONFIG.get("dense_tardiness_penalty_per_min", 0.0)
+        if dense_penalty_coeff != 0.0 and self.active_parts:
+            total_overdue_minutes = 0.0
+            for p in self.active_parts:
+                slack = calculate_slack_time(p, self.env.now, self.queues, WORKSTATIONS)
+                if slack < 0:
+                    total_overdue_minutes += (-slack)
+            if total_overdue_minutes > 0:
+                per_agent_penalty = dense_penalty_coeff * total_overdue_minutes
+                for agent_id in rewards.keys():
+                    rewards[agent_id] += per_agent_penalty
+
         # === 0. 无效动作与不必要闲置：行为底线 ===
         for agent_id, action in actions.items():
             context = action_context.get(agent_id, {})
@@ -1092,7 +1080,7 @@ class WFactorySim:
                 if queue_len_before > 0:
                     rewards[agent_id] += REWARD_CONFIG.get("unnecessary_idle_penalty", 0.0)
         
-        # === 🔧 新增0.5：瓶颈感知奖励 ===
+        # === 🔧 新增0.5：瓶颈感知奖励（退火）===
         bottleneck_bonus = REWARD_CONFIG.get("bottleneck_awareness_bonus", 0.0)
         if bottleneck_bonus > 0:
             # 识别瓶颈工作站（队列最长的）
@@ -1116,9 +1104,9 @@ class WFactorySim:
                             if selected_part.current_step < len(route) - 1:
                                 next_station = route[selected_part.current_step + 1]["station"]
                                 if next_station == bottleneck_station:
-                                    rewards[agent_id] += bottleneck_bonus
+                                    rewards[agent_id] += bottleneck_bonus * shaping_strength
         
-        # === 🔧 新增0.6：短工序优先奖励（SPT策略融合）===
+        # === 🔧 新增0.6：短工序优先奖励（SPT策略融合，退火）===
         sjf_bonus = REWARD_CONFIG.get("short_job_first_bonus", 0.0)
         if sjf_bonus > 0:
             for agent_id, action in actions.items():
@@ -1136,9 +1124,9 @@ class WFactorySim:
                         if time_slack > 60 and current_op_duration <= 20:  # 短工序定义：≤20分钟
                             # 工序越短，奖励越高
                             bonus_scale = (20 - current_op_duration) / 20.0  # 0-1之间
-                            rewards[agent_id] += sjf_bonus * bonus_scale
+                            rewards[agent_id] += (sjf_bonus * shaping_strength) * bonus_scale
         
-        # === 🔧 新增0.7：负载均衡奖励 ===
+        # === 🔧 新增0.7：负载均衡奖励（退火）===
         lb_bonus = REWARD_CONFIG.get("load_balancing_bonus", 0.0)
         if lb_bonus > 0:
             for agent_id, action in actions.items():
@@ -1156,7 +1144,7 @@ class WFactorySim:
                             
                             # 如果下游队列显著低于平均水平，给予奖励
                             if next_queue_len < avg_queue_len * 0.8:
-                                rewards[agent_id] += lb_bonus
+                                rewards[agent_id] += lb_bonus * shaping_strength
         
         # === 1. 事件驱动奖励：新完成零件按时/延期 ===
         # 专家修复 V3：实现基于贡献时间的加权信用分配

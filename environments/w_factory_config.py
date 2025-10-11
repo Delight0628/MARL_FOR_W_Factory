@@ -189,8 +189,6 @@ EMERGENCY_ORDERS = {
 #   3. 同步修改动作空间: ACTION_CONFIG_ENHANCED["action_space_size"] = 6 + num_candidate_workpieces
 #   4. 新的观测维度 = 8 + 7 + 40 + (15 × num_candidate_workpieces)
 ENHANCED_OBS_CONFIG = {
-    "enabled": True,
-    
     # 候选工件配置（多样性采样策略）
     "num_candidate_workpieces": 10,         # 候选工件数量（用于详细特征）
     "num_urgent_candidates": 3,             # 最紧急的工件数（按松弛度排序）
@@ -212,13 +210,6 @@ ENHANCED_OBS_CONFIG = {
     "candidate_feature_dim": 12,            # 每个候选工件的特征维度（简化版，无one-hot）
 }
 
-# 队列视图配置：启用按紧急度排序以去除“索引偏置”
-QUEUE_VIEW_CONFIG = {
-    "enabled": False,       # 🔧 方案B：禁用排序视图，使用全局选择机制
-                            # 注意：原排序视图代码已保留，可通过此开关切换回原方案
-                            # True = 原方案（排序视图）/ False = 方案B（全局优化）
-}
-
 # 🔧 方案B：策略型动作空间配置
 # 动作空间设计理念：
 #   [1] 策略型动作 (1-5): 让agent学习使用不同调度策略的时机
@@ -226,7 +217,6 @@ QUEUE_VIEW_CONFIG = {
 #   [3] IDLE动作 (0): 允许agent选择等待
 # 这种设计既提供了高层策略选择，又保留了细粒度控制能力
 ACTION_CONFIG_ENHANCED = {
-    "enabled": True,
     "action_space_size": 16,  # 0=IDLE, 1-5=策略, 6-15=候选工件
     "action_names": [
         "IDLE",                          # 0: 不处理（等待）
@@ -271,7 +261,7 @@ REWARD_CONFIG = {
     "unnecessary_idle_penalty": -5.0,          # 保持适度约束
 
     # === 终局奖励 (Episode End Bonus) ===
-    "final_all_parts_completion_bonus": 500.0, # 🔧 1000→100：降低10倍，避免过度奖励"仅完成"
+    "final_all_parts_completion_bonus": 100.0, # 🔧 再降：避免“全完成”主导评分
     "invalid_action_penalty": -5.0,
     
     # === 🔧 超越EDD的奖励塑造（同步提升权重）===
@@ -279,6 +269,11 @@ REWARD_CONFIG = {
     "short_job_first_bonus": 12.0,             # 🔧 4→12：提升3倍
     "load_balancing_bonus": 10.0,              # 🔧 3→10：提升3倍
     "early_completion_bonus_multiplier": 1.5,  # 🔧 1.2→1.5：提高激励
+
+    # === 🔧 新增：迟期稠密化惩罚（主信号）===
+    # 每步对系统内所有“负松弛(已延期)”分钟数求和，并按该系数线性惩罚；
+    # 惩罚均分到各agent，确保多智能体信用分配稳定。
+    "dense_tardiness_penalty_per_min": -0.05,
 }
 
 

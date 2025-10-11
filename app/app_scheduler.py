@@ -102,6 +102,131 @@ def save_custom_products(products):
         st.error(f"保存失败：{e}")
         return False
 
+def calculate_product_total_time(product: str, product_routes: dict) -> float:
+    """计算产品总加工时间"""
+    route = product_routes.get(product, [])
+    return sum(step["time"] for step in route)
+
+def validate_order_config(orders: list, custom_products: dict = None) -> dict:
+    """
+    验证订单配置的合理性，并预测运行结果
+    
+    返回格式：
+    {
+        'valid': bool,
+        'warnings': list,
+        'info': dict,
+        'difficulty_level': str
+    }
+    """
+    # 合并系统产品和自定义产品
+    all_product_routes = PRODUCT_ROUTES.copy()
+    if custom_products:
+        all_product_routes.update(custom_products)
+    
+    warnings = []
+    info = {}
+    
+    # 1. 检查订单中的产品是否都有工艺路线
+    order_products = set(order["product"] for order in orders)
+    defined_products = set(all_product_routes.keys())
+    
+    if not order_products.issubset(defined_products):
+        missing = order_products - defined_products
+        return {
+            'valid': False,
+            'warnings': [f"❌ 以下产品没有定义工艺路线：{', '.join(missing)}"],
+            'info': {},
+            'difficulty_level': 'invalid'
+        }
+    
+    # 2. 计算基础统计
+    total_parts = sum(order["quantity"] for order in orders)
+    total_processing_time = 0
+    
+    for order in orders:
+        product_time = calculate_product_total_time(order["product"], all_product_routes)
+        total_processing_time += product_time * order["quantity"]
+    
+    info['total_parts'] = total_parts
+    info['total_processing_time'] = total_processing_time
+    
+    # 3. 计算瓶颈工作站的理论最小完工时间
+    bottleneck_time = {}
+    for station_name, station_config in WORKSTATIONS.items():
+        station_load = 0
+        for order in orders:
+            route = all_product_routes.get(order["product"], [])
+            for step in route:
+                if step["station"] == station_name:
+                    station_load += step["time"] * order["quantity"]
+        
+        # 考虑设备数量的并行处理能力
+        bottleneck_time[station_name] = station_load / station_config["count"]
+    
+    theoretical_makespan = max(bottleneck_time.values()) if bottleneck_time else 0
+    bottleneck_station = max(bottleneck_time, key=bottleneck_time.get) if bottleneck_time else "未知"
+    
+    info['theoretical_makespan'] = theoretical_makespan
+    info['bottleneck_station'] = bottleneck_station
+    info['bottleneck_load'] = bottleneck_time.get(bottleneck_station, 0)
+    
+    # 4. 检查交期合理性
+    min_due_date = min(order["due_date"] for order in orders)
+    max_due_date = max(order["due_date"] for order in orders)
+    avg_due_date = np.mean([order["due_date"] for order in orders])
+    
+    info['min_due_date'] = min_due_date
+    info['max_due_date'] = max_due_date
+    info['avg_due_date'] = avg_due_date
+    
+    # 5. 检查订单到达时间
+    if any('arrival_time' in order for order in orders):
+        arrival_times = [order.get('arrival_time', 0) for order in orders]
+        info['has_arrival_time'] = True
+        info['max_arrival_time'] = max(arrival_times)
+    else:
+        info['has_arrival_time'] = False
+    
+    # 6. 评估难度等级和生成警告
+    simulation_time = SIMULATION_TIME
+    makespan_ratio = theoretical_makespan / simulation_time
+    
+    if makespan_ratio > 1.0:
+        difficulty_level = "极高 ⚠️"
+        warnings.append(f"⚠️ 理论最短完工时间({theoretical_makespan:.1f}min)超过标准仿真时间({simulation_time}min)，订单可能无法全部完成！")
+        warnings.append(f"💡 建议：减少订单数量或延长交期时间")
+    elif makespan_ratio > 0.8:
+        difficulty_level = "高 🎯"
+        warnings.append(f"🎯 高挑战性任务：理论完工时间占仿真时间的{makespan_ratio*100:.1f}%，时间非常紧张")
+    elif makespan_ratio > 0.5:
+        difficulty_level = "中等 ⚡"
+        warnings.append(f"⚡ 中等难度任务：理论完工时间占仿真时间的{makespan_ratio*100:.1f}%，有一定挑战")
+    else:
+        difficulty_level = "低 ✅"
+        warnings.append(f"✅ 任务难度适中：理论完工时间占仿真时间的{makespan_ratio*100:.1f}%")
+    
+    # 7. 检查交期是否合理
+    if min_due_date < theoretical_makespan * 0.5:
+        warnings.append(f"⚠️ 部分订单交期过短(最短{min_due_date:.0f}min)，可能导致严重延期")
+    
+    if theoretical_makespan > avg_due_date:
+        warnings.append(f"⚠️ 平均交期({avg_due_date:.0f}min)短于理论完工时间({theoretical_makespan:.1f}min)，大部分订单可能延期")
+    
+    # 8. 检查瓶颈工作站
+    bottleneck_ratio = info['bottleneck_load'] / simulation_time
+    if bottleneck_ratio > 0.9:
+        warnings.append(f"🔍 瓶颈工作站'{bottleneck_station}'负荷极高({bottleneck_ratio*100:.0f}%)，可能严重影响整体进度")
+    elif bottleneck_ratio > 0.7:
+        warnings.append(f"🔍 瓶颈工作站'{bottleneck_station}'负荷较高({bottleneck_ratio*100:.0f}%)，需要优化调度策略")
+    
+    return {
+        'valid': True,
+        'warnings': warnings,
+        'info': info,
+        'difficulty_level': difficulty_level
+    }
+
 @st.cache_resource
 def load_model(model_path):
     """加载训练好的模型"""
@@ -641,7 +766,58 @@ def main():
         
         # 显示订单统计
         total_parts = sum(order['quantity'] for order in st.session_state['orders'])
-        st.info(f"📦 订单总数：{len(st.session_state['orders'])} | 总零件数：{total_parts}")
+        st.caption(f"📦 订单总数：{len(st.session_state['orders'])} | 总零件数：{total_parts}")
+        
+        # 🔧 新增：订单配置合理性检测
+        st.divider()
+        st.subheader("🔍 订单配置分析")
+        
+        custom_products = st.session_state.get('custom_products', {})
+        validation_result = validate_order_config(st.session_state['orders'], custom_products)
+        
+        if not validation_result['valid']:
+            st.error("❌ 订单配置无效")
+            for warning in validation_result['warnings']:
+                st.warning(warning)
+        else:
+            info = validation_result['info']
+            
+            # 显示难度评估
+            col1, col2, col3, col4 = st.columns(4)
+            with col1:
+                st.metric("任务难度", validation_result['difficulty_level'])
+            with col2:
+                st.metric("总零件数", f"{info['total_parts']}")
+            with col3:
+                st.metric("理论完工时间", f"{info['theoretical_makespan']:.0f}min")
+            with col4:
+                st.metric("瓶颈工作站", info['bottleneck_station'])
+            
+            # 显示详细信息和警告
+            with st.expander("📊 查看详细分析", expanded=True):
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    st.write("**基础统计**")
+                    st.write(f"- 总加工时间：{info['total_processing_time']:.1f} 分钟")
+                    st.write(f"- 平均交期：{info['avg_due_date']:.0f} 分钟")
+                    st.write(f"- 最短交期：{info['min_due_date']:.0f} 分钟")
+                    st.write(f"- 最长交期：{info['max_due_date']:.0f} 分钟")
+                    if info.get('has_arrival_time'):
+                        st.write(f"- 最晚到达：{info['max_arrival_time']:.0f} 分钟")
+                
+                with col2:
+                    st.write("**瓶颈分析**")
+                    st.write(f"- 瓶颈工作站：{info['bottleneck_station']}")
+                    st.write(f"- 瓶颈负荷：{info['bottleneck_load']:.1f} 分钟")
+                    st.write(f"- 负荷率：{info['bottleneck_load']/SIMULATION_TIME*100:.1f}%")
+                    st.write(f"- 标准仿真时间：{SIMULATION_TIME} 分钟")
+                
+                # 显示警告和建议
+                if validation_result['warnings']:
+                    st.write("**⚠️ 提示与建议**")
+                    for warning in validation_result['warnings']:
+                        st.write(f"- {warning}")
     
     # 开始调度按钮和结果展示区域
     st.divider()
