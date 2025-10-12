@@ -1,0 +1,13 @@
+{
+  "orders": [],
+  "model_path": "",
+  "model_loaded": false,
+  "language": "zh-CN",
+  "last_simulation": {
+    "stats": null,
+    "gantt_history": null,
+    "score": null,
+    "total_reward": null
+  },
+  "timestamp": "2025-10-12 21:14:56"
+}
