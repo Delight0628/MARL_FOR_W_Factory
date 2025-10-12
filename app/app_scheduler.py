@@ -25,8 +25,8 @@ if project_root not in sys.path:
 
 from environments.w_factory_env import WFactoryEnv
 from environments.w_factory_config import (
-    PRODUCT_ROUTES, WORKSTATIONS, get_total_parts_count,
-    calculate_episode_score, generate_random_orders
+    PRODUCT_ROUTES, WORKSTATIONS, SIMULATION_TIME,
+    get_total_parts_count, calculate_episode_score, generate_random_orders
 )
 
 # ============================================================================
@@ -485,9 +485,7 @@ def main():
     if 'actor_model' in st.session_state:
         st.success(f"✅ 模型已加载：{st.session_state.get('model_path', '未知')}")
     
-    st.divider()
-    
-    # 自定义产品工艺路线管理（移到系统配置部分）
+    # 自定义产品工艺路线管理（系统配置的一部分）
     with st.expander("🔧 自定义产品工艺路线", expanded=False):
         st.caption("添加新的产品类型并定义其工艺路线（保存后可在订单配置中使用）")
         
@@ -567,12 +565,13 @@ def main():
     
     # 提供三种配置方式
     config_method = st.radio(
-        "选择配置方式",
-        ["可视化配置", "JSON配置", "随机生成订单"],
-        horizontal=True
+        "",
+        ["随机生成订单", "自定义订单"],
+        horizontal=True,
+        label_visibility="collapsed"
     )
     
-    if config_method == "可视化配置":
+    if config_method == "自定义订单":
         # 初始化订单列表
         if 'orders' not in st.session_state:
             st.session_state['orders'] = []
@@ -611,20 +610,22 @@ def main():
                 )
             
             with col4:
-                due_date = st.number_input(
-                    "交期(分钟)",
-                    min_value=50,
-                    max_value=2000,
-                    value=300
-                )
-            
-            with col5:
                 arrival_time = st.number_input(
                     "到达时间(分钟)",
                     min_value=0,
                     max_value=500,
                     value=0,
-                    help="订单到达时间，0表示立即到达"
+                    step=10,
+                    help="订单到达时间，0表示生产前到达"
+                )
+            
+            with col5:
+                due_date = st.number_input(
+                    "交期(分钟)",
+                    min_value=60,
+                    max_value=2000,
+                    value=300,
+                    step=10
                 )
             
             submitted = st.form_submit_button("➕ 添加订单")
@@ -633,104 +634,72 @@ def main():
                     "product": product,
                     "quantity": int(quantity),
                     "priority": int(priority),
-                    "due_date": int(due_date),
-                    "arrival_time": int(arrival_time)
+                    "arrival_time": int(arrival_time),
+                    "due_date": int(due_date)
                 }
                 st.session_state['orders'].append(order)
-                st.success(f"已添加订单：{product} x{quantity} (到达时间:{arrival_time}min)")
-                st.rerun()
-    
-    elif config_method == "JSON配置":
-        st.subheader("JSON格式配置")
-        
-        # 提供示例
-        example_json = [
-            {"product": "黑胡桃木餐桌", "quantity": 6, "priority": 1, "due_date": 300, "arrival_time": 0},
-            {"product": "橡木书柜", "quantity": 6, "priority": 2, "due_date": 400, "arrival_time": 0},
-            {"product": "松木床架", "quantity": 6, "priority": 1, "due_date": 350, "arrival_time": 20}
-        ]
-        
-        st.caption("示例格式：")
-        st.code(json.dumps(example_json, indent=2, ensure_ascii=False), language="json")
-        
-        json_input = st.text_area(
-            "输入订单配置（JSON格式）",
-            height=300,
-            help="请输入符合格式的JSON配置"
-        )
-        
-        col1, col2 = st.columns(2)
-        with col1:
-            if st.button("✅ 加载JSON配置"):
-                try:
-                    orders = json.loads(json_input)
-                    # 验证配置并添加默认值
-                    for order in orders:
-                        if not all(k in order for k in ['product', 'quantity', 'priority', 'due_date']):
-                            st.error("配置格式错误：缺少必要字段(product, quantity, priority, due_date)")
-                            break
-                        # 添加默认arrival_time
-                        if 'arrival_time' not in order:
-                            order['arrival_time'] = 0
-                        # 确保交期和到达时间是整数
-                        order['due_date'] = int(order['due_date'])
-                        order['arrival_time'] = int(order['arrival_time'])
-                    else:
-                        st.session_state['orders'] = orders
-                        st.success(f"成功加载 {len(orders)} 个订单")
-                        st.rerun()
-                except json.JSONDecodeError as e:
-                    st.error(f"JSON格式错误：{str(e)}")
-        
-        with col2:
-            if st.button("📋 使用示例配置"):
-                st.session_state['orders'] = example_json
-                st.success("已加载示例配置")
+                st.success(f"已添加订单：{product} x{quantity} (到达时间:{arrival_time}min, 交期:{due_date}min)")
                 st.rerun()
     
     else:  # 随机生成订单
         st.subheader("随机订单生成")
         
-        col1, col2 = st.columns(2)
+        # 订单数量
+        num_orders = st.slider("订单数量", min_value=3, max_value=10, value=5)
+        
+        col1, col2, col3 = st.columns(3)
         
         with col1:
-            num_orders = st.slider("订单数量", min_value=3, max_value=10, value=5)
-            min_quantity = st.number_input("每个订单最小零件数", min_value=1, max_value=20, value=3)
-            max_quantity = st.number_input("每个订单最大零件数", min_value=1, max_value=50, value=10)
+            st.write("**每个订单的产品数量**")
+            subcol1, subcol2 = st.columns(2)
+            with subcol1:
+                min_quantity = st.number_input("从", min_value=1, max_value=50, value=3, key="qty_min")
+            with subcol2:
+                max_quantity = st.number_input("到", min_value=1, max_value=50, value=10, key="qty_max")
         
         with col2:
-            min_due = st.number_input("最短交期(分钟)", min_value=100, max_value=1000, value=200)
-            max_due = st.number_input("最长交期(分钟)", min_value=200, max_value=2000, value=700)
+            st.write("**交期时间(分钟)**")
+            subcol1, subcol2 = st.columns(2)
+            with subcol1:
+                min_due = st.number_input("从", min_value=100, max_value=2000, value=200, step=10, key="due_min")
+            with subcol2:
+                max_due = st.number_input("到", min_value=100, max_value=2000, value=700, step=10, key="due_max")
+        
+        with col3:
+            st.write("**到达时间(分钟)**")
+            subcol1, subcol2 = st.columns(2)
+            with subcol1:
+                min_arrival = st.number_input("从", min_value=0, max_value=500, value=0, step=10, key="arrival_min")
+            with subcol2:
+                max_arrival = st.number_input("到", min_value=0, max_value=500, value=50, step=10, key="arrival_max")
         
         if st.button("🎲 生成随机订单", type="primary"):
-            # 自定义配置
-            config = {
-                "min_orders": num_orders,
-                "max_orders": num_orders,
-                "min_quantity_per_order": min_quantity,
-                "max_quantity_per_order": max_quantity,
-                "due_date_range": (min_due, max_due),
-                "priority_weights": [0.3, 0.5, 0.2]
-            }
-            
-            # 临时修改全局配置
-            from environments import w_factory_config
+            # 🔧 支持自定义产品：合并系统产品和自定义产品
             import random
-            original_config = w_factory_config.TRAINING_FLOW_CONFIG["generalization_phase"]["random_orders_config"]
-            w_factory_config.TRAINING_FLOW_CONFIG["generalization_phase"]["random_orders_config"] = config
+            custom_products = st.session_state.get('custom_products', {})
+            all_products = list(PRODUCT_ROUTES.keys()) + list(custom_products.keys())
             
-            try:
-                random_orders = generate_random_orders()
-                # 修正：确保交期是整数，并添加随机到达时间
-                for order in random_orders:
-                    order['due_date'] = int(order['due_date'])
-                    order['arrival_time'] = int(random.uniform(0, 50))  # 0-50分钟的随机到达时间
-                st.session_state['orders'] = random_orders
-                st.success(f"✅ 已生成 {len(random_orders)} 个随机订单")
-                st.rerun()
-            finally:
-                # 恢复原配置
-                w_factory_config.TRAINING_FLOW_CONFIG["generalization_phase"]["random_orders_config"] = original_config
+            # 手动生成随机订单（包含自定义产品和到达时间范围）
+            random_orders = []
+            for i in range(num_orders):
+                product = random.choice(all_products)
+                quantity = random.randint(min_quantity, max_quantity)
+                priority = random.choices([1, 2, 3], weights=[0.3, 0.5, 0.2])[0]
+                # 确保时间值是10的倍数
+                arrival_time = round(random.uniform(min_arrival, max_arrival) / 10) * 10
+                due_date = round(random.uniform(min_due, max_due) / 10) * 10
+                
+                random_orders.append({
+                    "product": product,
+                    "quantity": quantity,
+                    "priority": priority,
+                    "arrival_time": arrival_time,
+                    "due_date": due_date
+                })
+            
+            st.session_state['orders'] = random_orders
+            st.success(f"✅ 已生成 {len(random_orders)} 个随机订单")
+            st.rerun()
     
     # 显示当前订单列表（所有模式通用）
     if st.session_state.get('orders'):
@@ -742,7 +711,8 @@ def main():
         
         # 根据列数设置列名
         if len(orders_df.columns) == 5:
-            orders_df.columns = ['产品', '数量', '优先级', '交期(分钟)', '到达时间(分钟)']
+            orders_df = orders_df[['product', 'quantity', 'priority', 'arrival_time', 'due_date']]
+            orders_df.columns = ['产品', '数量', '优先级', '到达时间(分钟)', '交期(分钟)']
         else:
             orders_df.columns = ['产品', '数量', '优先级', '交期(分钟)']
         
@@ -766,7 +736,7 @@ def main():
         
         # 显示订单统计
         total_parts = sum(order['quantity'] for order in st.session_state['orders'])
-        st.caption(f"📦 订单总数：{len(st.session_state['orders'])} | 总零件数：{total_parts}")
+        st.caption(f"📦 订单总数：{len(st.session_state['orders'])} | 产品总数：{total_parts}")
         
         # 🔧 新增：订单配置合理性检测
         st.divider()
@@ -787,7 +757,7 @@ def main():
             with col1:
                 st.metric("任务难度", validation_result['difficulty_level'])
             with col2:
-                st.metric("总零件数", f"{info['total_parts']}")
+                st.metric("产品总数", f"{info['total_parts']}")
             with col3:
                 st.metric("理论完工时间", f"{info['theoretical_makespan']:.0f}min")
             with col4:
@@ -879,7 +849,7 @@ def main():
         
         with col1:
             st.metric(
-                label="📦 完成零件数",
+                label="📦 完成产品数",
                 value=f"{stats['total_parts']}/{total_parts_target}",
                 delta=f"{completion_rate:.1f}%"
             )
@@ -943,7 +913,7 @@ def main():
         # 详细统计信息
         with st.expander("📋 详细统计信息"):
             st.json({
-                "完成零件数": stats['total_parts'],
+                "完成产品数": stats['total_parts'],
                 "总完工时间(分钟)": stats['makespan'],
                 "设备平均利用率": f"{stats['mean_utilization']*100:.2f}%",
                 "总延期时间(分钟)": stats['total_tardiness'],
