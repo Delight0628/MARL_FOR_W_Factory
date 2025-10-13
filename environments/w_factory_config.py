@@ -23,7 +23,7 @@ TRAINING_FLOW_CONFIG = {
         # 毕业标准：必须连续N次达到以下所有条件
         "graduation_criteria": {
             "target_score": 0.72,
-            "target_consistency": 6,
+            "target_consistency": 5,
             "tardiness_threshold": 450.0,  # 总延期不得超过450分钟
             "min_completion_rate": 100.0,   # 必须100%完成
         },
@@ -305,7 +305,7 @@ PPO_NETWORK_CONFIG = {
 ADAPTIVE_ENTROPY_CONFIG = {
     "enabled": True,             # 是否启用
     "start_episode": 20,         # 提前启动自适应熵
-    "patience": 50,              # 连续多少回合无改进则提升熵
+    "patience": 200,              # 连续多少回合无改进则提升熵
     "boost_factor": 0.1,         # 每次提升熵的比例
     "high_completion_decay": 0.999, # 🔧 新增：当完成率高时，用于熵的衰减因子
     "high_completion_threshold": 0.95, # 🔧 新增：定义“高完成率”的阈值

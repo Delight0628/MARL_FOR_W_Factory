@@ -176,6 +176,9 @@ class WFactorySim:
         # 🔧 新增：迟期总量缓存与候选缓存（保证同一步一致性）
         self._last_overdue_sum: float = 0.0
         self._cached_candidates: Dict[str, List[Dict[str, Any]]] = {}
+        # 🔧 新增：候选动作动态范围（基于配置）
+        self._candidate_action_start: int = 6
+        self._candidate_action_end: int = 5 + int(ENHANCED_OBS_CONFIG.get("num_candidate_workpieces", 0))
         
         # 用于快速查找下游工作站的缓存
         self._downstream_map = self._create_downstream_map()
@@ -264,7 +267,8 @@ class WFactorySim:
         if 'custom_orders' in self.config:
             # 使用自定义订单，忽略课程学习缩放
             actual_orders_config = self.config['custom_orders']
-            is_randomized = False
+            # 修复：即使使用custom_orders，也应尊重randomize_env开关
+            is_randomized = bool(self.config.get('randomize_env', False))
         else:
             # --- 方案三：引入环境随机性 ---
             orders_scale = self.config.get('orders_scale', 1.0)
@@ -748,10 +752,10 @@ class WFactorySim:
             selected_idx = random.randint(0, len(queue) - 1)
             return (queue[selected_idx], selected_idx)
         
-        # 候选工件动作 (6-15)
-        elif 6 <= action <= 15:
+        # 候选工件动作 (动态范围)
+        elif self._candidate_action_start <= action <= self._candidate_action_end:
             candidates = self._get_candidate_workpieces(station_name)
-            candidate_idx = action - 6
+            candidate_idx = action - self._candidate_action_start
             if candidate_idx < len(candidates):
                 candidate_info = candidates[candidate_idx]
                 part = candidate_info['part']
@@ -968,17 +972,47 @@ class WFactorySim:
                     for _ in range(remaining_slots):
                         if len(self.queues[station_name].items) == 0:
                             break
-                        extra = self._select_workpiece_by_action(station_name, action)
-                        if extra is None:
-                            break
-                        extra_part, extra_index = extra
-                        extra_slack = calculate_slack_time(extra_part, decision_time, self.queues, WORKSTATIONS)
-                        self._process_part_at_station(station_name, part_index=extra_index)
-                        # 记录并行启动的额外零件
-                        context["started_parts"].append({
-                            "part_id": extra_part.part_id,
-                            "slack": extra_slack
-                        })
+                        # 优化：候选型动作并联补位，跳过已启动候选，顺序选择下一可用候选
+                        if self._candidate_action_start <= action <= self._candidate_action_end:
+                            started_ids = set(int(sp.get("part_id")) for sp in context.get("started_parts", []))
+                            candidates = self._get_candidate_workpieces(station_name)
+                            # 从本次动作对应的候选槽位开始往后找
+                            desired_idx = int(action - self._candidate_action_start)
+                            chosen_pair = None
+                            for ci in range(desired_idx, len(candidates)):
+                                cand_part = candidates[ci]['part']
+                                if cand_part.part_id in started_ids:
+                                    continue
+                                # 定位在当前队列中的索引
+                                actual_idx = None
+                                for qidx, qpart in enumerate(self.queues[station_name].items):
+                                    if qpart.part_id == cand_part.part_id:
+                                        actual_idx = qidx
+                                        break
+                                if actual_idx is not None:
+                                    chosen_pair = (cand_part, actual_idx)
+                                    break
+                            if chosen_pair is None:
+                                break
+                            extra_part, extra_index = chosen_pair
+                            extra_slack = calculate_slack_time(extra_part, decision_time, self.queues, WORKSTATIONS)
+                            self._process_part_at_station(station_name, part_index=extra_index)
+                            context["started_parts"].append({
+                                "part_id": extra_part.part_id,
+                                "slack": extra_slack
+                            })
+                        else:
+                            # 策略型动作：实时再选
+                            extra = self._select_workpiece_by_action(station_name, action)
+                            if extra is None:
+                                break
+                            extra_part, extra_index = extra
+                            extra_slack = calculate_slack_time(extra_part, decision_time, self.queues, WORKSTATIONS)
+                            self._process_part_at_station(station_name, part_index=extra_index)
+                            context["started_parts"].append({
+                                "part_id": extra_part.part_id,
+                                "slack": extra_slack
+                            })
                         # 不重复累计 actions_executed，这些属于同一次决策下的并行启动
             if context.get("processed"):
                 actions_executed += 1
@@ -1365,22 +1399,25 @@ class WFactorySim:
         
         # 新增：计算延期统计
         total_tardiness = 0
-        late_orders_count = 0
-
+        late_parts_count = 0
+        
+        # 收集所有零件（已完成 + 未完成）
+        all_parts = []
         for order in self.orders:
-            if order.order_id in self.order_completion_times:
-                # 订单已完成
-                completion_time = self.order_completion_times[order.order_id]
-                if completion_time > order.due_date:
-                    tardiness = completion_time - order.due_date
-                    total_tardiness += tardiness
-                    late_orders_count += 1
+            all_parts.extend(order.parts)
+        
+        # 遍历每个零件，计算其延期
+        for part in all_parts:
+            if part.completion_time is not None:
+                # 已完成的零件：延期 = max(0, 完成时间 - 交期)
+                tardiness = max(0, part.completion_time - part.due_date)
             else:
-                # 订单未完成，延期时间从交期算到仿真结束
-                tardiness = max(0, self.current_time - order.due_date)
-                total_tardiness += tardiness
-                if tardiness > 0:
-                    late_orders_count += 1
+                # 未完成的零件：延期 = max(0, 当前时间 - 交期)
+                tardiness = max(0, self.current_time - part.due_date)
+            
+            total_tardiness += tardiness
+            if tardiness > 0:
+                late_parts_count += 1
         
         total_required = sum(order.quantity for order in self.orders)
         
@@ -1427,6 +1464,14 @@ class WFactoryEnv(ParallelEnv):
         self.sim = WFactorySim(self.config)
         self.agents = self.sim.agents
         self.possible_agents = self.sim.agents
+        # --- 动作空间一致性断言：基于候选数量动态校验 ---
+        _num_candidates = int(ENHANCED_OBS_CONFIG.get("num_candidate_workpieces", 0))
+        _expected_action_space_size = 6 + _num_candidates
+        _configured_action_space_size = ACTION_CONFIG_ENHANCED.get("action_space_size", _expected_action_space_size)
+        if _configured_action_space_size != _expected_action_space_size:
+            raise ValueError(
+                f"动作空间大小配置不一致: 配置为{_configured_action_space_size}, 但根据候选数应为{_expected_action_space_size} (6 + num_candidate_workpieces)"
+            )
         
         # 🔧 MAPPO修复：重新设计全局状态空间
         self._setup_spaces()
@@ -1469,7 +1514,8 @@ class WFactoryEnv(ParallelEnv):
             )
             for agent in self.agents
         }
-        action_size = ACTION_CONFIG_ENHANCED["action_space_size"]
+        # 动作空间大小随候选数量动态确定
+        action_size = 6 + int(ENHANCED_OBS_CONFIG.get("num_candidate_workpieces", 0))
         self._action_spaces = {agent: gym.spaces.Discrete(action_size) for agent in self.agents}
         
     def reset(self, seed: Optional[int] = None, options: Optional[dict] = None):

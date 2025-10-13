@@ -450,18 +450,6 @@ def run_simulation_worker(network_weights: Dict[str, List[np.ndarray]],
     except Exception:
         completed_all_worker = False
     
-    # 若worker完成全部零件但环境未在奖励阶段发放过终局奖励，则补发一次到worker累计奖励
-    try:
-        if completed_all_worker and not getattr(env.sim, 'final_bonus_awarded', False):
-            # 每个agent应获得一次final_bonus
-            final_bonus = REWARD_CONFIG.get("final_all_parts_completion_bonus", 0.0)
-            total_reward_collected += final_bonus * len(env.agents)
-            # 标记以避免其他位置重复补发
-            env.sim.final_bonus_awarded = True
-            env.sim.final_bonus_value = final_bonus * len(env.agents)
-    except Exception:
-        pass
-    
     env.close()
     return buffers, total_reward_collected, next_global_state_for_bootstrap, was_truncated, completed_all_worker
 
@@ -1929,7 +1917,6 @@ def main():
         print(f"    - 设备故障: {'启用' if EQUIPMENT_FAILURE.get('enabled', False) else '禁用'}")
         print(f"    - 紧急插单: {'启用' if EMERGENCY_ORDERS.get('enabled', False) else '禁用'}")
         print(f"    - 启发式护栏: {'启用' if HEURISTIC_GUARDRAILS_CONFIG.get('enabled', False) else '禁用'}")
-        print(f"    - 增强观测: {'启用' if ENHANCED_OBS_CONFIG.get('enabled', False) else '禁用'}")
         print("-" * 40)
         
         trainer = SimplePPOTrainer(
