@@ -26,8 +26,15 @@
 !奖励显示.md
 !rule.mdc
 
+
+
 # Dependencies
 !requirements.txt
 
 # Explicitly ignored items
 0918_2340_0.3lateness/
+
+# Track specific log file as requested
+!1012_1956_g5改事件驱动/
+1012_1956_g5改事件驱动/*
+!1012_1956_g5改事件驱动/1012_195626_g5改事件驱动.log

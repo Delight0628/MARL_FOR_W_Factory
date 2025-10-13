@@ -1,7 +1,7 @@
 {
   "orders": [],
-  "model_path": "",
-  "model_loaded": false,
+  "model_path": "/root/MARL_FOR_W_Factory/mappo/ppo_models/20251012_195632/1012_1958base_train_best_actor.keras",
+  "model_loaded": true,
   "language": "zh-CN",
   "last_simulation": {
     "stats": null,
@@ -9,5 +9,5 @@
     "score": null,
     "total_reward": null
   },
-  "timestamp": "2025-10-12 21:14:56"
+  "timestamp": "2025-10-12 23:33:51"
 }

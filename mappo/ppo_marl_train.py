@@ -1930,7 +1930,6 @@ def main():
         print(f"    - 紧急插单: {'启用' if EMERGENCY_ORDERS.get('enabled', False) else '禁用'}")
         print(f"    - 启发式护栏: {'启用' if HEURISTIC_GUARDRAILS_CONFIG.get('enabled', False) else '禁用'}")
         print(f"    - 增强观测: {'启用' if ENHANCED_OBS_CONFIG.get('enabled', False) else '禁用'}")
-        print(f"    - 紧急度排序视图: {'启用' if QUEUE_VIEW_CONFIG.get('enabled', False) else '禁用'}")
         print("-" * 40)
         
         trainer = SimplePPOTrainer(

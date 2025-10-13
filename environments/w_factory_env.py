@@ -172,6 +172,10 @@ class WFactorySim:
         # 终局奖励发放标记（防重复）
         self.final_bonus_awarded = False
         self.final_bonus_value = 0.0
+
+        # 🔧 新增：迟期总量缓存与候选缓存（保证同一步一致性）
+        self._last_overdue_sum: float = 0.0
+        self._cached_candidates: Dict[str, List[Dict[str, Any]]] = {}
         
         # 用于快速查找下游工作站的缓存
         self._downstream_map = self._create_downstream_map()
@@ -224,6 +228,10 @@ class WFactorySim:
         # 重置终局奖励标记
         self.final_bonus_awarded = False
         self.final_bonus_value = 0.0
+
+        # 重置迟期与候选缓存
+        self._last_overdue_sum = 0.0
+        self._cached_candidates.clear()
     
     def _initialize_resources(self):
         """初始化设备资源和队列"""
@@ -625,8 +633,14 @@ class WFactorySim:
         queue = self.queues[station_name].items
         
         if not queue:
+            # 空队列清空缓存
+            self._cached_candidates[station_name] = []
             return []
         
+        # 若本步已有缓存，直接返回，确保观测与执行一致
+        if station_name in self._cached_candidates and self._cached_candidates[station_name]:
+            return self._cached_candidates[station_name]
+
         candidates = []
         used_indices = set()
         
@@ -652,12 +666,18 @@ class WFactorySim:
         num_random = ENHANCED_OBS_CONFIG["num_random_candidates"]
         available_indices = [i for i in range(len(queue)) if i not in used_indices]
         if available_indices:
+            # 🔧 确定性随机：基于(站点, 当前时间, 队列part_id序列)生成种子
+            seed_tuple = (station_name, int(self.env.now), tuple(p.part_id for p in queue))
+            seed = hash(seed_tuple) & 0xffffffff
+            rng = random.Random(seed)
             sample_size = min(num_random, len(available_indices))
-            sampled_indices = random.sample(available_indices, sample_size)
+            sampled_indices = rng.sample(available_indices, sample_size)
             for idx in sampled_indices:
                 candidates.append({"part": queue[idx], "index": idx, "category": "random"})
                 used_indices.add(idx)
         
+        # 缓存本步候选以保证一致性
+        self._cached_candidates[station_name] = candidates
         return candidates
     
     def _select_workpiece_by_action(self, station_name: str, action: int) -> Optional[Tuple[Part, int]]:
@@ -921,7 +941,8 @@ class WFactorySim:
                 "decision_time": decision_time,
                 "action": action,
                 "selected_part": None,
-                "processed": False
+                "processed": False,
+                "started_parts": []  # 记录本步该agent启动的所有零件及其决策时slack
             }
             action_context[agent_id] = context
 
@@ -935,6 +956,11 @@ class WFactorySim:
                     context["orig_index_before"] = part_index
                     self._process_part_at_station(station_name, part_index=part_index)
                     context["processed"] = True
+                    # 记录启动的零件
+                    context["started_parts"].append({
+                        "part_id": selected_part.part_id,
+                        "slack": context["selected_part_slack"]
+                    })
                     # 🔧 修复：仅在当前决策步“乐观预估可用名额”范围内补充启动，避免预加载清空队列
                     available_capacity = max(0, WORKSTATIONS[station_name]['count'] - self.equipment_status[station_name]['busy_count'])
                     # 已经启动了一个
@@ -945,8 +971,14 @@ class WFactorySim:
                         extra = self._select_workpiece_by_action(station_name, action)
                         if extra is None:
                             break
-                        _, extra_index = extra
+                        extra_part, extra_index = extra
+                        extra_slack = calculate_slack_time(extra_part, decision_time, self.queues, WORKSTATIONS)
                         self._process_part_at_station(station_name, part_index=extra_index)
+                        # 记录并行启动的额外零件
+                        context["started_parts"].append({
+                            "part_id": extra_part.part_id,
+                            "slack": extra_slack
+                        })
                         # 不重复累计 actions_executed，这些属于同一次决策下的并行启动
             if context.get("processed"):
                 actions_executed += 1
@@ -961,6 +993,9 @@ class WFactorySim:
         
         # 计算奖励
         rewards = self.get_rewards(actions, action_context)
+
+        # 本步结束后清空候选缓存（下一步将重建）
+        self._cached_candidates.clear()
         
         # 训练模式下完全静默调试信息
         if not self._training_mode and self.debug_level == 'DEBUG':
@@ -1054,20 +1089,48 @@ class WFactorySim:
         anneal_end = max(1, int(anneal_cfg.get('ANNEALING_END_EPISODE', 500)))
         shaping_strength = max(0.0, 1.0 - (current_episode / anneal_end))
         
-        # === -1. 迟期稠密化惩罚（主信号） ===
-        # 计算系统内所有已延期（slack<0）的绝对分钟数之和，并按配置转换为惩罚；
-        # 惩罚均分到所有agent，避免单站点奖励波动过大。
-        dense_penalty_coeff = REWARD_CONFIG.get("dense_tardiness_penalty_per_min", 0.0)
-        if dense_penalty_coeff != 0.0 and self.active_parts:
-            total_overdue_minutes = 0.0
-            for p in self.active_parts:
-                slack = calculate_slack_time(p, self.env.now, self.queues, WORKSTATIONS)
-                if slack < 0:
-                    total_overdue_minutes += (-slack)
-            if total_overdue_minutes > 0:
-                per_agent_penalty = dense_penalty_coeff * total_overdue_minutes
+        # === -1. 迟期差分密集奖励（主信号，归一+均分）===
+        delta_coeff = REWARD_CONFIG.get("dense_tardiness_delta_coeff", 0.0)
+        if delta_coeff != 0.0:
+            current_overdue_sum = 0.0
+            if self.active_parts:
+                for p in self.active_parts:
+                    slack = calculate_slack_time(p, self.env.now, self.queues, WORKSTATIONS)
+                    if slack < 0:
+                        current_overdue_sum += (-slack)
+            # 增量：S(t-1) - S(t)，下降即正奖励
+            delta = (self._last_overdue_sum - current_overdue_sum)
+            # 归一：按time_slack_norm缩放，再按agent数均分
+            norm = ENHANCED_OBS_CONFIG.get("time_slack_norm", 480.0)
+            per_agent_reward = delta_coeff * (delta / (norm + 1e-6)) / max(1, len(WORKSTATIONS))
+            if per_agent_reward != 0.0:
                 for agent_id in rewards.keys():
-                    rewards[agent_id] += per_agent_penalty
+                    rewards[agent_id] += per_agent_reward
+            # 更新缓存
+            self._last_overdue_sum = current_overdue_sum
+
+        # === -0. 事件驱动：等待迟期惩罚（按工作站归因）===
+        waiting_coeff = REWARD_CONFIG.get("waiting_overdue_penalty_per_part", 0.0)
+        if waiting_coeff != 0.0:
+            for station_name in WORKSTATIONS.keys():
+                tardy_waiting_count = 0
+                for part in self.queues[station_name].items:
+                    slack = calculate_slack_time(part, self.env.now, self.queues, WORKSTATIONS)
+                    if slack < 0:
+                        tardy_waiting_count += 1
+                if tardy_waiting_count > 0:
+                    rewards[f"agent_{station_name}"] += waiting_coeff * tardy_waiting_count
+
+        # === -0.1 事件驱动：启动迟期奖励（按动作归因）===
+        start_overdue_coeff = REWARD_CONFIG.get("start_overdue_reward_coeff", 0.0)
+        if start_overdue_coeff != 0.0:
+            norm = ENHANCED_OBS_CONFIG.get("time_slack_norm", 480.0)
+            for agent_id, context in action_context.items():
+                started_parts = context.get("started_parts", [])
+                for sp in started_parts:
+                    slack_at_decision = float(sp.get("slack", 0.0))
+                    if slack_at_decision < 0:
+                        rewards[agent_id] += start_overdue_coeff * ((-slack_at_decision) / (norm + 1e-6))
 
         # === 0. 无效动作与不必要闲置：行为底线 ===
         for agent_id, action in actions.items():

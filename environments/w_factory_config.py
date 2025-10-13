@@ -180,14 +180,14 @@ EMERGENCY_ORDERS = {
 #   [1] Agent自身特征 (8维): 身份one-hot(5) + 容量(1) + 繁忙率(1) + 故障状态(1)
 #   [2] 全局宏观特征 (7维): 时间、WIP、松弛度统计、瓶颈、延期率、队列长度
 #   [3] 当前队列摘要 (40维): 8种特征 × 5种统计量 (min/max/mean/std/median)
-#   [4] 候选工件详细 (150维): 15维特征 × 10个候选工件
-#   总维度 = 8 + 7 + 40 + 150 = 205维
+#   [4] 候选工件详细 (120维): 12维特征 × 10个候选工件
+#   总维度 = 8 + 7 + 40 + 120 = 175维
 #
 # 💡 如何增加候选工件数量：
 #   1. 修改 num_candidate_workpieces (如改为15)
 #   2. 调整采样比例: num_urgent_candidates + num_short_candidates + num_random_candidates = num_candidate_workpieces
 #   3. 同步修改动作空间: ACTION_CONFIG_ENHANCED["action_space_size"] = 6 + num_candidate_workpieces
-#   4. 新的观测维度 = 8 + 7 + 40 + (15 × num_candidate_workpieces)
+#   4. 新的观测维度 = 8 + 7 + 40 + (12 × num_candidate_workpieces)
 ENHANCED_OBS_CONFIG = {
     # 候选工件配置（多样性采样策略）
     "num_candidate_workpieces": 10,         # 候选工件数量（用于详细特征）
@@ -240,7 +240,7 @@ ACTION_CONFIG_ENHANCED = {
 
 # 奖励退火配置（用于逐步关闭启发式护栏）
 REWARD_ANNEALING_CONFIG = {
-    "ANNEALING_END_EPISODE": 100,
+    "ANNEALING_END_EPISODE": 300,
 }
 
 # 启发式护栏配置（只在错误极端时介入，且随训练退火）
@@ -253,7 +253,7 @@ HEURISTIC_GUARDRAILS_CONFIG = {
 
 REWARD_CONFIG = {
     # === 事件驱动奖励 (Event-driven Rewards) ===
-    "on_time_completion_reward": 10.0,         # 🔧 100→10：降低10倍，避免主导学习信号
+    "on_time_completion_reward": 0.0,          # 🔧 设为0：避免“仅完成”干扰
     "tardiness_penalty_scaler": -50.0,         # 🔧 -5→-50：提升10倍，让延期成为关键学习信号
 
 
@@ -270,10 +270,17 @@ REWARD_CONFIG = {
     "load_balancing_bonus": 10.0,              # 🔧 3→10：提升3倍
     "early_completion_bonus_multiplier": 1.5,  # 🔧 1.2→1.5：提高激励
 
-    # === 🔧 新增：迟期稠密化惩罚（主信号）===
-    # 每步对系统内所有“负松弛(已延期)”分钟数求和，并按该系数线性惩罚；
-    # 惩罚均分到各agent，确保多智能体信用分配稳定。
-    "dense_tardiness_penalty_per_min": -0.05,
+    # === 🔧 新增：迟期差分主信号（密集奖励，可关闭）===
+    # 每步奖励 r = coeff * (S(t-1) - S(t)) / time_slack_norm / num_agents
+    # 其中 S(t) 为所有零件负松弛(分钟)之和，正向奖励“迟期减少”。
+    # 现默认关闭，改用事件驱动奖励。
+    "dense_tardiness_delta_coeff": 0.0,
+
+    # === 🔧 新增：事件驱动主信号 ===
+    # 1) 等待迟期惩罚：每个仍在“等待队列”中的已迟期零件，每分钟给定罚分（按工作站计入）
+    # 2) 启动迟期奖励：当决策启动加工了一个已迟期的零件，按其当前迟期程度给予一次性小额奖励
+    "waiting_overdue_penalty_per_part": -0.2,
+    "start_overdue_reward_coeff": 6.0,
 }
 
 
@@ -287,7 +294,7 @@ PPO_NETWORK_CONFIG = {
     "hidden_sizes": [1024, 512, 256],    # 🔧 关键：增加网络深度和宽度
     "dropout_rate": 0.1,
     "clip_ratio": 0.25,
-    "entropy_coeff": 0.10,               # 🔧 关闭排序视图后提高到0.10，增强探索（原0.05）
+    "entropy_coeff": 0.15,               # 🔧 初期探索更强
     "ppo_epochs": 12,                    # 🔧 提高到12，更充分学习新策略（原10）
     "num_minibatches": 4,                # 专家修复：新增Mini-batch数量
     "grad_clip_norm": 1.0,               # 🔧 新增：梯度裁剪的范数
@@ -297,7 +304,7 @@ PPO_NETWORK_CONFIG = {
 # 🔧 新增：自适应熵调整配置
 ADAPTIVE_ENTROPY_CONFIG = {
     "enabled": True,             # 是否启用
-    "start_episode": 100,        # 从第几回合开始启用
+    "start_episode": 20,         # 提前启动自适应熵
     "patience": 50,              # 连续多少回合无改进则提升熵
     "boost_factor": 0.1,         # 每次提升熵的比例
     "high_completion_decay": 0.999, # 🔧 新增：当完成率高时，用于熵的衰减因子
