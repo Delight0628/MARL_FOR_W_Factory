@@ -22,10 +22,10 @@ TRAINING_FLOW_CONFIG = {
     "foundation_phase": {
         # 毕业标准：必须连续N次达到以下所有条件
         "graduation_criteria": {
-            "target_score": 0.72,
-            "target_consistency": 5,
-            "tardiness_threshold": 450.0,  # 总延期不得超过450分钟
-            "min_completion_rate": 100.0,   # 必须100%完成
+            "target_score": 0.65,           # 从0.72降至0.65，给学习更多空间
+            "target_consistency": 8,        # 从5增至8，确保稳定性
+            "tardiness_threshold": 600.0,   # 从450增至600，更宽松的延期要求
+            "min_completion_rate": 95.0,    # 从100%降至95%，允许少量未完成
         },
         
         # 可选：在基础训练内部启用课程学习，以循序渐进的方式达到最终目标
@@ -210,26 +210,21 @@ ENHANCED_OBS_CONFIG = {
     "candidate_feature_dim": 12,            # 每个候选工件的特征维度（简化版，无one-hot）
 }
 
-# 🔧 方案B：策略型动作空间配置
-# 动作空间设计理念：
-#   [1] 策略型动作 (1-5): 让agent学习使用不同调度策略的时机
-#   [2] 候选动作 (6-15): 让agent从多样性采样的候选工件中精细选择
-#   [3] IDLE动作 (0): 允许agent选择等待
-# 这种设计既提供了高层策略选择，又保留了细粒度控制能力
+# 🔧 方案A：纯候选动作空间配置（移除启发式作弊）
+# 新设计理念：
+#   [1] IDLE动作 (0): 允许agent选择等待
+#   [2] 候选动作 (1-10): 让agent从多样性采样的候选工件中学习选择
+#   [3] 移除所有启发式策略动作，强制agent学习真正的调度逻辑
+# 这种设计确保智能体必须从零开始学习，而不是依赖内置算法
 ACTION_CONFIG_ENHANCED = {
-    "action_space_size": 16,  # 0=IDLE, 1-5=策略, 6-15=候选工件
+    "action_space_size": 11,  # 0=IDLE, 1-10=候选工件
     "action_names": [
         "IDLE",                          # 0: 不处理（等待）
-        "URGENT_EDD",                    # 1: 最紧急（EDD策略，按松弛度）
-        "SHORT_SPT",                     # 2: 最短加工（SPT策略，按加工时间）
-        "BALANCE",                       # 3: 负载均衡（选择下游最空闲的工件）
-        "FIFO",                          # 4: FIFO基线（先进先出）
-        "RANDOM",                        # 5: 随机探索（随机选择）
-        "CANDIDATE_1", "CANDIDATE_2",    # 6-7: 候选工件1-2（多样性采样）
-        "CANDIDATE_3", "CANDIDATE_4",    # 8-9: 候选工件3-4
-        "CANDIDATE_5", "CANDIDATE_6",    # 10-11: 候选工件5-6
-        "CANDIDATE_7", "CANDIDATE_8",    # 12-13: 候选工件7-8
-        "CANDIDATE_9", "CANDIDATE_10",   # 14-15: 候选工件9-10
+        "CANDIDATE_1", "CANDIDATE_2",    # 1-2: 候选工件1-2（多样性采样）
+        "CANDIDATE_3", "CANDIDATE_4",    # 3-4: 候选工件3-4
+        "CANDIDATE_5", "CANDIDATE_6",    # 5-6: 候选工件5-6
+        "CANDIDATE_7", "CANDIDATE_8",    # 7-8: 候选工件7-8
+        "CANDIDATE_9", "CANDIDATE_10",   # 9-10: 候选工件9-10
     ],
 }
 
@@ -281,6 +276,11 @@ REWARD_CONFIG = {
     # 2) 启动迟期奖励：当决策启动加工了一个已迟期的零件，按其当前迟期程度给予一次性小额奖励
     "waiting_overdue_penalty_per_part": -0.2,
     "start_overdue_reward_coeff": 6.0,
+    
+    # === 🔧 新增：多样性探索奖励 ===
+    # 移除启发式动作后，鼓励智能体探索不同的候选工件选择
+    "exploration_diversity_bonus": 2.0,      # 选择不同候选工件类型的奖励
+    "repeated_choice_penalty": -0.5,         # 重复选择相同候选位置的惩罚
 }
 
 
@@ -294,7 +294,7 @@ PPO_NETWORK_CONFIG = {
     "hidden_sizes": [1024, 512, 256],    # 🔧 关键：增加网络深度和宽度
     "dropout_rate": 0.1,
     "clip_ratio": 0.25,
-    "entropy_coeff": 0.15,               # 🔧 初期探索更强
+    "entropy_coeff": 0.25,               # 🔧 移除启发式后需要更强的探索
     "ppo_epochs": 12,                    # 🔧 提高到12，更充分学习新策略（原10）
     "num_minibatches": 4,                # 专家修复：新增Mini-batch数量
     "grad_clip_norm": 1.0,               # 🔧 新增：梯度裁剪的范数

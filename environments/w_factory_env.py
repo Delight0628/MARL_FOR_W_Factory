@@ -176,9 +176,9 @@ class WFactorySim:
         # 🔧 新增：迟期总量缓存与候选缓存（保证同一步一致性）
         self._last_overdue_sum: float = 0.0
         self._cached_candidates: Dict[str, List[Dict[str, Any]]] = {}
-        # 🔧 新增：候选动作动态范围（基于配置）
-        self._candidate_action_start: int = 6
-        self._candidate_action_end: int = 5 + int(ENHANCED_OBS_CONFIG.get("num_candidate_workpieces", 0))
+        # 🔧 修改：候选动作动态范围（移除启发式后）
+        self._candidate_action_start: int = 1  # 从动作1开始（动作0是IDLE）
+        self._candidate_action_end: int = int(ENHANCED_OBS_CONFIG.get("num_candidate_workpieces", 0))
         
         # 用于快速查找下游工作站的缓存
         self._downstream_map = self._create_downstream_map()
@@ -686,20 +686,16 @@ class WFactorySim:
     
     def _select_workpiece_by_action(self, station_name: str, action: int) -> Optional[Tuple[Part, int]]:
         """
-        方案B：根据动作选择工件（全局优化核心）
+        方案A：纯候选动作选择工件（移除启发式作弊）
         
-        关键创新：动作直接映射到全局工件选择策略
-        - 不再通过FIFO索引选择，而是通过策略或候选列表选择
-        - 彻底打破了SimPy队列的FIFO约束
+        关键改进：移除所有内置启发式算法，强制智能体学习真正的调度能力
+        - 智能体必须从多样性候选工件中学习选择
+        - 不再依赖EDD、SPT等经过验证的算法
+        - 通过候选工件的多样性采样，提供充分的学习材料
         
         动作映射：
         - 0: IDLE（不处理）
-        - 1: URGENT（选择全队列最紧急的工件）
-        - 2: SHORT（选择全队列最短的工件）
-        - 3: BALANCE（选择下游最空闲的工件）
-        - 4: FIFO（选择队首工件，作为baseline）
-        - 5: RANDOM（随机选择）
-        - 6-15: 候选工件1-10（从多样性采样列表中选择）
+        - 1-10: 候选工件1-10（从多样性采样列表中选择）
         
         返回：(选中的工件, 在队列中的索引) 或 None
         """
@@ -708,52 +704,8 @@ class WFactorySim:
         if not queue or action == 0:
             return None
         
-        # 策略型动作
-        if action == 1:  # URGENT (EDD)
-            min_slack = float('inf')
-            selected_idx = 0
-            for idx, part in enumerate(queue):
-                slack = calculate_slack_time(part, self.env.now, self.queues, WORKSTATIONS)
-                if slack < min_slack:
-                    min_slack = slack
-                    selected_idx = idx
-            return (queue[selected_idx], selected_idx)
-        
-        elif action == 2:  # SHORT (SPT)
-            min_time = float('inf')
-            selected_idx = 0
-            for idx, part in enumerate(queue):
-                proc_time = part.get_processing_time()
-                if proc_time < min_time:
-                    min_time = proc_time
-                    selected_idx = idx
-            return (queue[selected_idx], selected_idx)
-        
-        elif action == 3:  # BALANCE (负载均衡)
-            # 选择下游负载最轻的工件
-            min_downstream_load = float('inf')
-            selected_idx = 0
-            for idx, part in enumerate(queue):
-                route = get_route_for_product(part.product_type)
-                if part.current_step < len(route) - 1:
-                    downstream_station = route[part.current_step + 1]["station"]
-                    downstream_load = len(self.queues[downstream_station].items)
-                else:
-                    downstream_load = 0
-                if downstream_load < min_downstream_load:
-                    min_downstream_load = downstream_load
-                    selected_idx = idx
-            return (queue[selected_idx], selected_idx)
-        
-        elif action == 4:  # FIFO
-            return (queue[0], 0)
-        
-        elif action == 5:  # RANDOM
-            selected_idx = random.randint(0, len(queue) - 1)
-            return (queue[selected_idx], selected_idx)
-        
-        # 候选工件动作 (动态范围)
-        elif self._candidate_action_start <= action <= self._candidate_action_end:
+        # 候选工件动作 (1-10)
+        if self._candidate_action_start <= action <= self._candidate_action_end:
             candidates = self._get_candidate_workpieces(station_name)
             candidate_idx = action - self._candidate_action_start
             if candidate_idx < len(candidates):
@@ -930,6 +882,9 @@ class WFactorySim:
         prev_completed = len(self.completed_parts)
         prev_total_steps = sum(part.current_step for part in self.active_parts)
         
+        # 🔧 核心修复：增加本地启动计数器，解决并发控制问题
+        local_start_count: Dict[str, int] = {}  # 记录本步每个工作站已启动的零件数
+        
         # 执行智能体动作
         actions_executed = 0
         decision_time = self.env.now
@@ -950,30 +905,52 @@ class WFactorySim:
             }
             action_context[agent_id] = context
 
-            # 方案B：使用新的全局工件选择机制
+            # 方案A：使用纯候选动作机制（移除启发式）
             if action > 0:
-                result = self._select_workpiece_by_action(station_name, action)
-                if result is not None:
-                    selected_part, part_index = result
-                    context["selected_part"] = selected_part
-                    context["selected_part_slack"] = calculate_slack_time(selected_part, decision_time, self.queues, WORKSTATIONS)
-                    context["orig_index_before"] = part_index
-                    self._process_part_at_station(station_name, part_index=part_index)
-                    context["processed"] = True
-                    # 记录启动的零件
-                    context["started_parts"].append({
-                        "part_id": selected_part.part_id,
-                        "slack": context["selected_part_slack"]
-                    })
-                    # 🔧 修复：仅在当前决策步“乐观预估可用名额”范围内补充启动，避免预加载清空队列
-                    available_capacity = max(0, WORKSTATIONS[station_name]['count'] - self.equipment_status[station_name]['busy_count'])
-                    # 已经启动了一个
-                    remaining_slots = max(0, available_capacity - 1)
-                    for _ in range(remaining_slots):
-                        if len(self.queues[station_name].items) == 0:
-                            break
-                        # 优化：候选型动作并联补位，跳过已启动候选，顺序选择下一可用候选
-                        if self._candidate_action_start <= action <= self._candidate_action_end:
+                # 🔧 核心修复：检查真实可用容量（考虑本步已启动的零件）
+                already_started_this_step = local_start_count.get(station_name, 0)
+                real_available_capacity = max(0, 
+                    WORKSTATIONS[station_name]['count'] - 
+                    self.equipment_status[station_name]['busy_count'] - 
+                    already_started_this_step
+                )
+                
+                if real_available_capacity > 0:
+                    result = self._select_workpiece_by_action(station_name, action)
+                    if result is not None:
+                        selected_part, part_index = result
+                        context["selected_part"] = selected_part
+                        context["selected_part_slack"] = calculate_slack_time(selected_part, decision_time, self.queues, WORKSTATIONS)
+                        context["orig_index_before"] = part_index
+                        self._process_part_at_station(station_name, part_index=part_index)
+                        context["processed"] = True
+                        
+                        # 🔧 更新本地启动计数器
+                        local_start_count[station_name] = already_started_this_step + 1
+                        
+                        # 记录启动的零件
+                        context["started_parts"].append({
+                            "part_id": selected_part.part_id,
+                            "slack": context["selected_part_slack"]
+                        })
+                        
+                        # 🔧 修复：使用真实剩余容量进行预加载，并更新本地计数器
+                        remaining_slots = real_available_capacity - 1  # 已经启动了一个
+                        for _ in range(remaining_slots):
+                            if len(self.queues[station_name].items) == 0:
+                                break
+                            
+                            # 🔧 检查当前剩余容量（考虑已启动的数量）
+                            current_started = local_start_count.get(station_name, 0)
+                            current_real_capacity = max(0, 
+                                WORKSTATIONS[station_name]['count'] - 
+                                self.equipment_status[station_name]['busy_count'] - 
+                                current_started
+                            )
+                            if current_real_capacity <= 0:
+                                break
+                            
+                            # 候选型动作：从候选列表中选择下一个可用的
                             started_ids = set(int(sp.get("part_id")) for sp in context.get("started_parts", []))
                             candidates = self._get_candidate_workpieces(station_name)
                             # 从本次动作对应的候选槽位开始往后找
@@ -997,18 +974,10 @@ class WFactorySim:
                             extra_part, extra_index = chosen_pair
                             extra_slack = calculate_slack_time(extra_part, decision_time, self.queues, WORKSTATIONS)
                             self._process_part_at_station(station_name, part_index=extra_index)
-                            context["started_parts"].append({
-                                "part_id": extra_part.part_id,
-                                "slack": extra_slack
-                            })
-                        else:
-                            # 策略型动作：实时再选
-                            extra = self._select_workpiece_by_action(station_name, action)
-                            if extra is None:
-                                break
-                            extra_part, extra_index = extra
-                            extra_slack = calculate_slack_time(extra_part, decision_time, self.queues, WORKSTATIONS)
-                            self._process_part_at_station(station_name, part_index=extra_index)
+                            
+                            # 🔧 更新本地启动计数器
+                            local_start_count[station_name] = current_started + 1
+                            
                             context["started_parts"].append({
                                 "part_id": extra_part.part_id,
                                 "slack": extra_slack
@@ -1176,6 +1145,41 @@ class WFactorySim:
             else:
                 if queue_len_before > 0:
                     rewards[agent_id] += REWARD_CONFIG.get("unnecessary_idle_penalty", 0.0)
+        
+        # === 🔧 新增：多样性探索奖励（移除启发式后） ===
+        diversity_bonus = REWARD_CONFIG.get("exploration_diversity_bonus", 0.0)
+        repeated_penalty = REWARD_CONFIG.get("repeated_choice_penalty", 0.0)
+        
+        if diversity_bonus != 0.0 or repeated_penalty != 0.0:
+            # 统计本步各agent选择的候选工件类型
+            action_types_chosen = {}
+            for agent_id, action in actions.items():
+                if action > 0 and action <= 10:  # 候选动作范围
+                    context = action_context.get(agent_id, {})
+                    if context.get("selected_part") is not None:
+                        # 获取选中工件的类型信息
+                        candidates = self._get_candidate_workpieces(agent_id.replace("agent_", ""))
+                        candidate_idx = action - 1  # 动作1对应候选0
+                        if candidate_idx < len(candidates):
+                            candidate_type = candidates[candidate_idx].get('category', 'unknown')
+                            action_types_chosen[agent_id] = candidate_type
+            
+            # 奖励选择不同类型候选工件的agent
+            unique_types = set(action_types_chosen.values())
+            if len(unique_types) > 1:  # 有多样性
+                for agent_id in action_types_chosen:
+                    rewards[agent_id] += diversity_bonus
+            
+            # 惩罚重复选择相同动作的行为（需要历史记录）
+            # 这里简化为惩罚本步内多个agent选择相同动作
+            action_counts = {}
+            for agent_id, action in actions.items():
+                if action > 0:
+                    action_counts[action] = action_counts.get(action, 0) + 1
+            
+            for agent_id, action in actions.items():
+                if action > 0 and action_counts[action] > 1:
+                    rewards[agent_id] += repeated_penalty
         
         # === 🔧 新增0.5：瓶颈感知奖励（退火）===
         bottleneck_bonus = REWARD_CONFIG.get("bottleneck_awareness_bonus", 0.0)
@@ -1399,25 +1403,22 @@ class WFactorySim:
         
         # 新增：计算延期统计
         total_tardiness = 0
-        late_parts_count = 0
-        
-        # 收集所有零件（已完成 + 未完成）
-        all_parts = []
+        late_orders_count = 0
+
         for order in self.orders:
-            all_parts.extend(order.parts)
-        
-        # 遍历每个零件，计算其延期
-        for part in all_parts:
-            if part.completion_time is not None:
-                # 已完成的零件：延期 = max(0, 完成时间 - 交期)
-                tardiness = max(0, part.completion_time - part.due_date)
+            if order.order_id in self.order_completion_times:
+                # 订单已完成
+                completion_time = self.order_completion_times[order.order_id]
+                if completion_time > order.due_date:
+                    tardiness = completion_time - order.due_date
+                    total_tardiness += tardiness
+                    late_orders_count += 1
             else:
-                # 未完成的零件：延期 = max(0, 当前时间 - 交期)
-                tardiness = max(0, self.current_time - part.due_date)
-            
-            total_tardiness += tardiness
-            if tardiness > 0:
-                late_parts_count += 1
+                # 订单未完成，延期时间从交期算到仿真结束
+                tardiness = max(0, self.current_time - order.due_date)
+                total_tardiness += tardiness
+                if tardiness > 0:
+                    late_orders_count += 1
         
         total_required = sum(order.quantity for order in self.orders)
         
@@ -1466,11 +1467,11 @@ class WFactoryEnv(ParallelEnv):
         self.possible_agents = self.sim.agents
         # --- 动作空间一致性断言：基于候选数量动态校验 ---
         _num_candidates = int(ENHANCED_OBS_CONFIG.get("num_candidate_workpieces", 0))
-        _expected_action_space_size = 6 + _num_candidates
+        _expected_action_space_size = 1 + _num_candidates  # 0=IDLE, 1-N=CANDIDATE_1~N
         _configured_action_space_size = ACTION_CONFIG_ENHANCED.get("action_space_size", _expected_action_space_size)
         if _configured_action_space_size != _expected_action_space_size:
             raise ValueError(
-                f"动作空间大小配置不一致: 配置为{_configured_action_space_size}, 但根据候选数应为{_expected_action_space_size} (6 + num_candidate_workpieces)"
+                f"动作空间大小配置不一致: 配置为{_configured_action_space_size}, 但根据候选数应为{_expected_action_space_size} (1 + num_candidate_workpieces)"
             )
         
         # 🔧 MAPPO修复：重新设计全局状态空间

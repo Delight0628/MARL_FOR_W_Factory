@@ -209,26 +209,36 @@ def evaluate_heuristic(heuristic_name: str, config: dict = STATIC_EVAL_CONFIG, g
 
     def heuristic_policy(obs, env):
         """
-        🔧 动态适配方案B：使用策略型动作而非索引型动作
-        方案B动作空间：
-          0: IDLE
-          1: URGENT_EDD (最紧急)
-          2: SHORT_SPT (最短加工)
-          3: BALANCE (负载均衡)
-          4: FIFO (先进先出)
-          5: RANDOM (随机)
-          6-15: CANDIDATE_1 ~ CANDIDATE_10
+        🌟 智能适配版：自动适配任何动作空间结构
+        
+        设计理念：
+        1. 优先检测动作空间中是否存在启发式动作（向后兼容旧版本）
+        2. 如果不存在，独立计算启发式逻辑并映射到候选动作（适配新版本）
+        3. 完全解耦启发式算法与动作空间设计
+        
+        自动适配逻辑：
+        - 检查ACTION_CONFIG_ENHANCED中是否有对应的启发式动作名称
+        - 如果有：直接使用该动作ID
+        - 如果没有：独立实现启发式逻辑 + 候选映射
         """
+        from environments.w_factory_config import calculate_slack_time
+        
         sim = env.sim
         actions = {}
         
-        # 🔧 从配置中读取策略型动作的映射
+        # 🔧 自动检测动作空间结构
         action_names = ACTION_CONFIG_ENHANCED.get("action_names", [])
+        action_map = {name: idx for idx, name in enumerate(action_names)}
         
-        # 🔧 动态查找策略动作的ID
-        action_map = {}
-        for idx, name in enumerate(action_names):
-            action_map[name] = idx
+        # 定义启发式名称到动作名称的映射
+        heuristic_to_action_map = {
+            'FIFO': 'FIFO',
+            'EDD': 'URGENT_EDD',
+            'SPT': 'SHORT_SPT',
+        }
+        
+        target_action_name = heuristic_to_action_map.get(heuristic_name)
+        use_direct_action = (target_action_name in action_map)  # 动作空间中是否存在该启发式
         
         for agent_id in env.agents:
             station_name = agent_id.replace("agent_", "")
@@ -238,15 +248,69 @@ def evaluate_heuristic(heuristic_name: str, config: dict = STATIC_EVAL_CONFIG, g
                 actions[agent_id] = 0  # IDLE
                 continue
 
-            # 🔧 方案B：直接使用策略型动作
+            # 🔧 分支1：动作空间中存在启发式动作（旧版本）
+            if use_direct_action:
+                actions[agent_id] = action_map[target_action_name]
+                continue
+            
+            # 🔧 分支2：动作空间中不存在启发式动作（新版本 - 独立实现）
+            selected_part = None
+            
             if heuristic_name == 'FIFO':
-                actions[agent_id] = action_map.get("FIFO", 4)  # 默认为4
+                # FIFO：选择队首工件
+                selected_part = queue[0]
+                
             elif heuristic_name == 'EDD':
-                actions[agent_id] = action_map.get("URGENT_EDD", 1)  # 默认为1
+                # EDD：选择松弛时间最小的工件
+                min_slack = float('inf')
+                for part in queue:
+                    slack = calculate_slack_time(part, env.env.now, sim.queues, WORKSTATIONS)
+                    if slack < min_slack:
+                        min_slack = slack
+                        selected_part = part
+                        
             elif heuristic_name == 'SPT':
-                actions[agent_id] = action_map.get("SHORT_SPT", 2)  # 默认为2
+                # SPT：选择加工时间最短的工件
+                min_time = float('inf')
+                for part in queue:
+                    proc_time = part.get_processing_time(station_name)
+                    if proc_time < min_time:
+                        min_time = proc_time
+                        selected_part = part
             else:
                 raise ValueError(f"未知的启发式规则: {heuristic_name}")
+            
+            # 将选中的工件映射到候选动作
+            candidates = env._get_candidate_workpieces(station_name)
+            
+            action = 0  # 默认IDLE
+            if selected_part is not None:
+                # 在候选列表中查找匹配的工件
+                for cand_info in candidates:
+                    cand_part = cand_info.get("part") if isinstance(cand_info, dict) else cand_info[0]
+                    cand_idx = cand_info.get("index") if isinstance(cand_info, dict) else cand_info[1]
+                    
+                    if cand_part.part_id == selected_part.part_id:
+                        # 🔧 动态计算候选动作起始位置
+                        # 候选动作通常从1开始（0是IDLE），但也可能从其他位置开始
+                        # 检测第一个"CANDIDATE_"动作的位置
+                        candidate_action_start = next(
+                            (i for i, name in enumerate(action_names) if "CANDIDATE_" in name),
+                            1  # 默认从1开始
+                        )
+                        # 候选列表的索引映射到动作ID
+                        action = candidate_action_start + candidates.index(cand_info)
+                        break
+                
+                # 如果在候选列表中找不到，降级策略：选择第一个候选
+                if action == 0 and len(candidates) > 0:
+                    candidate_action_start = next(
+                        (i for i, name in enumerate(action_names) if "CANDIDATE_" in name),
+                        1
+                    )
+                    action = candidate_action_start
+                    
+            actions[agent_id] = action
             
         return actions
 
