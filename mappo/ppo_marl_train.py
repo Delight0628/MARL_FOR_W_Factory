@@ -1613,7 +1613,7 @@ class SimplePPOTrainer:
                 per_worker_avg_reward = (episode_reward / finished_workers) if finished_workers > 0 else episode_reward
                 line1 = (
                     f"🔂 训练回合 {episode + 1:3d}/{max_episodes} | 平均奖励: {episode_reward:.1f}"
-                    f" (完成全部: {completed_workers}/{finished_workers})"
+                    f" (均值/worker: {per_worker_avg_reward:.1f}, 完成全部: {completed_workers}/{finished_workers})"
                     f" | Actor损失: {losses['actor_loss']:.4f}| ⏱️本轮用時: {iteration_duration:.1f}s"
                     f" (CPU采集: {collect_duration:.1f}s, GPU更新: {update_duration:.1f}s)"
                 )
@@ -1918,7 +1918,6 @@ def main():
         print(f"    - 课程学习: {'启用' if cl_config.get('enabled', False) else '禁用'}")
         print(f"    - 设备故障: {'启用' if EQUIPMENT_FAILURE.get('enabled', False) else '禁用'}")
         print(f"    - 紧急插单: {'启用' if EMERGENCY_ORDERS.get('enabled', False) else '禁用'}")
-        print(f"    - 启发式护栏: {'启用' if HEURISTIC_GUARDRAILS_CONFIG.get('enabled', False) else '禁用'}")
         print("-" * 40)
         
         trainer = SimplePPOTrainer(

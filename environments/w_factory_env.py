@@ -984,7 +984,6 @@ class WFactorySim:
         
         # 读取退火与护栏配置
         anneal_cfg = globals().get('REWARD_ANNEALING_CONFIG', {"ANNEALING_END_EPISODE": 500})
-        guard_cfg = globals().get('HEURISTIC_GUARDRAILS_CONFIG', {"enabled": False})
         
         current_episode = int(self.config.get('current_episode', 0))
         anneal_end = max(1, int(anneal_cfg.get('ANNEALING_END_EPISODE', 500)))
@@ -1095,47 +1094,7 @@ class WFactorySim:
                         agent_id = f"agent_{station_name}"
                         if agent_id in rewards:
                             rewards[agent_id] += part_reward * equal_weight
-        
-        # === 2. 启发式护栏（仅在极端错误时介入，且随训练退火） ===
-        if guard_cfg.get('enabled', False) and shaping_strength > 0.0:
-            # 核心逻辑：仅在非课程学习模式，或课程学习的“完整挑战”阶段启用护栏
-            activate_guardrails = True
-            
-            # 检查是否在课程学习模式下
-            is_in_curriculum = 'stage_name' in self.config
-            if is_in_curriculum:
-                # 如果在课程学习中，只有“完整挑战”阶段才激活
-                if self.config.get('stage_name') != "完整挑战":
-                    activate_guardrails = False
-            
-            if activate_guardrails:
-                critical_thr = float(guard_cfg.get('critical_slack_threshold', -60.0))
-                safe_thr = float(guard_cfg.get('safe_slack_threshold', 120.0))
-                penalty_base = float(guard_cfg.get('critical_choice_penalty', 0.5))
-                
-                for agent_id, action in actions.items():
-                    if action <= 0:
-                        continue
-                    context = action_context.get(agent_id, {})
-                    selected_part = context.get("selected_part")
-                    if selected_part is None:
-                        continue
-                    decision_time = context.get("decision_time", self.current_time)
-                    queue_snapshot = context.get("queue_snapshot", [])
-                    chosen_slack = context.get("selected_part_slack")
-                    if chosen_slack is None:
-                        chosen_slack = calculate_slack_time(selected_part, decision_time, self.queues, WORKSTATIONS)
-                    
-                    # 是否存在"火烧眉毛"的零件
-                    exists_critical = any(calculate_slack_time(p, decision_time, self.queues, WORKSTATIONS) < critical_thr for p in queue_snapshot)
-                    # 选择是否“很安全”的零件
-                    chosen_is_safe = chosen_slack > safe_thr
-                    
-                    if exists_critical and chosen_is_safe:
-                        rewards[agent_id] -= penalty_base * shaping_strength
-        
-        # === 3. 本地化拥堵惩罚 (已移除，保持奖励配置一致性) ===
-        
+
         # === 4. 终局大奖（全部完成） ===
         if self.is_done():
             total_required = sum(order.quantity for order in self.orders)
@@ -1172,7 +1131,7 @@ class WFactorySim:
         
         # 条件3: 时间耗尽 (备用条件，增加时间限制)
         # 给智能体更多时间完成任务，避免总是超时截断
-        max_time = SIMULATION_TIME * 2.0  # 从1.5增加到2.0，给更充足的时间
+        max_time = SIMULATION_TIME * SIMULATION_TIMEOUT_MULTIPLIER  # 从1.5增加到2.0，给更充足的时间
         if self.current_time >= max_time:
             if not hasattr(self, '_timeout_logged'):
                 # 训练模式下完全静默
