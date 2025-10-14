@@ -10,9 +10,9 @@ from typing import Dict, List, Tuple, Any, Optional
 # =============================================================================
 # 1. 基础仿真参数 (Basic Simulation Parameters)
 # =============================================================================
-SIMULATION_TIME = 600  # 10小时
+SIMULATION_TIME = 600  
 TIME_UNIT = "minutes"  # 时间单位：分钟
-
+SIMULATION_TIMEOUT_MULTIPLIER = 2.0
 # =============================================================================
 # 8. 核心训练流程配置 (Core Training Flow Configuration)
 # =============================================================================
@@ -175,21 +175,16 @@ EMERGENCY_ORDERS = {
 # 5. 强化学习环境参数 (RL Environment Parameters)
 # =============================================================================
 
-# 🔧 方案B：全局优化观测空间配置
-# 观测空间结构：
+# 🔧 彻底移除启发式的观测空间配置
+# 观测空间结构（最终纯净版）：
 #   [1] Agent自身特征 (8维): 身份one-hot(5) + 容量(1) + 繁忙率(1) + 故障状态(1)
-#   [2] 全局宏观特征 (7维): 时间、WIP、松弛度统计、瓶颈、延期率、队列长度
-#   [3] 当前队列摘要 (40维): 8种特征 × 5种统计量 (min/max/mean/std/median)
-#   [4] 候选工件详细 (120维): 12维特征 × 10个候选工件
-#   总维度 = 8 + 7 + 40 + 120 = 175维
-#
-# 💡 如何增加候选工件数量：
-#   1. 修改 num_candidate_workpieces (如改为15)
-#   2. 调整采样比例: num_urgent_candidates + num_short_candidates + num_random_candidates = num_candidate_workpieces
-#   3. 同步修改动作空间: ACTION_CONFIG_ENHANCED["action_space_size"] = 6 + num_candidate_workpieces
-#   4. 新的观测维度 = 8 + 7 + 40 + (12 × num_candidate_workpieces)
+#   [2] 全局宏观特征 (4维): 时间进度、WIP率、瓶颈拥堵度、队列长度 [已移除启发式]
+#   [3] 当前队列摘要 (30维): 6种特征 × 5种统计量 [已移除松弛度和延期统计]
+#   [4] 候选工件详细 (80维): 8维特征 × 10个候选工件 [已移除瓶颈感知]
+#   总维度 = 8 + 4 + 30 + 80 = 122维
+
 ENHANCED_OBS_CONFIG = {
-    # 🔧 彻底移除启发式：候选工件采样策略（纯随机/FIFO）
+    # 🔧 彻底移除启发式：候选工件采样策略（纯随机）
     "num_candidate_workpieces": 10,         # 候选工件数量（用于详细特征）
     "num_urgent_candidates": 0,             # ❌ 禁用EDD采样（移除隐性作弊）
     "num_short_candidates": 0,              # ❌ 禁用SPT采样（移除隐性作弊）
@@ -203,13 +198,13 @@ ENHANCED_OBS_CONFIG = {
     "w_station_capacity_norm": 10.0,        # 用于归一化队列长度的基准值
     
     # 队列摘要统计特征数量
-    "queue_summary_features": 8,            # 每种统计量的特征数（松弛度、加工时间等）
+    "queue_summary_features": 6,            # 🔧 更新：6种特征（移除松弛度和延期）
     "queue_summary_stats": 5,               # 统计类型数量（min, max, mean, std, median）
     
-    # 🔧 方案A：移除启发式特征后的候选工件特征维度
-    # 移除: 松弛度、是否延期、全局紧急度对比 (3维)
-    # 保留: exists、剩余工序、剩余时间、当前工序时间、下游拥堵、优先级、是否最终工序、产品类型、瓶颈感知 (9维)
-    "candidate_feature_dim": 9,             # 每个候选工件的特征数量（从12降至9，移除启发式）
+    # 🔧 彻底移除启发式后的候选工件特征维度
+    # 已移除: 松弛度、是否延期、全局紧急度对比、瓶颈感知 (4维启发式)
+    # 保留: exists、剩余工序、剩余时间、当前工序时间、下游拥堵、优先级、是否最终工序、产品类型 (8维中性特征)
+    "candidate_feature_dim": 8,             # 🔧 更新：从9降至8（移除瓶颈感知）
 }
 
 # 🔧 方案A：纯候选动作空间配置（移除启发式作弊）
@@ -260,12 +255,6 @@ REWARD_CONFIG = {
     # === 终局奖励 (Episode End Bonus) ===
     "final_all_parts_completion_bonus": 100.0, # 🔧 再降：避免“全完成”主导评分
     "invalid_action_penalty": -5.0,
-    
-    # === 🔧 超越EDD的奖励塑造（同步提升权重）===
-    "bottleneck_awareness_bonus": 15.0,        # 🔧 5→15：提升3倍，与新尺度匹配
-    "short_job_first_bonus": 12.0,             # 🔧 4→12：提升3倍
-    "load_balancing_bonus": 10.0,              # 🔧 3→10：提升3倍
-    "early_completion_bonus_multiplier": 1.5,  # 🔧 1.2→1.5：提高激励
 
     # === 🔧 新增：迟期差分主信号（密集奖励，可关闭）===
     # 每步奖励 r = coeff * (S(t-1) - S(t)) / time_slack_norm / num_agents

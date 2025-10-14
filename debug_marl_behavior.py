@@ -93,19 +93,19 @@ def decode_observation(obs_vector: np.ndarray, agent_id: str) -> str:
         decoded_lines.append(f"    - 当前队列长度(归一化): {queue_len_norm:.2f}")
         current_idx += global_feature_dim
         
-        # --- 3. 当前队列摘要 (40维 = 8特征 × 5统计量) ---
-        decoded_lines.append(f"  --- 3. 当前队列摘要统计 ({queue_summary_dim}维) ---")
-        decoded_lines.append("    (8种特征的min/max/mean/std/median统计，此处简化显示)")
+        # --- 3. 🔧 当前队列摘要 (30维 = 6特征 × 5统计量，已移除启发式) ---
+        decoded_lines.append(f"  --- 3. 当前队列摘要统计 ({queue_summary_dim}维，已移除松弛度和延期统计) ---")
+        decoded_lines.append("    (6种中性特征的min/max/mean/std/median统计，此处简化显示)")
         current_idx += queue_summary_dim
         
-        # --- 4. 🔧 方案A：移除启发式的候选工件详细特征 (9维 × num_candidates) ---
+        # --- 4. 🔧 彻底移除启发式的候选工件详细特征 (8维 × num_candidates) ---
         decoded_lines.append(f"  --- 4. 候选工件详细特征 ({candidate_feature_dim}维 × {num_candidates}工件，已移除启发式) ---")
         for i in range(num_candidates):
             part_vec = obs_vector[current_idx : current_idx + candidate_feature_dim]
             exists = part_vec[0]
 
             if exists > 0.5:
-                # 🔧 方案A：解析9维特征（移除松弛度、是否延期、全局紧急度对比）
+                # 🔧 彻底移除启发式：解析8维特征（已移除松弛度、是否延期、全局紧急度对比、瓶颈感知）
                 norm_rem_ops = part_vec[1]
                 norm_rem_time = part_vec[2]
                 norm_op_dur = part_vec[3]
@@ -113,7 +113,7 @@ def decode_observation(obs_vector: np.ndarray, agent_id: str) -> str:
                 priority = part_vec[5]
                 is_final = part_vec[6]
                 prod_type_enc = part_vec[7]
-                is_next_bottleneck = part_vec[8]
+
                 
                 # 解码产品类型
                 prod_idx = int(prod_type_enc * len(product_types))
@@ -127,7 +127,7 @@ def decode_observation(obs_vector: np.ndarray, agent_id: str) -> str:
                 decoded_lines.append(
                     f"    候选工件 {i+1} ({product_name}):\n"
                     f"      - 剩余工序: {rem_ops}, 剩余时间: {rem_time:.1f}min, 当前工序: {op_dur:.1f}min\n"
-                    f"      - 优先级: {priority*5.0:.1f}, 下游拥堵: {downstream_cong:.1%}, 最终工序: {'是' if is_final > 0.5 else '否'}, 下一站瓶颈: {'是' if is_next_bottleneck > 0.5 else '否'}"
+                    f"      - 优先级: {priority*5.0:.1f}, 下游拥堵: {downstream_cong:.1%}, 最终工序: {'是' if is_final > 0.5 else '否'}"
                 )
             else:
                 decoded_lines.append(f"    候选工件 {i+1}: (空)")

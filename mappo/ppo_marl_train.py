@@ -826,7 +826,8 @@ class SimplePPOTrainer:
             # 返回时将完成统计编码在None批次旁边（通过总奖励的info在外层打印）
             self._last_collect_finished_workers = finished_workers
             self._last_collect_completed_workers = completed_workers
-            return total_reward, None
+            avg_reward = total_reward / finished_workers if finished_workers > 0 else 0.0
+            return avg_reward, None
 
         # 将聚合后的数据列表转换为NumPy数组，形成最终的训练批次
         batch = {
@@ -840,7 +841,8 @@ class SimplePPOTrainer:
         # 记录本轮采集完成worker与达成worker数量，供外层日志打印
         self._last_collect_finished_workers = finished_workers
         self._last_collect_completed_workers = completed_workers
-        return total_reward, batch
+        avg_reward = total_reward / finished_workers if finished_workers > 0 else 0.0
+        return avg_reward, batch
     
     def update_policy(self, batch: Dict[str, np.ndarray], entropy_coeff: float) -> Dict[str, float]:
         """
@@ -1396,7 +1398,7 @@ class SimplePPOTrainer:
                     if self.train_writer:
                         with self.train_writer.as_default():
                             # 训练核心指标
-                            tf.summary.scalar('Training/Episode_Reward', episode_reward, step=episode)
+                            tf.summary.scalar('Training/Avg_Episode_Reward', episode_reward, step=episode)
                             tf.summary.scalar('Training/Actor_Loss', losses['actor_loss'], step=episode)
                             tf.summary.scalar('Training/Critic_Loss', losses['critic_loss'], step=episode)
                             tf.summary.scalar('Training/Entropy', losses['entropy'], step=episode)
@@ -1610,9 +1612,9 @@ class SimplePPOTrainer:
                 completed_workers = getattr(self, '_last_collect_completed_workers', 0)
                 per_worker_avg_reward = (episode_reward / finished_workers) if finished_workers > 0 else episode_reward
                 line1 = (
-                    f"🔂 训练回合 {episode + 1:3d}/{max_episodes} | 奖励: {episode_reward:.1f}"
-                    f" (均值/worker: {per_worker_avg_reward:.1f}, 完成全部: {completed_workers}/{finished_workers})"
-                    f" | Actor损失: {losses['actor_loss']:.4f}| ⏱️本轮用时: {iteration_duration:.1f}s"
+                    f"🔂 训练回合 {episode + 1:3d}/{max_episodes} | 平均奖励: {episode_reward:.1f}"
+                    f" (完成全部: {completed_workers}/{finished_workers})"
+                    f" | Actor损失: {losses['actor_loss']:.4f}| ⏱️本轮用時: {iteration_duration:.1f}s"
                     f" (CPU采集: {collect_duration:.1f}s, GPU更新: {update_duration:.1f}s)"
                 )
 

@@ -221,7 +221,7 @@ def evaluate_heuristic(heuristic_name: str, config: dict = STATIC_EVAL_CONFIG, g
         - 如果有：直接使用该动作ID
         - 如果没有：独立实现启发式逻辑 + 候选映射
         """
-        from environments.w_factory_config import calculate_slack_time
+        from environments.w_factory_env import calculate_slack_time
         
         sim = env.sim
         actions = {}
@@ -264,7 +264,7 @@ def evaluate_heuristic(heuristic_name: str, config: dict = STATIC_EVAL_CONFIG, g
                 # EDD：选择松弛时间最小的工件
                 min_slack = float('inf')
                 for part in queue:
-                    slack = calculate_slack_time(part, env.env.now, sim.queues, WORKSTATIONS)
+                    slack = calculate_slack_time(part, sim.env.now, sim.queues, WORKSTATIONS)
                     if slack < min_slack:
                         min_slack = slack
                         selected_part = part
@@ -273,7 +273,7 @@ def evaluate_heuristic(heuristic_name: str, config: dict = STATIC_EVAL_CONFIG, g
                 # SPT：选择加工时间最短的工件
                 min_time = float('inf')
                 for part in queue:
-                    proc_time = part.get_processing_time(station_name)
+                    proc_time = part.get_processing_time()
                     if proc_time < min_time:
                         min_time = proc_time
                         selected_part = part
