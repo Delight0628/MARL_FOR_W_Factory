@@ -460,24 +460,12 @@ class WFactorySim:
         
         agent_features = np.array(agent_features_list, dtype=np.float32)
 
-        # --- 2. 全局宏观特征 (Global Features) - 7维 ---
+        # --- 2. 🔧 方案A：移除启发式的全局宏观特征 (Global Features) - 4维 ---
+        # 移除：最小松弛度、平均松弛度、延期零件率（3维启发式信息）
+        # 保留：时间进度、WIP率、瓶颈拥堵度、当前队列长度（4维中性信息）
         time_normalized = self.env.now / SIMULATION_TIME
         total_parts_in_system = sum(order.quantity for order in self.orders)
         wip_normalized = len(self.active_parts) / total_parts_in_system if total_parts_in_system > 0 else 0.0
-        
-        # 计算全局最小/平均松弛度
-        if self.active_parts:
-            slack_times = [calculate_slack_time(p, self.env.now, self.queues, WORKSTATIONS) 
-                          for p in self.active_parts]
-            min_slack_normalized = min(slack_times) / ENHANCED_OBS_CONFIG["time_slack_norm"]
-            avg_slack_normalized = np.mean(slack_times) / ENHANCED_OBS_CONFIG["time_slack_norm"]
-            
-            # 延期零件数占比
-            late_parts_ratio = sum(1 for s in slack_times if s < 0) / len(slack_times)
-        else:
-            min_slack_normalized = 0.0
-            avg_slack_normalized = 0.0
-            late_parts_ratio = 0.0
         
         # 瓶颈工作站拥堵度
         max_queue_len = max(len(self.queues[s].items) for s in WORKSTATIONS.keys())
@@ -490,10 +478,7 @@ class WFactorySim:
         global_features = np.array([
             time_normalized,
             wip_normalized,
-            np.clip(min_slack_normalized, -1.0, 1.0),
-            np.clip(avg_slack_normalized, -1.0, 1.0),
             np.clip(bottleneck_congestion, 0, 1.0),
-            late_parts_ratio,
             np.clip(queue_len_normalized, 0, 1.0),
         ], dtype=np.float32)
 
@@ -720,30 +705,27 @@ class WFactorySim:
     
     def _get_workpiece_obs(self, part: Part, current_station: str = None) -> np.ndarray:
         """
-        方案B：获取单个工件的特征 (15维)
-        简化版本，不包含one-hot编码
+        🔧 方案A：移除启发式特征的工件观测 (9维)
+        移除：松弛度、是否延期、全局紧急度对比（3维启发式信息）
+        保留：中性的工艺和负载特征（9维）
         """
         # 特征1: 是否存在
         exists = 1.0
         
-        # 特征2: 时间松弛度
-        time_slack = calculate_slack_time(part, self.env.now, self.queues, WORKSTATIONS)
-        normalized_time_slack = time_slack / ENHANCED_OBS_CONFIG["time_slack_norm"]
-        
-        # 特征3: 剩余工序数
+        # 特征2: 剩余工序数
         route = get_route_for_product(part.product_type)
         remaining_ops = len(route) - part.current_step
         normalized_remaining_ops = remaining_ops / ENHANCED_OBS_CONFIG["max_bom_ops_norm"]
         
-        # 特征4: 剩余总加工时间
+        # 特征3: 剩余总加工时间
         total_remaining_time = _calculate_part_total_remaining_processing_time(part)
         normalized_total_remaining_time = total_remaining_time / ENHANCED_OBS_CONFIG["total_remaining_time_norm"]
 
-        # 特征5: 当前工序加工时间
+        # 特征4: 当前工序加工时间
         current_op_duration = part.get_processing_time()
         normalized_op_duration = current_op_duration / ENHANCED_OBS_CONFIG["max_op_duration_norm"]
         
-        # 特征6: 下游拥堵情况
+        # 特征5: 下游拥堵情况
         downstream_congestion = 0.0
         if part.current_step < len(route) - 1:
             downstream_station = route[part.current_step + 1]["station"]
@@ -751,22 +733,19 @@ class WFactorySim:
                 congestion = len(self.queues[downstream_station].items) / ENHANCED_OBS_CONFIG["w_station_capacity_norm"]
                 downstream_congestion = np.clip(congestion, 0, 1.0)
         
-        # 特征7: 订单优先级
+        # 特征6: 订单优先级
         priority = part.priority / 5.0
 
-        # 特征8: 是否为最终工序
+        # 特征7: 是否为最终工序
         is_final_op = 1.0 if remaining_ops <= 1 else 0.0
         
-        # 特征9-12: 产品类型编码（简化为产品ID）
+        # 特征8: 产品类型编码（简化为产品ID）
         product_types = list(PRODUCT_ROUTES.keys())
         product_id = 0.0
         if part.product_type in product_types:
             product_id = float(product_types.index(part.product_type)) / len(product_types)
         
-        # 特征13: 是否延期
-        is_late = 1.0 if time_slack < 0 else 0.0
-        
-        # 特征14: 瓶颈感知
+        # 特征9: 瓶颈感知
         is_next_bottleneck = 0.0
         if part.current_step < len(route) - 1:
             next_station = route[part.current_step + 1]["station"]
@@ -774,18 +753,9 @@ class WFactorySim:
             next_queue_len = len(self.queues[next_station].items)
             if next_queue_len >= max_queue_len * 0.8:
                 is_next_bottleneck = 1.0
-        
-        # 特征15: 全局紧急度对比
-        relative_urgency = 0.0
-        if self.active_parts:
-            min_slack = min(calculate_slack_time(p, self.env.now, self.queues, WORKSTATIONS) 
-                           for p in self.active_parts)
-            if abs(min_slack) > 1e-6:
-                relative_urgency = np.clip(time_slack / min_slack, -2.0, 2.0)
 
         feature_list = [
             exists,
-            np.clip(normalized_time_slack, -1.0, 1.0),
             np.clip(normalized_remaining_ops, 0, 1.0),
             np.clip(normalized_total_remaining_time, 0, 1.0),
             np.clip(normalized_op_duration, 0, 1.0),
@@ -793,9 +763,7 @@ class WFactorySim:
             priority,
             is_final_op,
             product_id,
-            is_late,
             is_next_bottleneck,
-            relative_urgency,
         ]
         
         return np.array(feature_list, dtype=np.float32)
@@ -1146,40 +1114,27 @@ class WFactorySim:
                 if queue_len_before > 0:
                     rewards[agent_id] += REWARD_CONFIG.get("unnecessary_idle_penalty", 0.0)
         
-        # === 🔧 新增：多样性探索奖励（移除启发式后） ===
+        # === 🔧 多样性探索奖励（已关闭） ===
+        # 纯随机采样后，category信息无意义，此奖励已在配置中关闭
         diversity_bonus = REWARD_CONFIG.get("exploration_diversity_bonus", 0.0)
         repeated_penalty = REWARD_CONFIG.get("repeated_choice_penalty", 0.0)
         
         if diversity_bonus != 0.0 or repeated_penalty != 0.0:
-            # 统计本步各agent选择的候选工件类型
-            action_types_chosen = {}
-            for agent_id, action in actions.items():
-                if action > 0 and action <= 10:  # 候选动作范围
-                    context = action_context.get(agent_id, {})
-                    if context.get("selected_part") is not None:
-                        # 获取选中工件的类型信息
-                        candidates = self._get_candidate_workpieces(agent_id.replace("agent_", ""))
-                        candidate_idx = action - 1  # 动作1对应候选0
-                        if candidate_idx < len(candidates):
-                            candidate_type = candidates[candidate_idx].get('category', 'unknown')
-                            action_types_chosen[agent_id] = candidate_type
-            
-            # 奖励选择不同类型候选工件的agent
-            unique_types = set(action_types_chosen.values())
-            if len(unique_types) > 1:  # 有多样性
-                for agent_id in action_types_chosen:
-                    rewards[agent_id] += diversity_bonus
-            
-            # 惩罚重复选择相同动作的行为（需要历史记录）
-            # 这里简化为惩罚本步内多个agent选择相同动作
+            # 如果重新启用，保留逻辑框架
             action_counts = {}
             for agent_id, action in actions.items():
                 if action > 0:
                     action_counts[action] = action_counts.get(action, 0) + 1
             
+            # 简化逻辑：仅基于动作重复性（不再依赖category）
             for agent_id, action in actions.items():
-                if action > 0 and action_counts[action] > 1:
-                    rewards[agent_id] += repeated_penalty
+                if action > 0:
+                    # 多样性奖励：只要有不同动作就奖励
+                    if len(action_counts) > 1:
+                        rewards[agent_id] += diversity_bonus / len(action_counts)
+                    # 重复惩罚：同一动作被多个agent选择
+                    if action_counts[action] > 1:
+                        rewards[agent_id] += repeated_penalty
         
         # === 🔧 新增0.5：瓶颈感知奖励（退火）===
         bottleneck_bonus = REWARD_CONFIG.get("bottleneck_awareness_bonus", 0.0)
@@ -1401,7 +1356,7 @@ class WFactorySim:
         else:
             mean_utilization = 0.0
         
-        # 新增：计算延期统计
+        # 订单级统计延期
         total_tardiness = 0
         late_orders_count = 0
 

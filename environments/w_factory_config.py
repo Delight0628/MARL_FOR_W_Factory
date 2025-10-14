@@ -189,11 +189,11 @@ EMERGENCY_ORDERS = {
 #   3. 同步修改动作空间: ACTION_CONFIG_ENHANCED["action_space_size"] = 6 + num_candidate_workpieces
 #   4. 新的观测维度 = 8 + 7 + 40 + (12 × num_candidate_workpieces)
 ENHANCED_OBS_CONFIG = {
-    # 候选工件配置（多样性采样策略）
+    # 🔧 彻底移除启发式：候选工件采样策略（纯随机/FIFO）
     "num_candidate_workpieces": 10,         # 候选工件数量（用于详细特征）
-    "num_urgent_candidates": 3,             # 最紧急的工件数（按松弛度排序）
-    "num_short_candidates": 2,              # 最短加工时间的工件数（按SPT排序）
-    "num_random_candidates": 5,             # 随机采样的工件数（保证多样性）
+    "num_urgent_candidates": 0,             # ❌ 禁用EDD采样（移除隐性作弊）
+    "num_short_candidates": 0,              # ❌ 禁用SPT采样（移除隐性作弊）
+    "num_random_candidates": 10,            # ✅ 全部改为随机采样（真实学习）
     
     # 归一化参数
     "max_op_duration_norm": 60.0,           # 用于归一化操作时长的最大值
@@ -206,8 +206,10 @@ ENHANCED_OBS_CONFIG = {
     "queue_summary_features": 8,            # 每种统计量的特征数（松弛度、加工时间等）
     "queue_summary_stats": 5,               # 统计类型数量（min, max, mean, std, median）
     
-    # 候选工件特征维度
-    "candidate_feature_dim": 12,            # 每个候选工件的特征维度（简化版，无one-hot）
+    # 🔧 方案A：移除启发式特征后的候选工件特征维度
+    # 移除: 松弛度、是否延期、全局紧急度对比 (3维)
+    # 保留: exists、剩余工序、剩余时间、当前工序时间、下游拥堵、优先级、是否最终工序、产品类型、瓶颈感知 (9维)
+    "candidate_feature_dim": 9,             # 每个候选工件的特征数量（从12降至9，移除启发式）
 }
 
 # 🔧 方案A：纯候选动作空间配置（移除启发式作弊）
@@ -278,9 +280,9 @@ REWARD_CONFIG = {
     "start_overdue_reward_coeff": 6.0,
     
     # === 🔧 新增：多样性探索奖励 ===
-    # 移除启发式动作后，鼓励智能体探索不同的候选工件选择
-    "exploration_diversity_bonus": 2.0,      # 选择不同候选工件类型的奖励
-    "repeated_choice_penalty": -0.5,         # 重复选择相同候选位置的惩罚
+    # 🔧 纯随机采样后，这些奖励不再需要（category信息已无意义）
+    "exploration_diversity_bonus": 0.0,      # 关闭：纯随机采样后无category区分
+    "repeated_choice_penalty": 0.0,          # 关闭：避免过度惩罚正常探索
 }
 
 

@@ -30,7 +30,7 @@ from environments.w_factory_config import (
 # =============================================================================
 # 1. 核心配置 (Core Configuration)
 # =============================================================================
-NUM_EVAL_EPISODES = 30 
+NUM_EVAL_EPISODES = 1 
 
 # 静态评估环境配置 (确保公平对比)
 # 使用100%订单，标准时间，且禁用所有随机事件
@@ -281,7 +281,7 @@ def evaluate_heuristic(heuristic_name: str, config: dict = STATIC_EVAL_CONFIG, g
                 raise ValueError(f"未知的启发式规则: {heuristic_name}")
             
             # 将选中的工件映射到候选动作
-            candidates = env._get_candidate_workpieces(station_name)
+            candidates = sim._get_candidate_workpieces(station_name)
             
             action = 0  # 默认IDLE
             if selected_part is not None:
