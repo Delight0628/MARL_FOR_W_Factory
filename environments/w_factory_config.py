@@ -22,10 +22,10 @@ TRAINING_FLOW_CONFIG = {
     "foundation_phase": {
         # 毕业标准：必须连续N次达到以下所有条件
         "graduation_criteria": {
-            "target_score": 0.65,           # 从0.72降至0.65，给学习更多空间
+            "target_score": 0.72,           # 从0.72降至0.65，给学习更多空间
             "target_consistency": 8,        # 从5增至8，确保稳定性
-            "tardiness_threshold": 600.0,   # 从450增至600，更宽松的延期要求
-            "min_completion_rate": 95.0,    # 从100%降至95%，允许少量未完成
+            "tardiness_threshold": 450.0,   # 从450增至600，更宽松的延期要求
+            "min_completion_rate": 100.0,    # 从100%降至95%，允许少量未完成
         },
         
         # 可选：在基础训练内部启用课程学习，以循序渐进的方式达到最终目标
@@ -66,6 +66,15 @@ TRAINING_FLOW_CONFIG = {
             "max_quantity_per_order": 12,
             "due_date_range": (200.0, 700.0),
             "priority_weights": [0.3, 0.5, 0.2],
+        },
+        
+        # 多任务混合训练配置（per-worker级别混合）
+        # 含义：在泛化阶段的每轮数据采集中，按比例将一部分worker固定在基础订单环境，
+        # 其余worker在随机订单环境，防止灾难性遗忘并稳定策略。
+        "multi_task_mixing": {
+            "enabled": True,
+            "base_worker_fraction": 0.25,   # 使用基础订单环境的worker占比（0.0~1.0）
+            "randomize_base_env": False     # 基础环境是否加入轻微扰动
         }
     },
     
@@ -175,16 +184,15 @@ EMERGENCY_ORDERS = {
 # 5. 强化学习环境参数 (RL Environment Parameters)
 # =============================================================================
 
-# 🔧 彻底移除启发式的观测空间配置
-# 观测空间结构（最终纯净版）：
+# 🔧 V2修复版观测空间配置（添加时间压力感知）
+# 观测空间结构：
 #   [1] Agent自身特征 (8维): 身份one-hot(5) + 容量(1) + 繁忙率(1) + 故障状态(1)
-#   [2] 全局宏观特征 (4维): 时间进度、WIP率、瓶颈拥堵度、队列长度 [已移除启发式]
-#   [3] 当前队列摘要 (30维): 6种特征 × 5种统计量 [已移除松弛度和延期统计]
-#   [4] 候选工件详细 (80维): 8维特征 × 10个候选工件 [已移除瓶颈感知]
-#   总维度 = 8 + 4 + 30 + 80 = 122维
+#   [2] 全局宏观特征 (4维): 时间进度、WIP率、瓶颈拥堵度、队列长度
+#   [3] 当前队列摘要 (30维): 6种特征 × 5种统计量
+#   [4] 候选工件详细 (90维): 9维特征 × 10个候选工件 [新增时间压力感知]
+#   总维度 = 8 + 4 + 30 + 90 = 132维
 
 ENHANCED_OBS_CONFIG = {
-    # 🔧 彻底移除启发式：候选工件采样策略（纯随机）
     "num_candidate_workpieces": 10,         # 候选工件数量（用于详细特征）
     "num_urgent_candidates": 0,             # ❌ 禁用EDD采样（移除隐性作弊）
     "num_short_candidates": 0,              # ❌ 禁用SPT采样（移除隐性作弊）
@@ -193,18 +201,17 @@ ENHANCED_OBS_CONFIG = {
     # 归一化参数
     "max_op_duration_norm": 60.0,           # 用于归一化操作时长的最大值
     "max_bom_ops_norm": 20,                 # 用于归一化剩余工步数的最大值
-    "time_slack_norm": 480.0,               # 用于归一化松弛时间的基准值 (一个8小时班次)
-    "total_remaining_time_norm": 960.0,     # 用于归一化总剩余加工时间的基准值 (两个8小时班次)
+    "total_remaining_time_norm": 1000.0,     # 用于归一化总剩余加工时间的基准值
     "w_station_capacity_norm": 10.0,        # 用于归一化队列长度的基准值
     
     # 队列摘要统计特征数量
     "queue_summary_features": 6,            # 🔧 更新：6种特征（移除松弛度和延期）
     "queue_summary_stats": 5,               # 统计类型数量（min, max, mean, std, median）
     
-    # 🔧 彻底移除启发式后的候选工件特征维度
-    # 已移除: 松弛度、是否延期、全局紧急度对比、瓶颈感知 (4维启发式)
-    # 保留: exists、剩余工序、剩余时间、当前工序时间、下游拥堵、优先级、是否最终工序、产品类型 (8维中性特征)
-    "candidate_feature_dim": 8,             # 🔧 更新：从9降至8（移除瓶颈感知）
+    # 🔧 V2修复版候选工件特征维度
+    # 保留: exists、剩余工序、剩余时间、当前工序时间、下游拥堵、优先级、是否最终工序、产品类型 (8维)
+    # 新增: 时间压力感知 (1维，非启发式，基于物理时间关系计算)
+    "candidate_feature_dim": 9,             # 🔧 从8提升到9（新增时间压力感知）
 }
 
 # 🔧 方案A：纯候选动作空间配置（移除启发式作弊）
@@ -237,34 +244,44 @@ REWARD_ANNEALING_CONFIG = {
 
 
 REWARD_CONFIG = {
-    # === 事件驱动奖励 (Event-driven Rewards) ===
-    "on_time_completion_reward": 100.0,          # 🔧 设为0：避免“仅完成”干扰
-    "tardiness_penalty_scaler": -2.0,         # 🔧 -5→-50：提升10倍，让延期成为关键学习信号
-
-
-    # === 行为塑造惩罚 (Behavior Shaping Penalties) ===
-    "unnecessary_idle_penalty": -1.0,          # 保持适度约束
-
-    # === 终局奖励 (Episode End Bonus) ===
-    "final_all_parts_completion_bonus": 500.0, # 🔧 再降：避免“全完成”主导评分
-    "invalid_action_penalty": -5.0,
-
-    # === 🔧 新增：迟期差分主信号（密集奖励，可关闭）===
-    "dense_tardiness_delta_coeff": 5.0,
-
-    # === 🔧 新增：事件驱动主信号 ===
-    # 1) 等待迟期惩罚：每个仍在“等待队列”中的已迟期零件，每分钟给定罚分（按工作站计入）
-    # 2) 启动迟期奖励：当决策启动加工了一个已迟期的零件，按其当前迟期程度给予一次性小额奖励
-    "waiting_overdue_penalty_per_part": -0.01,
-    "start_overdue_reward_coeff": 6.0,
+    # ============================================================
+    # 第一层：任务完成奖励（主导信号，占总奖励80%）
+    # ============================================================
+    "part_completion_reward": 500.0,        
+    "final_all_parts_completion_bonus": 3000.0, 
     
-    # === 🔧 新增：多样性探索奖励 ===
-    # 🔧 纯随机采样后，这些奖励不再需要（category信息已无意义）
-    "exploration_diversity_bonus": 0.0,      # 关闭：纯随机采样后无category区分
-    "repeated_choice_penalty": 0.0,          # 关闭：避免过度惩罚正常探索
+    # ============================================================
+    # 第二层：时间质量奖励（次要信号，占总奖励15%）
+    # ============================================================
+    "on_time_completion_reward": 500.0,      
+    "tardiness_penalty_scaler": -500.0,     
+    
+    # ============================================================
+    # 第三层：过程塑形奖励（引导信号，占总奖励5%）
+    # ============================================================
+    # 3.1 进度塑形（鼓励持续推进）
+    "progress_shaping_coeff": 0.1,          
+    
+    # 3.2 行为约束（最小化惩罚，避免干扰主信号）
+    "unnecessary_idle_penalty": -5.0,      
+    "invalid_action_penalty": -2.0,       
+    
+    # 3.3 紧急度引导
+    "urgency_reduction_reward": 0.1,         # 降低紧急度的奖励系数
+    
+    # 3.4 (核心改进) 基于负松弛时间的持续惩罚
+    # 这是本次修复的核心，它提供了一个即时、密集且与延期严重程度成正比的惩罚信号
+    # 它会惩罚那些让“预计会延期的工件”在队列中等待的行为
+    "slack_time_penalty_coeff": -0.02, # 关键参数：负值。每分钟的负松弛时间都会导致-0.02的惩罚
 }
 
-
+# =============================================================================
+# 7. 环境随机化配置 (Environment Randomization)
+# =============================================================================
+ENV_RANDOMIZATION_CONFIG = {
+    "due_date_jitter": 15.0,      # 交货日期抖动范围 (+/- 分钟)
+    "arrival_time_jitter": 10.0,  # 到达时间抖动范围 (0 to X 分钟)
+}
 
 # =============================================================================
 # 8. 自定义MAPPO训练配置 (Custom PPO Training Configuration)
@@ -272,30 +289,33 @@ REWARD_CONFIG = {
 
 # PPO网络架构配置
 PPO_NETWORK_CONFIG = {
-    "hidden_sizes": [1024, 512, 256],    # 🔧 关键：增加网络深度和宽度
+    "hidden_sizes": [1024, 512, 256],   
     "dropout_rate": 0.1,
     "clip_ratio": 0.2,
-    "entropy_coeff": 0.2,               # 🔧 移除启发式后需要更强的探索
-    "ppo_epochs": 12,                    # 🔧 提高到12，更充分学习新策略（原10）
-    "num_minibatches": 4,                # 专家修复：新增Mini-batch数量
+    "entropy_coeff": 0.5,               # 🔧 从0.4提升到0.5，加强初始探索               
+    "ppo_epochs": 12,                   
+    "num_minibatches": 4,                
     "grad_clip_norm": 1.0,               # 🔧 新增：梯度裁剪的范数
     "advantage_clip_val": 5.0,           # 🔧 新增：优势函数的裁剪值
+    "gamma": 0.99,                       # GAE折扣因子
+    "lambda_gae": 0.95,                  # GAE平滑参数
 }
 
 # 🔧 新增：自适应熵调整配置
 ADAPTIVE_ENTROPY_CONFIG = {
     "enabled": True,             # 是否启用
-    "start_episode": 20,         # 提前启动自适应熵
-    "patience": 200,              # 连续多少回合无改进则提升熵
-    "boost_factor": 0.1,         # 每次提升熵的比例
-    "high_completion_decay": 0.999, # 🔧 新增：当完成率高时，用于熵的衰减因子
-    "high_completion_threshold": 0.95, # 🔧 新增：定义“高完成率”的阈值
-    "min_entropy": 0.005,        # 🔧 新增：允许的最小熵系数
+    "start_episode": 0,          # 🔧 从20改为0，立即启动自适应机制
+    "patience": 30,              # 🔧 从200降到30，更快响应停滞
+    "boost_factor": 0.15,        # 🔧 从0.1提升到0.15，更强的探索提升
+    "high_completion_decay": 0.995, # 🔧 从0.999改为0.995，更快衰减避免过度探索
+    "high_completion_threshold": 0.95, # 🔧 新增：定义"高完成率"的阈值
+    "min_entropy": 0.01,         # 🔧 从0.005提升到0.01，保持最低探索水平
 }
 
 # 🔧 新增：评估流程配置
 EVALUATION_CONFIG = {
     "exploration_rate": 0.0,  # 评估时使用的随机探索率，设置为0则为纯粹的确定性评估
+    "deterministic_candidates": True, # 在评估时使用确定性候选，确保启发式基线可复现
 }
 
 # 学习率调度配置

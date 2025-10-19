@@ -24,7 +24,7 @@ if current_dir not in sys.path:
 from environments.w_factory_env import WFactoryEnv
 from environments.w_factory_config import (
     get_total_parts_count, SIMULATION_TIME, BASE_ORDERS,
-    ACTION_CONFIG_ENHANCED, WORKSTATIONS, calculate_episode_score,
+    calculate_episode_score, EVALUATION_CONFIG
 )
 
 # =============================================================================
@@ -144,13 +144,6 @@ def evaluate_marl_model(model_path: str, config: dict = STATIC_EVAL_CONFIG, gene
             if agent in obs:
                 state = tf.expand_dims(obs[agent], 0)
                 action_probs = actor_model(state, training=False)
-                # # 🔧 重要修复：评估时使用微软随机策略，避免完全卡死
-                # # 根据概率分布采样，但主要选择高概率动作
-                # if np.random.random() < 0.2:  # 20%概率使用概率采样
-                #     action = tf.random.categorical(tf.math.log(action_probs + 1e-8), 1)[0, 0].numpy()
-                # else:  # 80%概率使用确定性
-                #     action = int(tf.argmax(action_probs[0]))
-                # 评估时使用纯确定性策略（argmax）
                 action = int(tf.argmax(action_probs[0]))
                 actions[agent] = action
         return actions
@@ -161,8 +154,11 @@ def evaluate_marl_model(model_path: str, config: dict = STATIC_EVAL_CONFIG, gene
     first_episode_history = None
 
     # 🔧 关键修复 V2: 合并来自优化器的基础配置和评估场景的特定配置
-    final_config_for_eval = copy.deepcopy(env_config_overrides) if env_config_overrides else {}
+    # 优先使用测试场景配置，然后是通用的评估配置，最后是可能来自训练器的覆盖配置
+    final_config_for_eval = copy.deepcopy(EVALUATION_CONFIG)
     final_config_for_eval.update(config)
+    if env_config_overrides:
+        final_config_for_eval.update(env_config_overrides)
 
     env = WFactoryEnv(config=final_config_for_eval)
     
@@ -226,8 +222,16 @@ def evaluate_heuristic(heuristic_name: str, config: dict = STATIC_EVAL_CONFIG, g
         sim = env.sim
         actions = {}
         
-        # 🔧 自动检测动作空间结构
-        action_names = ACTION_CONFIG_ENHANCED.get("action_names", [])
+        # 🔧 自动检测动作空间结构：从环境实例获取，而不是全局导入
+        action_names = []
+        # 在step=0时，info在外部，step>0时，info在env实例上
+        info_source = info if step_count == 0 else (env.infos if hasattr(env, 'infos') else {})
+
+        if env.agents:
+            first_agent = env.agents[0]
+            if info_source and first_agent in info_source:
+                action_names = info_source[first_agent].get('obs_meta', {}).get('action_names', [])
+
         action_map = {name: idx for idx, name in enumerate(action_names)}
         
         # 定义启发式名称到动作名称的映射
@@ -264,7 +268,8 @@ def evaluate_heuristic(heuristic_name: str, config: dict = STATIC_EVAL_CONFIG, g
                 # EDD：选择松弛时间最小的工件
                 min_slack = float('inf')
                 for part in queue:
-                    slack = calculate_slack_time(part, sim.env.now, sim.queues, WORKSTATIONS)
+                    # 🔧 移除对 WORKSTATIONS 的直接依赖
+                    slack = calculate_slack_time(part, sim.env.now, sim.queues)
                     if slack < min_slack:
                         min_slack = slack
                         selected_part = part
@@ -319,7 +324,11 @@ def evaluate_heuristic(heuristic_name: str, config: dict = STATIC_EVAL_CONFIG, g
     all_scores = []
     first_episode_history = None
 
-    env = WFactoryEnv(config=config)
+    # 合并配置，确保评估时使用确定性候选
+    final_config_for_eval = copy.deepcopy(EVALUATION_CONFIG)
+    final_config_for_eval.update(config)
+    
+    env = WFactoryEnv(config=final_config_for_eval)
     
     # 动态选择迭代器：交互式终端使用tqdm，否则使用普通range
     is_tty = sys.stdout.isatty()

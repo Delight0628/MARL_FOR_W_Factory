@@ -290,26 +290,59 @@ def load_model(model_path):
     except Exception as e:
         return None, get_text("error_load_model_failed", get_language(), str(e))
 
-def find_available_models(base_dir="mappo/ppo_models"):
-    """查找所有可用的训练模型"""
+def find_available_models():
+    """
+    查找所有可用的训练模型。
+    会搜索两种路径：
+    1. 旧版路径: mappo/ppo_models/<timestamp>/model.keras
+    2. 新版路径 (通过 auto_train.py 创建): <experiment_dir>/models/<timestamp>/model.keras
+    """
     models = []
-    models_path = os.path.join(project_root, base_dir)
-    if not os.path.exists(models_path):
-        return models
     
-    for timestamp_dir in sorted(os.listdir(models_path), reverse=True):
-        dir_path = os.path.join(models_path, timestamp_dir)
-        if os.path.isdir(dir_path):
-            for file in os.listdir(dir_path):
-                if file.endswith("_actor.keras"):
-                    model_path = os.path.join(dir_path, file)
-                    model_name = file.replace("_actor.keras", "")
-                    models.append({
-                        "name": f"{timestamp_dir}/{model_name}",
-                        "path": model_path,
-                        "timestamp": timestamp_dir,
-                        "type": model_name
-                    })
+    # --- 搜索新版路径 ---
+    # 遍历项目根目录下的所有条目
+    for experiment_dir in os.listdir(project_root):
+        exp_path = os.path.join(project_root, experiment_dir)
+        # 必须是一个目录
+        if not os.path.isdir(exp_path):
+            continue
+        
+        # 检查目录下是否存在 'models' 子目录
+        models_path = os.path.join(exp_path, "models")
+        if os.path.exists(models_path) and os.path.isdir(models_path):
+            # 如果存在，则认为这是一个实验目录
+            for timestamp_dir in os.listdir(models_path):
+                run_path = os.path.join(models_path, timestamp_dir)
+                if os.path.isdir(run_path):
+                    for file in os.listdir(run_path):
+                        if file.endswith("_actor.keras"):
+                            model_path = os.path.join(run_path, file)
+                            model_name = file.replace("_actor.keras", "")
+                            models.append({
+                                # 使用 "实验目录/模型名" 的格式，更具描述性
+                                "name": f"{experiment_dir}/{model_name}",
+                                "path": model_path,
+                            })
+
+    # --- 搜索旧版路径 (用于兼容) ---
+    old_models_path = os.path.join(project_root, "mappo", "ppo_models")
+    if os.path.exists(old_models_path):
+        for timestamp_dir in os.listdir(old_models_path):
+            dir_path = os.path.join(old_models_path, timestamp_dir)
+            if os.path.isdir(dir_path):
+                for file in os.listdir(dir_path):
+                    if file.endswith("_actor.keras"):
+                        model_path = os.path.join(dir_path, file)
+                        model_name = file.replace("_actor.keras", "")
+                        models.append({
+                            # 为旧版模型添加 "legacy" 前缀以区分
+                            "name": f"legacy/{timestamp_dir}/{model_name}",
+                            "path": model_path,
+                        })
+
+    # 按路径对模型列表进行降序排序，确保最新的模型显示在最前面
+    models.sort(key=lambda x: x['path'], reverse=True)
+    
     return models
 
 def run_scheduling(actor_model, orders_config, custom_products=None, max_steps=1500, progress_bar=None, status_text=None):
