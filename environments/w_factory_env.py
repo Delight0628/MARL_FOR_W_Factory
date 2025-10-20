@@ -682,9 +682,11 @@ class WFactorySim:
                 candidate_info = candidates[candidate_idx]
                 part = candidate_info['part']
                 # 需要找到这个工件在当前队列中的实际索引
-                for idx, queue_part in enumerate(queue):
-                    if queue_part.part_id == part.part_id:
-                        return (part, idx)
+                # 🔧 核心修复：增加 part is not None 的检查，防止选择到已处理的候选槽
+                if part:
+                    for idx, queue_part in enumerate(queue):
+                        if queue_part.part_id == part.part_id:
+                            return (part, idx)
         
         return None
     
@@ -814,67 +816,123 @@ class WFactorySim:
 
     def step_with_actions(self, actions: Dict[str, int]) -> Dict[str, float]:
         """
-        方案B：执行一步仿真，使用全局工件选择
+        执行一步仿真，支持并行的MultiDiscrete动作
         """
         # 记录执行前状态
         prev_completed = len(self.completed_parts)
         prev_total_steps = sum(part.current_step for part in self.active_parts)
         
-        # 🔧 核心修复：增加本地启动计数器，解决并发控制问题
-        local_start_count: Dict[str, int] = {}  # 记录本步每个工作站已启动的零件数
-        
+        # 用于防止同一个工件在一个step内被多次选择
+        selected_part_ids_this_step = set()
+        # 本步内各站点已启动的零件计数（防止超过本步并发能力）
+        local_start_count = defaultdict(int)
+
         # 执行智能体动作
         actions_executed = 0
         decision_time = self.env.now
         action_context: Dict[str, Dict[str, Any]] = {}
 
-        for agent_id, action in actions.items():
+        for agent_id, agent_action in actions.items():
             station_name = agent_id.replace("agent_", "")
             pre_queue_snapshot = list(self.queues[station_name].items)
+            
+            # 确保 agent_action 是可迭代的 (MultiDiscrete返回数组，Discrete返回标量)
+            if not isinstance(agent_action, (list, np.ndarray)):
+                agent_action = [agent_action]
 
             context = {
                 "queue_len_before": len(pre_queue_snapshot),
                 "queue_snapshot": pre_queue_snapshot,
                 "decision_time": decision_time,
-                "action": action,
+                "action": agent_action,
                 "selected_part": None,
                 "processed": False,
                 "started_parts": []  # 记录本步该agent启动的所有零件及其决策时slack
             }
             action_context[agent_id] = context
 
-            # 使用纯候选动作机制
-            if action > 0:
-                # 🔧 核心修复：检查真实可用容量（考虑本步已启动的零件）
-                already_started_this_step = local_start_count.get(station_name, 0)
-                real_available_capacity = max(0, 
-                    WORKSTATIONS[station_name]['count'] - 
-                    self.equipment_status[station_name]['busy_count'] - 
-                    already_started_this_step
-                )
+            # --- 阶段一：决策与锁定 (Lock Phase) ---
+            # 基于决策时刻的统一状态，为该智能体的所有并行设备（机器）选择工件
+            parts_to_process_this_agent: List[Part] = []
+
+            # 遍历该智能体的每一个动作（对应每一台机器）
+            for machine_action in agent_action:
+                if machine_action > 0:
+                    # 检查真实可用容量（考虑本步已为该站点锁定的零件）
+                    already_started_this_step = local_start_count.get(station_name, 0)
+                    real_available_capacity = max(0, 
+                        WORKSTATIONS[station_name]['count'] - 
+                        self.equipment_status[station_name]['busy_count'] - 
+                        already_started_this_step
+                    )
+                    
+                    if real_available_capacity > 0:
+                        result = self._select_workpiece_by_action(station_name, machine_action)
+                        if result is not None:
+                            selected_part, part_index = result
+                            
+                            # 确保工件在本step中未被任何其他智能体选择
+                            if selected_part.part_id not in selected_part_ids_this_step:
+                                # 锁定工件：加入待处理列表
+                                parts_to_process_this_agent.append(selected_part)
+                                
+                                # 全局去重：将part_id加入全局已选集合
+                                selected_part_ids_this_step.add(selected_part.part_id)
+                                
+                                # 更新本站点的本地计数器，用于计算下一台机器的可用容量
+                                local_start_count[station_name] += 1
+                                
+                                # 记录启动的零件及其决策时的slack，用于奖励计算
+                                context["started_parts"].append({
+                                    "part_id": selected_part.part_id,
+                                    "slack": calculate_slack_time(selected_part, decision_time, self.queues, WORKSTATIONS)
+                                })
+                            else:
+                                # 10-20-21-35 资源回退：目标工件在本步已被锁定，顺延选择未被锁定的候选
+                                fallback_chosen = None
+                                candidates = self._get_candidate_workpieces(station_name)
+                                for cand in candidates:
+                                    alt_part = cand.get('part')
+                                    if alt_part and alt_part.part_id not in selected_part_ids_this_step:
+                                        fallback_chosen = alt_part
+                                        break
+                                if fallback_chosen is not None:
+                                    parts_to_process_this_agent.append(fallback_chosen)
+                                    selected_part_ids_this_step.add(fallback_chosen.part_id)
+                                    local_start_count[station_name] += 1
+                                    context["started_parts"].append({
+                                        "part_id": fallback_chosen.part_id,
+                                        "slack": calculate_slack_time(fallback_chosen, decision_time, self.queues, WORKSTATIONS)
+                                    })
+                                # 若没有可用候选，则该设备本步空转（由约束惩罚处理）
+                        else:
+                            # 10-20-21-35 资源回退：动作无效/未命中时，尝试选择任一未被锁定的候选
+                            fallback_chosen = None
+                            candidates = self._get_candidate_workpieces(station_name)
+                            for cand in candidates:
+                                alt_part = cand.get('part')
+                                if alt_part and alt_part.part_id not in selected_part_ids_this_step:
+                                    fallback_chosen = alt_part
+                                    break
+                            if fallback_chosen is not None:
+                                parts_to_process_this_agent.append(fallback_chosen)
+                                selected_part_ids_this_step.add(fallback_chosen.part_id)
+                                local_start_count[station_name] += 1
+                                context["started_parts"].append({
+                                    "part_id": fallback_chosen.part_id,
+                                    "slack": calculate_slack_time(fallback_chosen, decision_time, self.queues, WORKSTATIONS)
+                                })
+
+            # --- 阶段二：执行 (Execute Phase) ---
+            # 在所有决策完成后，统一处理本智能体已锁定的所有工件
+            if parts_to_process_this_agent:
+                context["processed"] = True
+                actions_executed += len(parts_to_process_this_agent)
                 
-                if real_available_capacity > 0:
-                    result = self._select_workpiece_by_action(station_name, action)
-                    if result is not None:
-                        selected_part, part_index = result
-                        context["selected_part"] = selected_part
-                        context["selected_part_slack"] = calculate_slack_time(selected_part, decision_time, self.queues, WORKSTATIONS)
-                        context["orig_index_before"] = part_index
-                        self._process_part_at_station(station_name, part_index=part_index)
-                        context["processed"] = True
-                        
-                        # 🔧 更新本地启动计数器
-                        local_start_count[station_name] = already_started_this_step + 1
-                        
-                        # 记录启动的零件
-                        context["started_parts"].append({
-                            "part_id": selected_part.part_id,
-                            "slack": context["selected_part_slack"]
-                        })
-                        
-            if context.get("processed"):
-                actions_executed += 1
-        
+                for part_to_process in parts_to_process_this_agent:
+                    # 此处才从队列中移除工件，并启动simpy处理进程
+                    self._process_part_at_station(station_name, part_to_process=part_to_process)
+
         # 推进仿真
         try:
             self.env.run(until=self.env.now + 1)
@@ -900,21 +958,33 @@ class WFactorySim:
         
         return rewards
     
-    def _process_part_at_station(self, station_name: str, part_index: int = 0):
+    def _process_part_at_station(self, station_name: str, part_to_process: Part = None, part_index: int = 0):
         """
         在指定工作站处理零件 - 增强版
-        - 可以选择处理队列中的特定零件
+        - 可以选择处理队列中的特定零件 (通过part_to_process或part_index)
         """
-        if part_index >= len(self.queues[station_name].items):
-            return # 索引越界，不处理
+        part = None
+        actual_part_index = -1
+
+        if part_to_process:
+            # 优先使用part对象定位
+            for i, p in enumerate(self.queues[station_name].items):
+                if p.part_id == part_to_process.part_id:
+                    part = p
+                    actual_part_index = i
+                    break
+        elif part_index < len(self.queues[station_name].items):
+             # 后备方案：使用索引
+            part = self.queues[station_name].items[part_index]
+            actual_part_index = part_index
+
+        if not part or actual_part_index == -1:
+            return # 零件未找到或索引越界
             
-        # 获取队列中的特定零件
-        part = self.queues[station_name].items[part_index]
-        
         # 检查设备是否可用
         if self.equipment_status[station_name]['busy_count'] < WORKSTATIONS[station_name]['count']:
             # 从队列中移除零件
-            self.queues[station_name].items.pop(part_index)
+            self.queues[station_name].items.pop(actual_part_index)
             
             # 启动处理进程
             self.env.process(self._execute_processing(station_name, part))
@@ -924,6 +994,13 @@ class WFactorySim:
         # 请求设备资源
         with self.resources[station_name].request() as request:
             yield request
+            # 若设备当前处于故障，等待修复结束
+            status = self.equipment_status.get(station_name, {})
+            if status.get('is_failed', False):
+                repair_end = status.get('failure_end_time', self.env.now)
+                wait_time = max(0.0, repair_end - self.env.now)
+                if wait_time > 0:
+                    yield self.env.timeout(wait_time)
             
             # 更新设备状态
             self._update_equipment_status(station_name, busy=True)
@@ -1049,14 +1126,15 @@ class WFactorySim:
                     tardiness_penalty = REWARD_CONFIG["tardiness_penalty_scaler"] * (tardiness / 480.0)
                     time_reward = base_reward + tardiness_penalty  # tardiness_penalty是负数
                 
-                # 均匀分配给所有参与工作站
+                # 10202115 按各站点对该零件的累计加工时间占比进行奖励分配（替代均分）
                 if part.contribution_map:
-                    participating_stations = list(part.contribution_map.keys())
-                    equal_weight = 1.0 / len(participating_stations)
-                    for station_name in participating_stations:
-                        agent_id = f"agent_{station_name}"
-                        if agent_id in rewards:
-                            rewards[agent_id] += time_reward * equal_weight
+                    total_contribution = sum(part.contribution_map.values())
+                    if total_contribution > 0:
+                        for station_name, contribution in part.contribution_map.items():
+                            agent_id = f"agent_{station_name}"
+                            if agent_id in rewards:
+                                weight = contribution / total_contribution
+                                rewards[agent_id] += time_reward * weight
         
         # 终局全部完成奖励
         if self.is_done():
@@ -1082,12 +1160,23 @@ class WFactorySim:
             context = action_context.get(agent_id, {})
             queue_len_before = context.get("queue_len_before", 0)
             
-            if action > 0:
-                if context.get("selected_part") is None:
-                    rewards[agent_id] += REWARD_CONFIG["invalid_action_penalty"]
+            # 统一动作判定，兼容 MultiDiscrete（数组）与 Discrete（标量）
+            if isinstance(action, (list, np.ndarray)):
+                action_arr = np.array(action)
+                any_positive = np.any(action_arr > 0)
+                all_zero = np.all(action_arr == 0)
             else:
-                if queue_len_before > 0:
-                    rewards[agent_id] += REWARD_CONFIG["unnecessary_idle_penalty"]
+                any_positive = (action > 0)
+                all_zero = (action == 0)
+
+            # 若有非零动作但未成功启动任何零件，则视为无效动作
+            started_parts = context.get("started_parts", [])
+            if any_positive and len(started_parts) == 0:
+                rewards[agent_id] += REWARD_CONFIG["invalid_action_penalty"]
+            
+            # 若全部为零且队列非空，判定为不必要的空转
+            if all_zero and queue_len_before > 0:
+                rewards[agent_id] += REWARD_CONFIG["unnecessary_idle_penalty"]
         
         # 2.3 紧急度引导（替代密集奖励）
         urgency_reward = self._calculate_urgency_reduction_reward()
@@ -1270,6 +1359,37 @@ class WFactoryEnv(ParallelEnv):
         self.max_steps = self.sim.config.get("MAX_SIM_STEPS", 1500)
         self.step_count = 0
         self.render_mode = None
+
+        # 修复缺陷二：一次性创建静态元数据
+        self.obs_meta = {
+            'agent_feature_names': [
+                'station_id_one_hot', 'capacity_norm', 'busy_ratio', 'is_failed'
+            ],
+            'global_feature_names': [
+                'time_progress', 'wip_rate', 'bottleneck_congestion', 'queue_len_norm'
+            ],
+            'queue_summary_feature_names': [
+                'proc_time', 'remaining_ops', 'remaining_total_time', 'downstream_congestion', 'priority', 'is_final_op'
+            ],
+            'queue_summary_stat_names': [
+                'min', 'max', 'mean', 'std', 'median'
+            ],
+            'candidate_feature_names': [
+                'exists', 'remaining_ops', 'total_remaining_time', 'current_op_duration',
+                'downstream_congestion', 'priority', 'is_final_op', 'product_id', 'time_pressure'
+            ],
+            'normalization_constants': {
+                'max_op_duration_norm': ENHANCED_OBS_CONFIG["max_op_duration_norm"],
+                'max_bom_ops_norm': ENHANCED_OBS_CONFIG["max_bom_ops_norm"],
+                'total_remaining_time_norm': ENHANCED_OBS_CONFIG["total_remaining_time_norm"],
+            },
+            'num_stations': len(WORKSTATIONS),
+            # 移除固定的动作空间大小，因为它现在是异构的
+            # 'action_space_size': ACTION_CONFIG_ENHANCED.get('action_space_size'),
+            'action_names': ACTION_CONFIG_ENHANCED.get('action_names'),
+            'candidate_action_start': self.sim._candidate_action_start,
+            'candidate_action_end': self.sim._candidate_action_end,
+        }
     
     # 重写observation_space和action_space方法
     def observation_space(self, agent: str = None):
@@ -1295,9 +1415,19 @@ class WFactoryEnv(ParallelEnv):
             )
             for agent in self.agents
         }
-        # 🔧 修复：动作空间大小应为 1(IDLE) + 候选数量
+        # 动作空间大小应为 1(IDLE) + 候选数量
         action_size = 1 + int(ENHANCED_OBS_CONFIG.get("num_candidate_workpieces", 0))
-        self._action_spaces = {agent: gym.spaces.Discrete(action_size) for agent in self.agents}
+        
+        #为每个agent定义异构的、支持并行的动作空间
+        self._action_spaces = {}
+        # 🔧 V2 核心修复：为支持共享网络，将动作空间填充为同构
+        max_machine_count = 0
+        for station_config in WORKSTATIONS.values():
+            max_machine_count = max(max_machine_count, station_config.get("count", 1))
+
+        for agent in self.agents:
+            # 所有智能体的动作空间都填充到最大机器数，以支持共享策略网络
+            self._action_spaces[agent] = gym.spaces.MultiDiscrete([action_size] * max_machine_count)
         
     def reset(self, seed: Optional[int] = None, options: Optional[dict] = None):
         if seed is not None:
@@ -1316,38 +1446,9 @@ class WFactoryEnv(ParallelEnv):
 
         # 在info中添加全局状态与观测元信息/候选映射/队列快照
         global_state = self.sim.get_global_state()
-        # 观测元信息
-        obs_meta = {
-            'agent_feature_names': [
-                'station_id_one_hot', 'capacity_norm', 'busy_ratio', 'is_failed'
-            ],
-            'global_feature_names': [
-                'time_progress', 'wip_rate', 'bottleneck_congestion', 'queue_len_norm'
-            ],
-            'queue_summary_feature_names': [
-                'proc_time', 'remaining_ops', 'remaining_total_time', 'downstream_congestion', 'priority', 'is_final_op'
-            ],
-            'queue_summary_stat_names': [
-                'min', 'max', 'mean', 'std', 'median'
-            ],
-            'candidate_feature_names': [
-                'exists', 'remaining_ops', 'total_remaining_time', 'current_op_duration',
-                'downstream_congestion', 'priority', 'is_final_op', 'product_id', 'time_pressure'
-            ],
-            'normalization_constants': {
-                'max_op_duration_norm': ENHANCED_OBS_CONFIG["max_op_duration_norm"],
-                'max_bom_ops_norm': ENHANCED_OBS_CONFIG["max_bom_ops_norm"],
-                'total_remaining_time_norm': ENHANCED_OBS_CONFIG["total_remaining_time_norm"],
-            },
-            'num_stations': len(WORKSTATIONS),
-            'action_space_size': ACTION_CONFIG_ENHANCED.get('action_space_size'),
-            'action_names': ACTION_CONFIG_ENHANCED.get('action_names'),
-            'candidate_action_start': self.sim._candidate_action_start,
-            'candidate_action_end': self.sim._candidate_action_end,
-        }
         for agent_id in self.agents:
             self.infos[agent_id]['global_state'] = global_state
-            self.infos[agent_id]['obs_meta'] = obs_meta
+            self.infos[agent_id]['obs_meta'] = self.obs_meta
             station_name = agent_id.replace("agent_", "")
             # 候选映射
             candidate_list = self.sim._get_candidate_workpieces(station_name)
@@ -1378,6 +1479,37 @@ class WFactoryEnv(ParallelEnv):
         if not self.sim:
             raise RuntimeError("Environment not initialized. Call reset() first.")
         
+        # 修复缺陷三：在状态改变前捕获决策时的上下文信息
+        pre_step_info = {}
+        for agent_id in self.agents:
+            station_name = agent_id.replace("agent_", "")
+            
+            # 捕获候选映射
+            candidate_list = self.sim._get_candidate_workpieces(station_name)
+            candidates_map = []
+            for i, c in enumerate(candidate_list):
+                action = self.sim._candidate_action_start + i
+                candidates_map.append({
+                    'action': action,
+                    'queue_index': c.get('index'),
+                    'part_id': c.get('part').part_id if isinstance(c.get('part'), Part) else None,
+                })
+            
+            # 捕获队列快照
+            queue_snapshot = []
+            for idx, part in enumerate(self.sim.queues[station_name].items):
+                queue_snapshot.append({
+                    'queue_index': idx,
+                    'part_id': part.part_id,
+                    'slack': float(calculate_slack_time(part, self.sim.env.now)),
+                    'proc_time': float(part.get_processing_time()),
+                })
+            
+            pre_step_info[agent_id] = {
+                "candidates_map": candidates_map,
+                "queue_snapshot": queue_snapshot,
+            }
+
         # 执行仿真步骤
         rewards = self.sim.step_with_actions(actions)
         self.step_count += 1
@@ -1401,59 +1533,13 @@ class WFactoryEnv(ParallelEnv):
         
         # 在info中添加全局状态 + 观测元信息 + 候选映射 + 队列快照（与reset一致）
         global_state = self.sim.get_global_state()
-        obs_meta = {
-            'agent_feature_names': [
-                'station_id_one_hot', 'capacity_norm', 'busy_ratio', 'is_failed'
-            ],
-            'global_feature_names': [
-                'time_progress', 'wip_rate', 'bottleneck_congestion', 'queue_len_norm'
-            ],
-            'queue_summary_feature_names': [
-                'proc_time', 'remaining_ops', 'remaining_total_time', 'downstream_congestion', 'priority', 'is_final_op'
-            ],
-            'queue_summary_stat_names': [
-                'min', 'max', 'mean', 'std', 'median'
-            ],
-            'candidate_feature_names': [
-                'exists', 'remaining_ops', 'total_remaining_time', 'current_op_duration',
-                'downstream_congestion', 'priority', 'is_final_op', 'product_id', 'time_pressure'
-            ],
-            'normalization_constants': {
-                'max_op_duration_norm': ENHANCED_OBS_CONFIG["max_op_duration_norm"],
-                'max_bom_ops_norm': ENHANCED_OBS_CONFIG["max_bom_ops_norm"],
-                'total_remaining_time_norm': ENHANCED_OBS_CONFIG["total_remaining_time_norm"],
-            },
-            'num_stations': len(WORKSTATIONS),
-            'action_space_size': ACTION_CONFIG_ENHANCED.get('action_space_size'),
-            'action_names': ACTION_CONFIG_ENHANCED.get('action_names'),
-            'candidate_action_start': self.sim._candidate_action_start,
-            'candidate_action_end': self.sim._candidate_action_end,
-        }
         for agent_id in self.agents:
             infos[agent_id]['global_state'] = global_state
-            infos[agent_id]['obs_meta'] = obs_meta
-            station_name = agent_id.replace("agent_", "")
-            # 候选映射
-            candidate_list = self.sim._get_candidate_workpieces(station_name)
-            candidates_map = []
-            for i, c in enumerate(candidate_list):
-                action = self.sim._candidate_action_start + i
-                candidates_map.append({
-                    'action': action,
-                    'queue_index': c.get('index'),
-                    'part_id': c.get('part').part_id if isinstance(c.get('part'), Part) else None,
-                })
-            infos[agent_id]['candidates_map'] = candidates_map
-            # 队列快照
-            queue_snapshot = []
-            for idx, part in enumerate(self.sim.queues[station_name].items):
-                queue_snapshot.append({
-                    'queue_index': idx,
-                    'part_id': part.part_id,
-                    'slack': float(calculate_slack_time(part, self.sim.env.now)),
-                    'proc_time': float(part.get_processing_time()),
-                })
-            infos[agent_id]['queue_snapshot'] = queue_snapshot
+            infos[agent_id]['obs_meta'] = self.obs_meta
+            
+            # 修复缺陷三：使用决策前捕获的信息
+            infos[agent_id]['candidates_map'] = pre_step_info[agent_id]['candidates_map']
+            infos[agent_id]['queue_snapshot'] = pre_step_info[agent_id]['queue_snapshot']
 
         # 将本步信息存入实例，便于外部策略访问候选映射等元信息
         self.infos = infos

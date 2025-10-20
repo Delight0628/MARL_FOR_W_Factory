@@ -11,6 +11,13 @@ from datetime import datetime
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import multiprocessing
 import argparse
+from collections import deque, defaultdict
+import tensorflow as tf
+from tensorflow.keras import layers, Model
+from tensorflow.keras.optimizers import Adam
+from tensorflow.keras.optimizers.schedules import PolynomialDecay
+from multiprocessing import Pool
+from concurrent.futures import ThreadPoolExecutor
 
 
 TENSORBOARD_AVAILABLE = hasattr(tf.summary, "create_file_writer")
@@ -24,31 +31,42 @@ from environments.w_factory_env import make_parallel_env, WFactoryEnv
 from environments.w_factory_config import *
 from environments.w_factory_config import validate_config, get_total_parts_count, generate_random_orders, calculate_episode_score, ADAPTIVE_ENTROPY_CONFIG, EVALUATION_CONFIG
 
+# 修复：确保gymnasium的space在类型注解中可用
+import gymnasium as gym
+
+# 全局模型保存路径
+MODELS_DIR = "models"
+LOGS_DIR = "logs"
+os.makedirs(MODELS_DIR, exist_ok=True)
+os.makedirs(LOGS_DIR, exist_ok=True)
+
+
 class ExperienceBuffer:
     """🔧 MAPPO经验缓冲区 - 支持全局状态"""
     
     def __init__(self):
         self.states = []
-        self.global_states = []  # 🔧 新增：存储全局状态
+        self.global_states = []
         self.actions = []
         self.rewards = []
         self.values = []
         self.action_probs = []
         self.dones = []
-        self.truncateds = []
-        
+        self.truncated = []
+
     def store(self, state, global_state, action, reward, value, action_prob, done, truncated=False):
         self.states.append(state)
         self.global_states.append(global_state)
-        self.actions.append(action)
+        # 🔧 修复: action可以是标量或数组，确保以numpy格式存储
+        self.actions.append(np.array(action))
         self.rewards.append(reward)
         self.values.append(value)
         self.action_probs.append(action_prob)
         self.dones.append(done)
-        self.truncateds.append(truncated)
-    
+        self.truncated.append(truncated)
+
     def get_batch(self, gamma=0.99, lam=0.95, next_value_if_truncated=None, advantage_clip_val: Optional[float] = None):
-        """🔧 MAPPO：处理轨迹截断，支持优势裁剪"""
+        """计算GAE并返回一个批次的经验数据"""
         states = np.array(self.states, dtype=np.float32)
         global_states = np.array(self.global_states, dtype=np.float32)
         actions = np.array(self.actions)
@@ -56,7 +74,7 @@ class ExperienceBuffer:
         values = np.array(self.values, dtype=np.float32)
         action_probs = np.array(self.action_probs, dtype=np.float32)
         dones = np.array(self.dones)
-        truncateds = np.array(self.truncateds)
+        truncateds = np.array(self.truncated)
         
         advantages = np.zeros_like(rewards)
         last_advantage = 0
@@ -110,23 +128,33 @@ class ExperienceBuffer:
         self.values.clear()
         self.action_probs.clear()
         self.dones.clear()
-        self.truncateds.clear()
+        self.truncated.clear()
+
+    def __len__(self):
+        return len(self.states)
 
 class PPONetwork:
     """MAPPO网络实现 - 包含集中式Critic"""
     
     # lr参数可以是学习率调度器
-    def __init__(self, state_dim: int, action_dim: int, lr: Any, global_state_dim: int, network_config: Optional[Dict[str, Any]] = None):
-        self.state_dim = state_dim
-        self.action_dim = action_dim
-        self.global_state_dim = global_state_dim # 🔧 新增
-        self.lr = lr
-        self.network_config_override = network_config
+    def __init__(self, state_dim: int, action_space: gym.spaces.Space, lr: Any, global_state_dim: int, network_config: Optional[Dict[str, Any]] = None):
         
-        # 构建网络
+        self.state_dim = state_dim
+        # 🔧 核心修复：直接使用action_space对象
+        self.action_space = action_space
+        self.global_state_dim = global_state_dim
+        self.config = network_config or PPO_NETWORK_CONFIG
+
+        # 检查是否为MultiDiscrete
+        self.is_multidiscrete = isinstance(self.action_space, gym.spaces.MultiDiscrete)
+        if self.is_multidiscrete:
+            self.action_dims = self.action_space.nvec
+        else: # Discrete
+            self.action_dims = [self.action_space.n]
+            
         self.actor, self.critic = self._build_networks()
         
-        # 优化器 - 处理lr为None的情况（worker不需要优化器）
+        # 🔧 V32 修复：支持学习率调度器
         if lr is not None:
             # 为Critic设置一个较低的学习率乘数
             critic_lr = lr
@@ -159,8 +187,8 @@ class PPONetwork:
     def _build_networks(self):
         """MAPPO：使用配置文件参数构建网络"""
         # 导入配置
-        if self.network_config_override:
-            config = self.network_config_override
+        if self.config:
+            config = self.config
         else:
             from environments.w_factory_config import PPO_NETWORK_CONFIG
             config = PPO_NETWORK_CONFIG
@@ -276,71 +304,118 @@ class PPONetwork:
         
         return actor, critic
     
+    # 10-20-21-35 移除tf.function以避免函数内 .numpy() 在图模式报错
     def get_action_and_value(self, state: np.ndarray, global_state: np.ndarray) -> Tuple[int, np.float32, np.float32]:
-        """获取动作、价值和动作概率"""
-        state_tensor = tf.expand_dims(tf.convert_to_tensor(state), 0)
-        probs = self.actor(state_tensor)
-        # 数值稳定性
-        probs = tf.clip_by_value(probs, 1e-8, 1.0)
-        action = tf.random.categorical(tf.math.log(probs + 1e-8), 1)[0, 0].numpy()
-        action_prob = probs[0, action].numpy()
-
-        # Critic使用全局状态
-        value = self.critic(tf.expand_dims(tf.convert_to_tensor(global_state), 0))[0, 0].numpy()
+        """获取动作、动作概率和状态价值"""
+        # Actor
+        action_probs = self.actor(state)  # (B, A) 或 对于多头是 list of (B, A)
         
-        return action, np.float32(value), np.float32(action_prob)
+        # Critic
+        value = self.critic(global_state) # (B, 1)
+
+        # 10-20-22-10 修复：适配多头Actor的动作采样和概率计算
+        if self.is_multidiscrete:
+            action_prob_list = action_probs
+            action_list = []
+            log_prob_list = []
+
+            for head_probs in action_prob_list:
+                logits = tf.math.log(head_probs + 1e-8)
+                action_for_head = tf.random.categorical(logits, 1)
+                action_list.append(action_for_head)
+
+                # 计算选中动作的对数概率
+                action_one_hot = tf.one_hot(tf.squeeze(action_for_head, axis=1), self.action_dims[0])
+                log_prob_for_head = tf.reduce_sum(logits * action_one_hot, axis=1)
+                log_prob_list.append(log_prob_for_head)
+            
+            # 动作组合
+            action = tf.stack(action_list, axis=1) # (B, k, 1)
+            action = tf.squeeze(action, axis=-1)   # (B, k)
+            
+            # 独立动作的联合对数概率是各自对数概率之和
+            joint_log_prob = tf.add_n(log_prob_list)
+            
+            # 返回numpy时，确保批次维度被正确处理 (B=1 -> 标量)
+            return action.numpy()[0], tf.squeeze(value).numpy(), joint_log_prob.numpy()[0]
+        else:
+            # 原始逻辑 (Discrete)
+            action = tf.random.categorical(tf.math.log(action_probs + 1e-8), 1)
+            action_one_hot = tf.one_hot(tf.squeeze(action), self.action_dims[0])
+            # 获取选中动作的对数概率
+            current_probs = tf.math.log(tf.reduce_sum(action_probs * action_one_hot, axis=1) + 1e-8)
+        
+        # 10-20-21-35 保持在函数末尾转换为numpy，避免返回Tensor到调用方再转换的重复逻辑
+        return action.numpy(), tf.squeeze(value).numpy(), tf.squeeze(current_probs).numpy()
     
     def get_value(self, global_state: np.ndarray) -> float:
-        """获取状态价值（仅使用全局状态）"""
-        global_state = tf.expand_dims(global_state, 0)
-        return float(self.critic(global_state)[0, 0])
+        """获取状态价值
+        10-20-21-35：兼容传入已批次形状或未批次形状，避免双重扩维导致维度 (1,1,D)
+        """
+        # 如果已经是 (1, D) 形状则直接使用，否则将 (D,) 扩为 (1, D)
+        gs = tf.convert_to_tensor(global_state)
+        if len(gs.shape) == 1:
+            gs = tf.expand_dims(gs, 0)
+        return float(self.critic(gs)[0, 0])
     
     def update(self, states: np.ndarray, global_states: np.ndarray, actions: np.ndarray, 
                old_probs: np.ndarray, advantages: np.ndarray, 
                returns: np.ndarray, clip_ratio: float = None, entropy_coeff: float = None) -> Dict[str, float]:
-        """MAPPO更新：Critic使用全局状态"""
-        # 🔧 修复：检查优化器是否存在
-        if self.actor_optimizer is None or self.critic_optimizer is None:
-            raise ValueError("Optimizers not initialized. Cannot update network.")
-            
-        # 使用配置文件中的PPO参数
-        if clip_ratio is None:
-            clip_ratio = PPO_NETWORK_CONFIG["clip_ratio"]
-        # 优先使用传入的动态熵系数
-        current_entropy_coeff = entropy_coeff if entropy_coeff is not None else PPO_NETWORK_CONFIG["entropy_coeff"]
-        
-        # Actor更新
+        """执行一次PPO更新"""
+        clip_ratio = clip_ratio or self.config.get("clip_ratio", 0.2)
+        entropy_coeff = entropy_coeff or self.config.get("entropy_coeff", 0.01)
+
         with tf.GradientTape() as tape:
-            probs = self.actor(states, training=True)
-            # 添加数值稳定性保护
-            probs = tf.clip_by_value(probs, 1e-8, 1.0)
-            # 计算选择动作的概率 new_probs
-            batch_indices = tf.range(tf.shape(actions)[0], dtype=tf.int32)
-            indices = tf.stack([batch_indices, tf.cast(actions, tf.int32)], axis=1)
-            new_probs = tf.gather_nd(probs, indices)
-            # 防止除零和数值爆炸
-            ratio = new_probs / (old_probs + 1e-8)
+            # --- Actor损失 ---
+            action_probs = self.actor(states)  # (N, A) or list of (N, A)
             
-            # 正确计算KL散度（基于被选动作的近似）
-            old_log_probs = tf.math.log(old_probs + 1e-8)
-            new_log_probs = tf.math.log(new_probs + 1e-8)
-            approx_kl = tf.reduce_mean(old_log_probs - new_log_probs)
+
+            # 10-20-22-10 修复：适配多头Actor的损失和熵计算
+            if self.is_multidiscrete:
+                action_prob_list = action_probs
+                num_heads = len(self.action_dims)
+                log_probs_list = []
+                entropy_list = []
+                
+                for i in range(num_heads):
+                    head_probs = action_prob_list[i]
+                    action_slice = actions[:, i]
+                    action_one_hot = tf.one_hot(action_slice, self.action_dims[0])
+                    
+                    # 计算每个头选中动作的对数概率
+                    log_prob_for_head = tf.math.log(tf.reduce_sum(head_probs * action_one_hot, axis=1) + 1e-8)
+                    log_probs_list.append(log_prob_for_head)
+                    
+                    # 计算每个头的策略熵
+                    entropy_for_head = -tf.reduce_sum(head_probs * tf.math.log(head_probs + 1e-8), axis=1)
+                    entropy_list.append(entropy_for_head)
+
+                # 联合概率是log prob之和, 总熵是各头熵之和
+                current_probs = tf.add_n(log_probs_list)
+                entropy_loss = tf.add_n(entropy_list)
+            else:
+                action_one_hot = tf.one_hot(tf.squeeze(actions), self.action_dims[0])
+                log_prob = tf.math.log(tf.reduce_sum(action_probs * action_one_hot, axis=1) + 1e-8)
+                current_probs = log_prob
+
+            # PPO裁剪目标
+            ratio = tf.exp(current_probs - old_probs)
+            clipped_ratio = tf.clip_by_value(ratio, 1 - clip_ratio, 1 + clip_ratio)
             
             # 计算裁剪比例 (用于监控)
             clipped_mask = tf.greater(tf.abs(ratio - 1.0), clip_ratio)
             clip_fraction = tf.reduce_mean(tf.cast(clipped_mask, tf.float32))
 
-            clipped_ratio = tf.clip_by_value(ratio, 1 - clip_ratio, 1 + clip_ratio)
             actor_loss = -tf.reduce_mean(tf.minimum(ratio * advantages, clipped_ratio * advantages))
             
-            # 计算分类熵：-sum p*log p
-            entropy_per_sample = -tf.reduce_sum(probs * tf.math.log(probs + 1e-8), axis=1)
-            entropy = tf.reduce_mean(entropy_per_sample)
-            actor_loss -= current_entropy_coeff * entropy
+
+            # 10-20-22-10 使用新的多头熵计算
+            entropy_mean = tf.reduce_mean(entropy_loss)
+            actor_loss -= entropy_coeff * entropy_mean
             
         actor_grads = tape.gradient(actor_loss, self.actor.trainable_variables)
         # 梯度裁剪以提高训练稳定性
-        grad_clip_norm = PPO_NETWORK_CONFIG.get("grad_clip_norm", 1.0)
+        grad_clip_norm = self.config.get("grad_clip_norm", 1.0)
         actor_grads, _ = tf.clip_by_global_norm(actor_grads, grad_clip_norm)
         self.actor_optimizer.apply_gradients(zip(actor_grads, self.actor.trainable_variables))
         
@@ -357,130 +432,173 @@ class PPONetwork:
         return {
             "actor_loss": actor_loss.numpy(),
             "critic_loss": critic_loss.numpy(),
-            "entropy": entropy.numpy(),
-            "approx_kl": approx_kl.numpy(),
+            "entropy": entropy_mean.numpy(),
+            "approx_kl": 0.0,
             "clip_fraction": clip_fraction.numpy()
         }
 
 # 多进程并行工作函数
 def run_simulation_worker(network_weights: Dict[str, List[np.ndarray]],
-                          state_dim: int, action_dim: int, num_steps: int, seed: int, 
+                          state_dim: int, action_space: gym.spaces.Space, num_steps: int, seed: int, 
                           global_state_dim: int, network_config: Dict[str, Any], curriculum_config: Dict[str, Any] = None) -> Tuple[Dict[str, ExperienceBuffer], float, Optional[np.ndarray], bool, bool]:
-    """并行仿真工作进程 - MAPPO改造：收集全局状态"""
-    
-    # 将tf导入移至顶部，解决UnboundLocalError
-    import tensorflow as tf
-    import numpy as np
-    import random
-    
-    # 1. 初始化
-    os.environ['CUDA_VISIBLE_DEVICES'] = '-1'  # 禁用GPU
-    
-    tf.random.set_seed(seed)
-    env = make_parallel_env(curriculum_config)
-    # 使用动态学习率而非固定值
-    # 注意：worker不需要学习率，只做推理
-    network = PPONetwork(state_dim, action_dim, None, global_state_dim, network_config=network_config) # Worker不需要优化器
-    network.actor.set_weights(network_weights['actor'])
-    network.critic.set_weights(network_weights['critic']) # Critic权重也需要同步
-    
-    buffers = {agent: ExperienceBuffer() for agent in env.agents}
-    
-    observations, infos = env.reset(seed=seed)
-    global_state = infos[env.agents[0]]['global_state']
-    # 智能体条件化：构建one-hot映射
-    agent_list = list(env.agents)
-    agent_index = {agent_id: idx for idx, agent_id in enumerate(agent_list)}
-    # 修正base_global_dim的计算方式，避免硬编码或依赖不一致的环境实例
-    base_global_dim = global_state_dim - len(agent_list)
-    
-    total_reward_collected = 0.0
-    collected_steps = 0
-    step_count = 0
-    
-    while collected_steps < num_steps:
-        actions = {}
-        values = {}
-        action_probs = {}
-        augmented_global_states = {} # 为每个智能体分别存储增强全局状态
-        
-        # 基础全局状态（不含one-hot）
-        if global_state is not None:
-            base_global_state = global_state.copy()
+    """
+    一个worker进程，用于运行仿真并收集经验
+    - 🔧 V32 修复：支持学习率调度器，因此不再传递lr，而是完整的网络权重
+    - 🔧 核心修复：传递action_space对象而不是action_dim
+    """
+    try:
+        if curriculum_config:
+            # 确保每个worker有独立的随机种子，同时尊重基础seed
+            worker_seed = seed + curriculum_config.get('worker_id', 0)
+            env_config = curriculum_config.copy()
         else:
-            base_global_state = np.zeros(base_global_dim, dtype=np.float32)
+            worker_seed = seed
+            env_config = {}
+        
+        # 在worker内部设置随机种子
+        np.random.seed(worker_seed)
+        random.seed(worker_seed)
+        tf.random.set_seed(worker_seed)
 
-        # 确保智能体动作的同步性
-        for agent in env.agents:  # 使用env.agents确保顺序一致
-            if agent in observations:
-                obs = observations[agent]
-                # 拼接agent one-hot到全局状态
-                one_hot = np.zeros(len(agent_list), dtype=np.float32)
-                one_hot[agent_index[agent]] = 1.0
-                # 注意：global_state_dim 已经包含one-hot长度
-                augmented_global_state = np.concatenate([base_global_state, one_hot]).astype(np.float32)
-                augmented_global_states[agent] = augmented_global_state # 存储
-                action, value, action_prob = network.get_action_and_value(obs, augmented_global_state)
-                actions[agent] = action
-                values[agent] = value
-                action_probs[agent] = action_prob
+        # 🔧 V39 修复：即使配置为空，也应在worker中创建环境
+        env_config['training_mode'] = True
+        env = make_parallel_env(env_config)
+
+        # 10202115 修复：为Critic构造“智能体条件化”的全局状态（拼接agent one-hot）
+        agent_list = list(env.possible_agents)
+        agent_to_index = {agent_id: idx for idx, agent_id in enumerate(agent_list)}
+        num_agents = len(agent_list)
+
+        def _condition_global_state(raw_global_state: np.ndarray, agent_id: str) -> np.ndarray:
+            one_hot = np.zeros((num_agents,), dtype=np.float32)
+            idx = agent_to_index.get(agent_id, 0)
+            one_hot[idx] = 1.0
+            return np.concatenate([raw_global_state.astype(np.float32), one_hot], axis=0)
+
+        # 在worker内创建网络实例
+        # 注意：这里不需要编译或设置优化器，因为只用于推理
+        network = PPONetwork(
+            state_dim=state_dim,
+            action_space=action_space,
+            lr=0.001,  # lr值无所谓，因为不在这里训练
+            global_state_dim=global_state_dim,
+            network_config=network_config
+        )
+        if network_weights:
+            network.actor.set_weights(network_weights['actor'])
+            network.critic.set_weights(network_weights['critic'])
+
+        buffers = {agent: ExperienceBuffer() for agent in env.possible_agents}
+        
+        # 🔧 V39 修复：正确处理reset返回值
+        observations, infos = env.reset(seed=worker_seed)
+        
+        episode_rewards = {agent: 0 for agent in env.possible_agents}
+        total_episode_reward = 0
+        
+        # 标记是否由课程学习毕业而终止
+        terminated_by_graduation = False
+
+        for step in range(num_steps):
+            actions = {}
+            values = {}
+            action_probs = {}
             
-        next_observations, rewards, terminations, truncations, infos = env.step(actions)
-        step_count += 1
-        collected_steps += 1
-        global_state = infos[env.agents[0]]['global_state']
-        
-        
-        total_reward_collected += sum(rewards.values())
-
-        # 确保所有智能体的数据一致性
-        for agent in env.agents:
-            if agent in observations and agent in actions:
-                terminated = terminations.get(agent, False)
-                truncated = truncations.get(agent, False)
-                reward = rewards.get(agent, 0)
-                # 存储时使用agent条件化的全局状态
-                agent_specific_global_state = augmented_global_states.get(agent)
-                if agent_specific_global_state is not None:
+            # 为每个智能体获取动作
+            # 🔧 V39 修复：使用env.agents而不是env.possible_agents
+            active_agents_in_step = list(env.agents)
+            for agent in active_agents_in_step:
+                if agent in observations:
+                    state = tf.expand_dims(observations[agent], 0)
+                    # 10202115使用拼接了agent one-hot的全局状态作为Critic输入
+                    conditioned_global = _condition_global_state(infos[agent]['global_state'], agent)
+                    global_state = tf.expand_dims(conditioned_global, 0)
+                    
+                    action, value, action_prob = network.get_action_and_value(state, global_state)
+                    
+                    actions[agent] = action
+                    values[agent] = value
+                    action_probs[agent] = action_prob
+            
+            # 修复：确保即使某个agent没有obs，也有一个默认的空动作
+            for agent in env.possible_agents:
+                if agent not in actions:
+                    # 动作空间可能是MultiDiscrete，需要提供正确形状的默认动作
+                    actions[agent] = np.zeros(network.action_space.shape, dtype=network.action_space.dtype)
+            
+            next_observations, rewards, terminations, truncations, next_infos = env.step(actions)
+            
+            # 存储经验
+            # 🔧 V39 修复：仅为活跃的agent存储经验
+            for agent in active_agents_in_step:
+                if agent in observations:
                     buffers[agent].store(
                         observations[agent], 
-                        agent_specific_global_state.copy(),  # 使用正确的增强全局状态
+                        # 10202115 缓冲区存入“智能体条件化”的全局状态
+                        _condition_global_state(infos[agent]['global_state'], agent), 
                         actions[agent], 
-                        reward,
-                        values[agent], 
-                        action_probs[agent], 
-                        terminated,
-                        truncated
+                        rewards[agent], 
+                        values[agent],
+                        action_probs[agent],
+                        terminations[agent],
+                        truncations[agent]
                     )
+                    episode_rewards[agent] += rewards.get(agent, 0)
 
-        observations = next_observations
+            observations = next_observations
+            infos = next_infos
 
-        # 与评估一致的终止条件
-        if any(terminations.values()) or any(truncations.values()):
-            
-            # MAPPO关键修复：正确处理截断时的bootstrap价值
-            # 注意：这里暂时不处理，让buffer自己在get_batch时处理
-            pass
-            
-            # episode结束时应该break，而不是reset继续收集
-            # 一个worker调用应该只收集单个trajectory的数据
-            break
+            if any(terminations.values()) or any(truncations.values()):
+                # 检查是否是由于课程学习毕业而终止
+                if 'final_stats' in infos[active_agents_in_step[0]] and \
+                   infos[active_agents_in_step[0]].get('final_stats', {}).get('graduated', False):
+                    terminated_by_graduation = True
 
-    # 返回最后一个全局状态和截断标志，用于价值引导
-    # 只要trajectory未真正终止（即存在截断或仅因采样步数达到上限而退出），就提供bootstrap价值
-    was_truncated = any(truncations.values()) or not any(terminations.values())
-    # 返回基础全局状态（不含one-hot），主进程将为各agent添加one-hot后计算bootstrap
-    next_global_state_for_bootstrap = global_state if was_truncated else None
-    
-    # 统计本worker是否完成了全部零件（用于日志与终局奖励核验）
-    try:
-        total_required_worker = sum(o.quantity for o in env.sim.orders)
-        completed_all_worker = (len(env.sim.completed_parts) >= total_required_worker)
-    except Exception:
-        completed_all_worker = False
-    
-    env.close()
-    return buffers, total_reward_collected, next_global_state_for_bootstrap, was_truncated, completed_all_worker
+                total_episode_reward = sum(episode_rewards.values())
+                
+                # 仅当缓冲区未满时才重置
+                if step < num_steps - 1:
+                    observations, infos = env.reset(seed=worker_seed + step + 1)
+                    episode_rewards = {agent: 0 for agent in env.possible_agents}
+                else:
+                    # 缓冲区已满，需要计算最后一个状态的价值
+                    last_values = {}
+                    for agent in active_agents_in_step:
+                        if agent in observations:
+                            # 10202115 bootstrap时同样使用“智能体条件化”的全局状态
+                            conditioned_global = _condition_global_state(infos[agent]['global_state'], agent)
+                            global_state = tf.expand_dims(conditioned_global, 0)
+                            # 如果是因为truncated，用critic计算next_value，否则为0
+                            if truncations[agent]:
+                                last_values[agent] = network.get_value(global_state)
+                            else:
+                                last_values[agent] = 0.0
+                    
+                    # 退出循环，返回数据
+                    env.close()
+                    return buffers, total_episode_reward, last_values, any(terminations.values()), terminated_by_graduation
+
+        # 如果循环正常结束（缓冲区已满）
+        last_values = {}
+        active_agents_in_step = list(env.agents)
+        for agent in active_agents_in_step:
+            if agent in observations:
+                # 10202115正常结束时也需使用“智能体条件化”的全局状态
+                conditioned_global = _condition_global_state(infos[agent]['global_state'], agent)
+                global_state = tf.expand_dims(conditioned_global, 0)
+                last_values[agent] = network.get_value(global_state)
+        
+        env.close()
+        
+        return buffers, total_episode_reward, last_values, False, False
+
+    except Exception as e:
+        import traceback
+        print(f"Worker {curriculum_config.get('worker_id', 'N/A')} failed with error: {e}")
+        traceback.print_exc()
+        # 返回空数据以防主进程崩溃
+        return {}, 0.0, None, True, False
+
 
 class SimplePPOTrainer:
     """自适应PPO训练器：根据训练状态自动调整训练策略"""
@@ -503,7 +621,8 @@ class SimplePPOTrainer:
         # 之前的代码依赖动态配置，现在我们直接创建
         temp_env = make_parallel_env()
         self.state_dim = temp_env.observation_space(temp_env.possible_agents[0]).shape[0]
-        self.action_dim = temp_env.action_space(temp_env.possible_agents[0]).n
+        # 直接使用环境的动作空间对象以支持 MultiDiscrete
+        self.action_space = temp_env.action_space(temp_env.possible_agents[0])
         self.agent_ids = temp_env.possible_agents
         self.num_agents = len(self.agent_ids)
         # Critic智能体条件化：将智能体one-hot并入全局状态输入维度
@@ -512,7 +631,7 @@ class SimplePPOTrainer:
         
         print("环境空间检测:")
         print(f"   观测维度: {self.state_dim}")
-        print(f"   动作维度: {self.action_dim}")
+        print(f"   动作空间: {self.action_space}")
         print(f"   智能体数量: {len(self.agent_ids)}")
         print(f"   全局状态维度(含agent one-hot): {self.global_state_dim}")
         
@@ -530,10 +649,10 @@ class SimplePPOTrainer:
             power=LEARNING_RATE_CONFIG["decay_power"]
         )
 
-        # 共享网络
+        # 共享网络（传递动作空间对象，支持MultiDiscrete）
         self.shared_network = PPONetwork(
             state_dim=self.state_dim,
-            action_dim=self.action_dim,
+            action_space=self.action_space,
             lr=self.lr_schedule,
             global_state_dim=self.global_state_dim
         )
@@ -643,6 +762,19 @@ class SimplePPOTrainer:
         else:
             self.train_writer = None
             print("⚠️  TensorBoard不可用")
+        
+        # 初始化并行采样器（线程池），避免序列化问题
+        # 说明：使用线程池调度Python子任务，其内部仍然运行独立的环境实例
+        self.pool = ThreadPoolExecutor(max_workers=self.num_workers)
+
+        # 🔧 初始化训练所需的关键成员
+        self.seed = RANDOM_SEED
+        self.total_steps = 0
+        self.network_config = PPO_NETWORK_CONFIG
+        self.multi_task_mixing_config = TRAINING_FLOW_CONFIG["generalization_phase"].get("multi_task_mixing", {"enabled": False, "base_worker_fraction": 0.0, "randomize_base_env": False})
+        base_fraction = float(self.multi_task_mixing_config.get("base_worker_fraction", 0.0))
+        base_fraction = min(max(base_fraction, 0.0), 1.0)
+        self.num_base_workers = int(round(self.num_workers * base_fraction))
     
     def should_continue_training(self, episode: int, current_score: float, completion_rate: float) -> tuple:
         """基于训练流程配置的阶段标准评估是否继续训练"""
@@ -769,136 +901,139 @@ class SimplePPOTrainer:
     
     def collect_and_process_experience(self, num_steps: int, curriculum_config: Dict[str, Any] = None) -> Tuple[float, Optional[Dict[str, np.ndarray]]]:
         """
-        🔧 核心修复：并行收集经验，并在主进程中统一处理价值引导和GAE计算
-        - 返回一个处理完成、可以直接用于更新的训练批次
+        并行收集经验并进行处理 (GAE计算等)
+        - 🔧 MAPPO改造：每个worker独立运行一个完整的episode或指定steps，并返回最后一个全局状态
+        - 🔧 V36 修复：支持多任务混合训练
         """
-        from environments.w_factory_config import PPO_NETWORK_CONFIG
+        # --- 1. 并行运行worker收集数据 ---
+        try:
+            # 래핑된 함수
+            def collect_experience_wrapper(args):
+                (actor_weights, critic_weights, state_dim, action_space, num_steps, 
+                 seed, global_state_dim, network_config, curriculum_config) = args
+                
+                network_weights = {'actor': actor_weights, 'critic': critic_weights}
+                
+                return run_simulation_worker(network_weights, state_dim, action_space, num_steps, 
+                                             seed, global_state_dim, network_config, curriculum_config)
 
-        network_weights = {
-            'actor': self.shared_network.actor.get_weights(),
-            'critic': self.shared_network.critic.get_weights()
-        }
-        # 🔧 关键修复：使用入参作为每个 worker 的最大步数
-        steps_per_worker = int(num_steps)
-        
-        total_reward = 0
+            worker_args_list = []
+            for i in range(self.num_workers):
+                # 默认使用当前的课程配置
+                worker_curriculum_config = curriculum_config.copy() if curriculum_config else {}
+                worker_curriculum_config['worker_id'] = i
+                
+                # --- 多任务混合训练逻辑 (仅在泛化阶段) ---
+                if self.foundation_training_completed and self.multi_task_mixing_config.get("enabled", False):
+                    # 根据比例决定该worker是使用基础环境还是随机环境
+                    if i < self.num_base_workers:
+                        # 这个worker使用基础订单
+                        worker_curriculum_config['use_base_orders'] = True
+                        # 可选：是否也对基础环境加扰动
+                        worker_curriculum_config['randomize_env'] = self.multi_task_mixing_config.get("randomize_base_env", False)
+                    else:
+                        # 这个worker使用随机订单
+                        worker_curriculum_config['use_random_orders'] = True
+                
+                worker_args_list.append((
+                    self.shared_network.actor.get_weights(),
+                    self.shared_network.critic.get_weights(),
+                    self.state_dim,
+                    self.action_space, # 🔧 核心修复：传递action_space
+                    num_steps,
+                    self.seed + self.total_steps + i, # 每个worker有不同的seed
+                    self.global_state_dim,
+                    self.network_config,
+                    worker_curriculum_config
+                ))
+
+            # 并行执行采集任务（线程池）
+            futures = [self.pool.submit(collect_experience_wrapper, args) for args in worker_args_list]
+            results = [f.result() for f in futures]
+
+        except Exception as e:
+            print(f"❌ 并行工作进程失败: {e}")
+            import traceback
+            traceback.print_exc()
+            return 0.0, None
+
+        # 🔧 V36 修复：更健壮地处理worker失败返回的空数据
+        if not results or not results[0]: 
+            print("⚠️ 一个worker返回了空数据，已跳过。")
+            return 0.0, None
+
+        total_reward = 0.0
         worker_rewards = []  # 🔧 新增：记录每个worker的奖励
         
         # 初始化用于聚合所有worker数据的列表
         all_states, all_global_states, all_actions, all_old_probs, all_advantages, all_returns = [], [], [], [], [], []
 
-        # 🔧 使用 spawn 上下文，避免 TF 在 fork 下的不安全
-        with ProcessPoolExecutor(max_workers=self.num_workers, mp_context=multiprocessing.get_context("spawn")) as executor:
-            futures = []
-            # 多任务混合：按配置为部分worker分配基础订单，其余分配随机订单/当前阶段配置
-            mixing_cfg = TRAINING_FLOW_CONFIG.get("generalization_phase", {}).get("multi_task_mixing", {})
-            mixing_enabled = bool(mixing_cfg.get("enabled", False))
-            base_fraction = float(mixing_cfg.get("base_worker_fraction", 0.0)) if mixing_enabled else 0.0
-            num_base_workers = int(round(self.num_workers * base_fraction)) if mixing_enabled else 0
+        for (buffers, ep_reward, last_values, any_terminated, _graduated) in results:
+            # 汇总奖励
+            total_reward += float(ep_reward)
+            worker_rewards.append(float(ep_reward))
 
-            for i in range(self.num_workers):
-                seed = random.randint(0, 1_000_000)
-                # 为 worker 传入统一的 MAX_SIM_STEPS
-                worker_config = (curriculum_config.copy() if curriculum_config else {})
-                worker_config['MAX_SIM_STEPS'] = steps_per_worker
-
-                # 如果进入泛化阶段且启用混合，则重写前 num_base_workers 的环境为基础订单
-                if self.generalization_phase_active and mixing_enabled and i < num_base_workers:
-                    worker_config['custom_orders'] = BASE_ORDERS
-                    # 可选：对基础环境加入轻微扰动（避免过拟合）
-                    if bool(mixing_cfg.get('randomize_base_env', False)):
-                        worker_config['randomize_env'] = True
-                        worker_config['stage_name'] = '混合-基础(扰动)'
-                    else:
-                        # 显式关闭随机化，保持纯基准分布
-                        worker_config.pop('randomize_env', None)
-                        worker_config['stage_name'] = '混合-基础'
-
-                future = executor.submit(
-                    run_simulation_worker,
-                    network_weights,
-                    self.state_dim,
-                    self.action_dim,
-                    steps_per_worker,
-                    seed,
-                    self.global_state_dim,
-                    PPO_NETWORK_CONFIG.copy(),
-                    worker_config
+            # 将每个agent的缓冲区转换为GAE并聚合
+            if not buffers:
+                continue
+            for agent_id, buf in buffers.items():
+                if len(buf) == 0:
+                    continue
+                # 使用截断时的bootstrap值（如有）
+                next_v = None
+                if last_values is not None and agent_id in last_values:
+                    next_v = float(last_values[agent_id])
+                states, global_states, actions, old_probs, advantages, returns = buf.get_batch(
+                    gamma=PPO_NETWORK_CONFIG.get("gamma", 0.99),
+                    lam=PPO_NETWORK_CONFIG.get("lambda_gae", 0.95),
+                    next_value_if_truncated=next_v,
+                    advantage_clip_val=PPO_NETWORK_CONFIG.get("advantage_clip_val")
                 )
-                futures.append(future)
+                all_states.extend(states)
+                all_global_states.extend(global_states)
+                all_actions.extend(actions)
+                all_old_probs.extend(old_probs)
+                all_advantages.extend(advantages)
+                all_returns.extend(returns)
 
-            completed_workers = 0
-            finished_workers = 0
-            for future in as_completed(futures):
-                try:
-                    # 接收worker返回的原始经验、下一个全局状态和截断标志
-                    worker_buffers, worker_reward, next_global_state, was_truncated, worker_completed_all = future.result()
-                    total_reward += worker_reward
-                    worker_rewards.append(worker_reward)  # 🔧 新增：记录单个worker奖励
-                    completed_workers += 1 if worker_completed_all else 0
-                    finished_workers += 1
-                    
-                    # 在主进程中为该worker的每个智能体计算GAE和回报
-                    for agent_id in self.agent_ids:
-                        if agent_id in worker_buffers:
-                            buffer = worker_buffers[agent_id]
-                            if not buffer.states:  # 跳过空缓冲区
-                                continue
-                            
-                            # 🔧 使用正确的引导价值（逐智能体 one-hot 条件化）
-                            if was_truncated and next_global_state is not None:
-                                # 专家修复：使用在主训练器中定义的agent_ids和num_agents，确保索引一致性
-                                one_hot = np.zeros(self.num_agents, dtype=np.float32)
-                                one_hot[self.agent_ids.index(agent_id)] = 1.0
-                                augmented_next_state = np.concatenate([next_global_state, one_hot]).astype(np.float32)
-                                bootstrap_value = self.shared_network.get_value(augmented_next_state)
-                            else:
-                                bootstrap_value = None
-
-                            # 🔧 缺陷修复：将配置中的优势裁剪值传递给get_batch
-                            advantage_clip_val = PPO_NETWORK_CONFIG.get("advantage_clip_val")
-                            states, global_states, actions, old_probs, advantages, returns = buffer.get_batch(
-                                next_value_if_truncated=bootstrap_value,
-                                advantage_clip_val=advantage_clip_val,
-                                gamma = PPO_NETWORK_CONFIG.get("gamma", 0.99),
-                                lam = PPO_NETWORK_CONFIG.get("lambda_gae", 0.95)
-                            )
-                            
-                            # 将处理好的数据聚合到总批次中
-                            all_states.extend(states)
-                            all_global_states.extend(global_states)
-                            all_actions.extend(actions)
-                            all_old_probs.extend(old_probs)
-                            all_advantages.extend(advantages)
-                            all_returns.extend(returns)
-                            
-                except Exception as e:
-                    print(f"❌ 一个并行工作进程失败: {e}")
-                    import traceback
-                    traceback.print_exc()
-
-        if not all_states:
+        if len(all_states) == 0:
             # 返回时将完成统计编码在None批次旁边（通过总奖励的info在外层打印）
-            self._last_collect_finished_workers = finished_workers
-            self._last_collect_completed_workers = completed_workers
+            self._last_collect_finished_workers = self.num_workers
+            self._last_collect_completed_workers = 0
             self._last_collect_worker_rewards = worker_rewards  # 🔧 新增：保存worker奖励列表
-            avg_reward = total_reward / finished_workers if finished_workers > 0 else 0.0
+            # 保存混合统计摘要（用于日志）
+            self._last_collect_mixing_summary = {
+                'enabled': bool(self.generalization_phase_active and self.multi_task_mixing_config.get("enabled", False)),
+                'base_workers': int(self.num_base_workers) if (self.generalization_phase_active and self.multi_task_mixing_config.get("enabled", False)) else 0,
+                'random_workers': int(self.num_workers - (int(self.num_base_workers) if (self.generalization_phase_active and self.multi_task_mixing_config.get("enabled", False)) else 0)),
+                'base_avg_reward': float(np.mean(worker_rewards[:self.num_base_workers])) if worker_rewards[:self.num_base_workers] else None,
+                'random_avg_reward': float(np.mean(worker_rewards[self.num_base_workers:])) if worker_rewards[self.num_base_workers:] else None,
+            }
+            avg_reward = total_reward / self.num_workers if self.num_workers > 0 else 0.0
             return avg_reward, None
 
         # 将聚合后的数据列表转换为NumPy数组，形成最终的训练批次
         batch = {
-            "states": np.array(all_states),
-            "global_states": np.array(all_global_states),
+            "states": np.array(all_states, dtype=np.float32),
+            "global_states": np.array(all_global_states, dtype=np.float32),
             "actions": np.array(all_actions),
-            "old_probs": np.array(all_old_probs),
-            "advantages": np.array(all_advantages),
-            "returns": np.array(all_returns),
+            "old_probs": np.array(all_old_probs, dtype=np.float32),
+            "advantages": np.array(all_advantages, dtype=np.float32),
+            "returns": np.array(all_returns, dtype=np.float32),
         }
         # 记录本轮采集完成worker与达成worker数量，供外层日志打印
-        self._last_collect_finished_workers = finished_workers
-        self._last_collect_completed_workers = completed_workers
+        self._last_collect_finished_workers = self.num_workers
+        self._last_collect_completed_workers = len(results)
         self._last_collect_worker_rewards = worker_rewards  # 🔧 新增：保存worker奖励列表
-        avg_reward = total_reward / finished_workers if finished_workers > 0 else 0.0
+        # 保存混合统计摘要（用于日志）
+        self._last_collect_mixing_summary = {
+            'enabled': bool(self.generalization_phase_active and self.multi_task_mixing_config.get("enabled", False)),
+            'base_workers': int(self.num_base_workers) if (self.generalization_phase_active and self.multi_task_mixing_config.get("enabled", False)) else 0,
+            'random_workers': int(self.num_workers - (int(self.num_base_workers) if (self.generalization_phase_active and self.multi_task_mixing_config.get("enabled", False)) else 0)),
+            'base_avg_reward': float(np.mean(worker_rewards[:self.num_base_workers])) if worker_rewards[:self.num_base_workers] else None,
+            'random_avg_reward': float(np.mean(worker_rewards[self.num_base_workers:])) if worker_rewards[self.num_base_workers:] else None,
+        }
+        avg_reward = total_reward / self.num_workers if self.num_workers > 0 else 0.0
         return avg_reward, batch
     
     def update_policy(self, batch: Dict[str, np.ndarray], entropy_coeff: float) -> Dict[str, float]:
@@ -1010,12 +1145,34 @@ class SimplePPOTrainer:
             for agent in env.agents:
                 if agent in observations:
                     state = tf.expand_dims(observations[agent], 0)
-                    action_probs = self.shared_network.actor(state)
-                    # 🔧 使用确定性评估，但保留少量探索
+                    
+                    # 🔧 使用与worker一致的、可重用的网络实例进行推理
+                    network = self.shared_network
+                    
                     if random.random() < EVALUATION_CONFIG["exploration_rate"]:
-                        action = int(tf.random.categorical(tf.math.log(action_probs + 1e-8), 1)[0])
+                        # 10-20-21-35：MultiDiscrete 随机采样按头数独立采样同一分布
+                        if network.is_multidiscrete:
+                            action_probs = network.actor(state)  # (1, A)
+                            heads = len(network.action_dims)
+                            logits = tf.math.log(action_probs + 1e-8)
+                            sampled = []
+                            for _ in range(heads):
+                                draw = tf.random.categorical(logits, 1)  # (1,1)
+                                sampled.append(int(draw[0, 0]))
+                            action = np.array(sampled, dtype=network.action_space.dtype)
+                        else:
+                            action_probs = network.actor(state)
+                            action = int(tf.random.categorical(tf.math.log(action_probs + 1e-8), 1)[0])
                     else:
-                        action = int(tf.argmax(action_probs[0]))
+                        # 10-20-21-52：MultiDiscrete 确定性选择改为按概率降序选择top-k，避免重复
+                        action_probs = network.actor(state)
+                        if network.is_multidiscrete:
+                            heads = len(network.action_dims)
+                            # 获取top-k个最优动作（k=heads）
+                            top_k_indices = tf.argsort(action_probs[0], direction='DESCENDING')[:heads]
+                            action = np.array([int(idx) for idx in top_k_indices], dtype=network.action_space.dtype)
+                        else:
+                            action = int(tf.argmax(action_probs[0]))
                     actions[agent] = action
             
             observations, rewards, terminations, truncations, infos = env.step(actions)
@@ -1036,13 +1193,15 @@ class SimplePPOTrainer:
         }
     
     def quick_kpi_evaluation(self, num_episodes: int = 3, curriculum_config: Dict[str, Any] = None) -> Dict[str, float]:
-        """🔧 V39修复：快速KPI评估（支持课程学习配置和静默模式）"""
-        # 🔧 V39修复：创建环境时传递课程配置，包括静默模式
+        """快速KPI评估（支持课程学习配置和静默模式）"""
+        # 创建环境时传递课程配置，包括静默模式
         # 课程配置直接通过make_parallel_env传递，由环境内部处理
         if curriculum_config:
             curriculum_config = curriculum_config.copy()
             # 评估步长对齐环境超时
             curriculum_config['MAX_SIM_STEPS'] = self.max_steps_for_eval
+            # 训练期评估强制确定性候选，保证可复现
+            curriculum_config['deterministic_candidates'] = True
             env = make_parallel_env(curriculum_config)
         else:
             # 🔧 V39 修复一个潜在bug：正确解包create_environment的返回值
@@ -1059,17 +1218,22 @@ class SimplePPOTrainer:
             episode_reward = 0
             step_count = 0
             
-            # 🔧 修复：使用与训练一致的步数限制
+            # 使用与训练一致的步数限制
             while step_count < self.max_steps_for_eval:
                 actions = {}
                 
-                # 使用确定性策略评估
+                # 10-20-21-52：使用确定性策略评估（兼容MultiDiscrete，避免重复选择）
                 for agent in env.agents:
                     if agent in observations:
                         state = tf.expand_dims(observations[agent], 0)
-                        action_probs = self.shared_network.actor(state)
-                        action = int(tf.argmax(action_probs[0]))
-                        actions[agent] = action
+                        action_probs = self.shared_network.actor(state)  # (1, A)
+                        if isinstance(self.action_space, gym.spaces.MultiDiscrete):
+                            heads = len(self.action_space.nvec)
+                            # 10-20-21-52：按概率降序选择top-k个动作，避免所有机器选择同一工件
+                            top_k_indices = tf.argsort(action_probs[0], direction='DESCENDING')[:heads]
+                            actions[agent] = np.array([int(idx) for idx in top_k_indices], dtype=self.action_space.dtype)
+                        else:
+                            actions[agent] = int(tf.argmax(action_probs[0]))
                 
                 observations, rewards, terminations, truncations, infos = env.step(actions)
                 episode_reward += sum(rewards.values())
@@ -1120,13 +1284,18 @@ class SimplePPOTrainer:
             while step_count < self.max_steps_for_eval:
                 actions = {}
                 
-                # 使用确定性策略评估
+                # 10-20-21-52：使用确定性策略评估（兼容MultiDiscrete，避免重复选择）
                 for agent in env.agents:
                     if agent in observations:
                         state = tf.expand_dims(observations[agent], 0)
-                        action_probs = self.shared_network.actor(state)
-                        action = int(tf.argmax(action_probs[0]))
-                        actions[agent] = action
+                        action_probs = self.shared_network.actor(state)  # (1, A)
+                        if isinstance(self.action_space, gym.spaces.MultiDiscrete):
+                            heads = len(self.action_space.nvec)
+                            # 10-20-21-52：按概率降序选择top-k个动作，避免所有机器选择同一工件
+                            top_k_indices = tf.argsort(action_probs[0], direction='DESCENDING')[:heads]
+                            actions[agent] = np.array([int(idx) for idx in top_k_indices], dtype=self.action_space.dtype)
+                        else:
+                            actions[agent] = int(tf.argmax(action_probs[0]))
                 
                 observations, rewards, terminations, truncations, infos = env.step(actions)
                 episode_reward += sum(rewards.values())
@@ -1159,8 +1328,8 @@ class SimplePPOTrainer:
     
     def train(self, max_episodes: int = 1000, steps_per_episode: int = 200, 
               eval_frequency: int = 20, adaptive_mode: bool = True):
-        """🔧 V31 自适应训练主循环：根据性能自动调整训练策略和轮数"""
-        # 🔧 V31 自适应模式：最大轮数作为上限，实际轮数根据性能动态决定
+        """ 自适应训练主循环：根据性能自动调整训练策略和轮数"""
+        # 自适应模式：最大轮数作为上限，实际轮数根据性能动态决定
 
         if adaptive_mode:
             self.training_targets["max_episodes"] = max_episodes
@@ -1335,9 +1504,25 @@ class SimplePPOTrainer:
                 self.episode_rewards.append(episode_reward)
 
                 
-                # 提前进行KPI评估，以便整合TensorBoard日志
-                kpi_results = self.quick_kpi_evaluation(num_episodes=1, curriculum_config=current_curriculum_config)
-                self.kpi_history.append(kpi_results)
+                # 提前进行KPI评估（按频率控制），以便整合TensorBoard日志
+                if eval_frequency is None:
+                    eval_frequency = 1
+                if eval_frequency <= 1 or (episode % eval_frequency == 0):
+                    kpi_results = self.quick_kpi_evaluation(num_episodes=1, curriculum_config=current_curriculum_config)
+                    self.kpi_history.append(kpi_results)
+                else:
+                    # 若本回合不评估，则沿用上一次可用KPI（若无则做最小占位）
+                    if self.kpi_history:
+                        kpi_results = self.kpi_history[-1]
+                    else:
+                        kpi_results = {
+                            'mean_reward': 0.0,
+                            'mean_makespan': 0.0,
+                            'mean_utilization': 0.0,
+                            'mean_completed_parts': 0.0,
+                            'mean_tardiness': 0.0
+                        }
+                        self.kpi_history.append(kpi_results)
 
                 # 🔧 核心改造：计算当前回合的综合评分
                 current_score = calculate_episode_score(kpi_results, config=current_curriculum_config)
@@ -1679,6 +1864,20 @@ class SimplePPOTrainer:
                     f" (CPU采集: {collect_duration:.1f}s, GPU更新: {update_duration:.1f}s)"
                 )
 
+                # 如开启多任务混合，追加分组奖励与配比摘要
+                mixing_summary = getattr(self, '_last_collect_mixing_summary', None)
+                if mixing_summary and mixing_summary.get('enabled', False):
+                    base_workers = mixing_summary.get('base_workers', 0)
+                    random_workers = mixing_summary.get('random_workers', 0)
+                    base_avg = mixing_summary.get('base_avg_reward')
+                    rand_avg = mixing_summary.get('random_avg_reward')
+                    base_avg_str = f"{base_avg:.1f}" if base_avg is not None else "N/A"
+                    rand_avg_str = f"{rand_avg:.1f}" if rand_avg is not None else "N/A"
+                    line1 += (
+                        f" | 混合: 基础{base_workers} / 随机{random_workers}"
+                        f" (基础均奖:{base_avg_str}, 随机均奖:{rand_avg_str})"
+                    )
+
                 # 第二行：KPI数据和阶段信息 (核心修复：动态显示目标零件数)
                 target_parts_for_log = self._get_target_parts(current_curriculum_config)
                 stage_info_str = ""
@@ -1996,7 +2195,7 @@ def main():
             logs_root_dir=cli_args.logs_dir
         )
         
-        # 🔧 V31 启动自适应训练：系统将根据性能自动决定何时停止
+        # 启动自适应训练：系统将根据性能自动决定何时停止
         results = trainer.train(
             max_episodes=max_episodes,
             steps_per_episode=steps_per_episode,

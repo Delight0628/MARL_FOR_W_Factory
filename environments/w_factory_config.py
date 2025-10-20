@@ -68,21 +68,21 @@ TRAINING_FLOW_CONFIG = {
             "priority_weights": [0.3, 0.5, 0.2],
         },
         
-        # 多任务混合训练配置（per-worker级别混合）
+        # 多任务混合训练配置（per-worker级别混合）,仅在泛化阶段生效
         # 含义：在泛化阶段的每轮数据采集中，按比例将一部分worker固定在基础订单环境，
         # 其余worker在随机订单环境，防止灾难性遗忘并稳定策略。
         "multi_task_mixing": {
             "enabled": True,
             "base_worker_fraction": 0.25,   # 使用基础订单环境的worker占比（0.0~1.0）
-            "randomize_base_env": False     # 基础环境是否加入轻微扰动
+            "randomize_base_env": False     # 打开则使得基础训练也有扰动
         }
     },
     
     # --- 通用训练参数 ---
     "general_params": {
         "max_episodes": 1000,
-        "steps_per_episode": 1500,          # 🔧 新增：每回合最大步数
-        "eval_frequency": 20,               # 🔧 新增：评估频率
+        "steps_per_episode": 1500,          # 每回合最大步数
+        "eval_frequency": 1,               # 默认每回合评估
         "early_stop_patience": 100,
         "performance_window": 15
     }
@@ -221,7 +221,8 @@ ENHANCED_OBS_CONFIG = {
 #   [3] 移除所有启发式策略动作，强制agent学习真正的调度逻辑
 # 这种设计确保智能体必须从零开始学习，而不是依赖内置算法
 ACTION_CONFIG_ENHANCED = {
-    "action_space_size": 11,  # 0=IDLE, 1-10=候选工件
+    # 移除固定的动作空间大小，因为它现在由环境根据设备数动态生成
+    # "action_space_size": 11,  # 0=IDLE, 1-10=候选工件
     "action_names": [
         "IDLE",                          # 0: 不处理（等待）
         "CANDIDATE_1", "CANDIDATE_2",    # 1-2: 候选工件1-2（多样性采样）
@@ -245,42 +246,41 @@ REWARD_ANNEALING_CONFIG = {
 
 REWARD_CONFIG = {
     # ============================================================
-    # 第一层：任务完成奖励（主导信号，占总奖励80%）
+    # 第一层：任务完成奖励（主导信号）
     # ============================================================
-    "part_completion_reward": 500.0,        
-    "final_all_parts_completion_bonus": 3000.0, 
+    "part_completion_reward": 80.0,        
+    "final_all_parts_completion_bonus": 500.0, 
     
     # ============================================================
-    # 第二层：时间质量奖励（次要信号，占总奖励15%）
+    # 第二层：时间质量奖励（次要信号）
     # ============================================================
-    "on_time_completion_reward": 500.0,      
-    "tardiness_penalty_scaler": -500.0,     
+    "on_time_completion_reward": 80.0,      
+    "tardiness_penalty_scaler": -80.0,     
     
     # ============================================================
-    # 第三层：过程塑形奖励（引导信号，占总奖励5%）
+    # 第三层：过程塑形奖励（引导信号）
     # ============================================================
     # 3.1 进度塑形（鼓励持续推进）
     "progress_shaping_coeff": 0.1,          
     
-    # 3.2 行为约束（最小化惩罚，避免干扰主信号）
-    "unnecessary_idle_penalty": -5.0,      
-    "invalid_action_penalty": -2.0,       
+    # 3.2 行为约束（最小化惩罚）
+    "unnecessary_idle_penalty": -1.0,      
+    "invalid_action_penalty": -0.5,      
     
     # 3.3 紧急度引导
-    "urgency_reduction_reward": 0.1,         # 降低紧急度的奖励系数
+    "urgency_reduction_reward": 0.1,         
     
     # 3.4 (核心改进) 基于负松弛时间的持续惩罚
-    # 这是本次修复的核心，它提供了一个即时、密集且与延期严重程度成正比的惩罚信号
-    # 它会惩罚那些让“预计会延期的工件”在队列中等待的行为
-    "slack_time_penalty_coeff": -0.02, # 关键参数：负值。每分钟的负松弛时间都会导致-0.02的惩罚
+    # 提供即时、密集的惩罚信号, 迫使智能体优先处理预计延期的工件
+    "slack_time_penalty_coeff": -0.1, 
 }
 
 # =============================================================================
 # 7. 环境随机化配置 (Environment Randomization)
 # =============================================================================
 ENV_RANDOMIZATION_CONFIG = {
-    "due_date_jitter": 15.0,      # 交货日期抖动范围 (+/- 分钟)
-    "arrival_time_jitter": 10.0,  # 到达时间抖动范围 (0 to X 分钟)
+    "due_date_jitter": 50.0,      # 交货日期抖动范围 (+/- 分钟)
+    "arrival_time_jitter": 30.0,  # 到达时间抖动范围 (0 to X 分钟)
 }
 
 # =============================================================================
@@ -317,6 +317,11 @@ EVALUATION_CONFIG = {
     "exploration_rate": 0.0,  # 评估时使用的随机探索率，设置为0则为纯粹的确定性评估
     "deterministic_candidates": True, # 在评估时使用确定性候选，确保启发式基线可复现
 }
+
+# 说明：
+# - evaluation.py 会将 EVALUATION_CONFIG 合并进评估环境，因此默认评估为确定性候选。
+# - 训练阶段内置的 quick_kpi_evaluation 也会显式注入 deterministic_candidates=True，
+#   以保证训练期评估的可复现性，与离线评估保持一致。
 
 # 学习率调度配置
 LEARNING_RATE_CONFIG = {

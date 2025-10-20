@@ -13,6 +13,8 @@ import seaborn as sns
 from collections import Counter
 import argparse
 import random # 统一随机种子
+# 10201530 新增：导入gym以检测MultiDiscrete动作空间
+import gymnasium as gym
 
 # 添加环境路径
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -184,36 +186,82 @@ def debug_marl_actions(model_path: str, config: dict, max_steps: int = 600, dete
         print(f"❌ 加载模型时发生未知错误: {e}")
         return
 
-    # 创建环境
-    env = WFactoryEnv(config=config)
+    # 创建环境（默认启用确定性候选，保证调试可复现）
+    config_for_debug = dict(config) if isinstance(config, dict) else {}
+    config_for_debug.setdefault('deterministic_candidates', True)
+    env = WFactoryEnv(config=config_for_debug)
     obs, info = env.reset(seed=seed)
     
     print(f"🏭 环境信息:")
     print(f"   智能体数量: {len(env.agents)}")
     print(f"   智能体列表: {env.agents}")
     
-    # 记录动作统计
-    action_stats = {agent: Counter() for agent in env.agents}
+    # 10201530 修复：为MultiDiscrete建立按设备维度的动作统计
+    heads_map = {}
+    for agent in env.agents:
+        space = env.action_space(agent)
+        if isinstance(space, gym.spaces.MultiDiscrete):
+            heads_map[agent] = len(space.nvec)
+        else:
+            heads_map[agent] = 1
+
+    # 10201530 修复：动作统计改为每个agent的每个设备一份Counter
+    action_stats = {agent: [Counter() for _ in range(heads_map[agent])] for agent in env.agents}
     step_count = 0
     
     print(f"\n🎯 开始记录前{max_steps}步的动作模式...")
     
+    # 10201530 新增：从概率分布生成并行动作的工具函数（去重、可选采样）
+    def choose_parallel_actions_from_probs(probs: np.ndarray, num_heads: int, greedy: bool = True) -> np.ndarray:
+        probs = np.asarray(probs, dtype=np.float64)
+        probs = np.clip(probs, 1e-12, 1.0)
+        probs = probs / probs.sum()
+
+        # 贪心：从大到小选前K个，避免重复
+        if greedy:
+            sorted_idx = np.argsort(probs)[::-1]
+            chosen = []
+            for idx in sorted_idx:
+                # 允许IDLE(0)被选择；去重相同动作
+                if idx not in chosen:
+                    chosen.append(int(idx))
+                if len(chosen) >= num_heads:
+                    break
+            # 如果不足K，补0
+            while len(chosen) < num_heads:
+                chosen.append(0)
+            return np.array(chosen, dtype=np.int32)
+
+        # 随机：无放回抽样num_heads个动作
+        n = probs.shape[0]
+        if num_heads >= n:
+            # 边界：动作数不足时，允许部分重复
+            sampled = np.random.choice(np.arange(n), size=num_heads, replace=True, p=probs)
+        else:
+            sampled = np.random.choice(np.arange(n), size=num_heads, replace=False, p=probs)
+        return sampled.astype(np.int32)
+
     while step_count < max_steps:
         # MARL策略
         actions = {}
         for agent in env.agents:
             if agent in obs:
                 state = tf.expand_dims(obs[agent], 0)
-                action_probs = actor_model(state, training=False)
+                action_probs_tensor = actor_model(state, training=False)
+                action_probs = action_probs_tensor[0].numpy()
+                space = env.action_space(agent)
+                is_multi = isinstance(space, gym.spaces.MultiDiscrete)
+                num_heads = heads_map.get(agent, 1)
                 
                 # 显示前几步的详细信息
                 if step_count < 5:
                     print(f"\n--- 步骤 {step_count+1}: {agent} ---")
                     # 解码并打印观测向量
-                    decoded_obs_str = decode_observation(obs[agent], agent, info[agent])
+                    # 10201530 修复：向decode传入obs_meta
+                    decoded_obs_str = decode_observation(obs[agent], agent, info[agent].get('obs_meta', {}))
                     print(decoded_obs_str)
                     # 打印动作概率
-                    action_probs = actor_model(state, training=False)[0].numpy()
+                    action_probs = action_probs
                     
                     # 从info中获取动作名称
                     action_names = info[agent].get('obs_meta', {}).get('action_names', [])
@@ -224,20 +272,50 @@ def debug_marl_actions(model_path: str, config: dict, max_steps: int = 600, dete
                         # Fallback if action_names is not available
                         policy_dist_str = ", ".join([f"Action{i}={prob:.2%}" for i, prob in enumerate(action_probs)])
                     print(f"  - 策略分布: [{policy_dist_str}]")
-                    print(f"  - 最终选择动作: {action} ({action_names[action] if action < len(action_names) else '未知'})")
 
-                if deterministic:
-                    # 确定性策略：总是选择概率最高的动作
-                    action = int(tf.argmax(action_probs[0]))
-                else:
-                    # 随机策略：80%概率选最优，20%根据概率分布采样 (与evaluation.py对齐)
-                    if np.random.random() < 0.2:
-                        action = tf.random.categorical(tf.math.log(action_probs + 1e-8), 1)[0, 0].numpy()
+                # 10201530 修复：根据动作空间类型生成标量或并行动作数组
+                if is_multi:
+                    # 80/20策略：主要贪心，少量采样
+                    if deterministic:
+                        action = choose_parallel_actions_from_probs(action_probs, num_heads, greedy=True)
                     else:
-                        action = int(tf.argmax(action_probs[0]))
+                        if np.random.random() < 0.2:
+                            action = choose_parallel_actions_from_probs(action_probs, num_heads, greedy=False)
+                        else:
+                            action = choose_parallel_actions_from_probs(action_probs, num_heads, greedy=True)
+                else:
+                    if deterministic:
+                        action = int(np.argmax(action_probs))
+                    else:
+                        if np.random.random() < 0.2:
+                            action = int(np.random.choice(np.arange(len(action_probs)), p=action_probs))
+                        else:
+                            action = int(np.argmax(action_probs))
+
+                # 10201530 修复：在详细阶段打印选择结果
+                if step_count < 5:
+                    if is_multi:
+                        decoded = [
+                            (info[agent].get('obs_meta', {}).get('action_names', [])[a]
+                             if a < len(info[agent].get('obs_meta', {}).get('action_names', [])) else f"Action{a}")
+                            for a in list(action)
+                        ]
+                        print(f"  - 最终选择动作(并行): {list(action)} -> {decoded}")
+                    else:
+                        anames = info[agent].get('obs_meta', {}).get('action_names', [])
+                        print(f"  - 最终选择动作: {action} ({anames[action] if action < len(anames) else '未知'})")
 
                 actions[agent] = action
-                action_stats[agent][action] += 1
+                # 10201530 修复：统计并行动作（按设备维度）
+                if isinstance(action, (list, np.ndarray)):
+                    action_list = list(action)
+                else:
+                    action_list = [int(action)]
+                # 统一长度
+                if len(action_list) < heads_map[agent]:
+                    action_list += [0] * (heads_map[agent] - len(action_list))
+                for k in range(heads_map[agent]):
+                    action_stats[agent][k][int(action_list[k])] += 1
         
         # 执行动作
         obs, rewards, terminations, truncations, info = env.step(actions)
@@ -262,15 +340,17 @@ def debug_marl_actions(model_path: str, config: dict, max_steps: int = 600, dete
     print(f"\n📊 动作统计分析 (总共{step_count}步):")
     print("-" * 60)
     
+    # 10201530 修复：按设备维度输出统计
     for agent in env.agents:
         print(f"{agent}:")
-        total_actions = sum(action_stats[agent].values())
-        for action, count in sorted(action_stats[agent].items()):
-            percentage = (count / total_actions) * 100 if total_actions > 0 else 0
-            # 🔧 修复：使用配置中的动作名称，防止越界
-            action_names = info[agent].get('obs_meta', {}).get('action_names', [])
-            action_name = action_names[action] if action < len(action_names) else f"未知动作{action}"
-            print(f"   动作{action} ({action_name}): {count}次 ({percentage:.1f}%)")
+        for k, counter in enumerate(action_stats[agent]):
+            total = sum(counter.values())
+            print(f"  设备#{k}:")
+            for action, count in sorted(counter.items()):
+                pct = (count / total) * 100 if total > 0 else 0
+                action_names = info[agent].get('obs_meta', {}).get('action_names', [])
+                action_name = action_names[action] if action < len(action_names) else f"未知动作{action}"
+                print(f"    - 动作{action} ({action_name}): {count}次 ({pct:.1f}%)")
         print()
     
     # 获取最终统计

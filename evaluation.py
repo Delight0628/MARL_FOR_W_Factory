@@ -26,6 +26,8 @@ from environments.w_factory_config import (
     get_total_parts_count, SIMULATION_TIME, BASE_ORDERS,
     calculate_episode_score, EVALUATION_CONFIG
 )
+# 10201530 新增：导入gym以识别MultiDiscrete动作空间
+import gymnasium as gym
 
 # =============================================================================
 # 1. 核心配置 (Core Configuration)
@@ -102,7 +104,8 @@ def run_single_episode(env: WFactoryEnv, policy_fn, seed: int, config: dict = No
     step_count = 0
     
     while step_count < 1500: # 与训练时保持一致的最大步数
-        actions = policy_fn(obs, env)
+        # 修复：将 info 和 step_count 传递给策略函数
+        actions = policy_fn(obs, env, info, step_count)
         obs, rewards, terminations, truncations, info = env.step(actions)
         step_count += 1
         
@@ -138,14 +141,29 @@ def evaluate_marl_model(model_path: str, config: dict = STATIC_EVAL_CONFIG, gene
         print(f"❌ 加载模型失败: {e}", flush=True)
         return None, None
 
-    def marl_policy(obs, env):
+    # 10201530 修复：MARL策略适配MultiDiscrete，按“共享分布×并行设备数”输出动作数组
+    def marl_policy(obs, env, info, step_count):
         actions = {}
         for agent in env.agents:
             if agent in obs:
                 state = tf.expand_dims(obs[agent], 0)
-                action_probs = actor_model(state, training=False)
-                action = int(tf.argmax(action_probs[0]))
-                actions[agent] = action
+                action_probs = actor_model(state, training=False)[0].numpy()  # (A,)
+                space = env.action_space(agent)
+                if isinstance(space, gym.spaces.MultiDiscrete):
+                    k = len(space.nvec)
+                    # 贪心选前k个不同动作（包含0=IDLE）
+                    sorted_idx = np.argsort(action_probs)[::-1]
+                    chosen = []
+                    for idx in sorted_idx:
+                        if int(idx) not in chosen:
+                            chosen.append(int(idx))
+                        if len(chosen) >= k:
+                            break
+                    while len(chosen) < k:
+                        chosen.append(0)
+                    actions[agent] = np.array(chosen, dtype=space.dtype)
+                else:
+                    actions[agent] = int(np.argmax(action_probs))
         return actions
 
     # 🔧 V4 修复：直接通过config传递自定义订单，无需上下文管理器
@@ -203,7 +221,8 @@ def evaluate_heuristic(heuristic_name: str, config: dict = STATIC_EVAL_CONFIG, g
         total_parts = sum(order["quantity"] for order in config['custom_orders'])
         print(f"📦 自定义订单: {len(config['custom_orders'])}个订单, 总计{total_parts}个零件", flush=True)
 
-    def heuristic_policy(obs, env):
+    # 10201530 修复：启发式策略适配MultiDiscrete，返回每个设备一个动作
+    def heuristic_policy(obs, env, info, step_count):
         """
         🌟 智能适配版：自动适配任何动作空间结构
         
@@ -224,8 +243,9 @@ def evaluate_heuristic(heuristic_name: str, config: dict = STATIC_EVAL_CONFIG, g
         
         # 🔧 自动检测动作空间结构：从环境实例获取，而不是全局导入
         action_names = []
-        # 在step=0时，info在外部，step>0时，info在env实例上
-        info_source = info if step_count == 0 else (env.infos if hasattr(env, 'infos') else {})
+        
+        # 修复：直接使用传入的info字典
+        info_source = info
 
         if env.agents:
             first_agent = env.agents[0]
@@ -249,73 +269,91 @@ def evaluate_heuristic(heuristic_name: str, config: dict = STATIC_EVAL_CONFIG, g
             queue = sim.queues[station_name].items
             
             if not queue:
-                actions[agent_id] = 0  # IDLE
+                # 10201530 修复：MultiDiscrete需要返回数组，全零代表全部IDLE
+                sp = env.action_space(agent_id)
+                if isinstance(sp, gym.spaces.MultiDiscrete):
+                    actions[agent_id] = np.zeros(len(sp.nvec), dtype=sp.dtype)
+                else:
+                    actions[agent_id] = 0
                 continue
 
             # 🔧 分支1：动作空间中存在启发式动作（旧版本）
             if use_direct_action:
-                actions[agent_id] = action_map[target_action_name]
+                sp = env.action_space(agent_id)
+                if isinstance(sp, gym.spaces.MultiDiscrete):
+                    k = len(sp.nvec)
+                    actions[agent_id] = np.array([action_map[target_action_name]] * k, dtype=sp.dtype)
+                else:
+                    actions[agent_id] = action_map[target_action_name]
                 continue
             
             # 🔧 分支2：动作空间中不存在启发式动作（新版本 - 独立实现）
-            selected_part = None
+            selected_parts = []
             
             if heuristic_name == 'FIFO':
                 # FIFO：选择队首工件
-                selected_part = queue[0]
+                # FIFO：直接取队首，重复k次
+                selected_parts = [queue[0]]
                 
             elif heuristic_name == 'EDD':
                 # EDD：选择松弛时间最小的工件
-                min_slack = float('inf')
-                for part in queue:
-                    # 🔧 移除对 WORKSTATIONS 的直接依赖
-                    slack = calculate_slack_time(part, sim.env.now, sim.queues)
-                    if slack < min_slack:
-                        min_slack = slack
-                        selected_part = part
+                # EDD：按slack从小到大排序
+                parts_sorted = sorted(queue, key=lambda p: calculate_slack_time(p, sim.env.now, sim.queues))
+                selected_parts = parts_sorted
                         
             elif heuristic_name == 'SPT':
                 # SPT：选择加工时间最短的工件
-                min_time = float('inf')
-                for part in queue:
-                    proc_time = part.get_processing_time()
-                    if proc_time < min_time:
-                        min_time = proc_time
-                        selected_part = part
+                # SPT：按当前工序时间从小到大排序
+                parts_sorted = sorted(queue, key=lambda p: p.get_processing_time())
+                selected_parts = parts_sorted
             else:
                 raise ValueError(f"未知的启发式规则: {heuristic_name}")
             
-            # 将选中的工件映射到候选动作
+            # 10201530 修复：将前k个目标零件映射为MultiDiscrete动作数组
             candidates = sim._get_candidate_workpieces(station_name)
-            
-            action = 0  # 默认IDLE
-            if selected_part is not None:
-                # 在候选列表中查找匹配的工件
-                for cand_info in candidates:
-                    cand_part = cand_info.get("part") if isinstance(cand_info, dict) else cand_info[0]
-                    cand_idx = cand_info.get("index") if isinstance(cand_info, dict) else cand_info[1]
-                    
-                    if cand_part.part_id == selected_part.part_id:
-                        # 🔧 动态计算候选动作起始位置
-                        # 候选动作通常从1开始（0是IDLE），但也可能从其他位置开始
-                        # 检测第一个"CANDIDATE_"动作的位置
-                        candidate_action_start = next(
-                            (i for i, name in enumerate(action_names) if "CANDIDATE_" in name),
-                            1  # 默认从1开始
-                        )
-                        # 候选列表的索引映射到动作ID
-                        action = candidate_action_start + candidates.index(cand_info)
+            sp = env.action_space(agent_id)
+            if isinstance(sp, gym.spaces.MultiDiscrete):
+                k = len(sp.nvec)
+                chosen_actions = []
+                used_part_ids = set()
+                # 映射：根据候选列表找到匹配动作
+                for target_part in selected_parts:
+                    if len(chosen_actions) >= k:
                         break
-                
-                # 如果在候选列表中找不到，降级策略：选择第一个候选
-                if action == 0 and len(candidates) > 0:
-                    candidate_action_start = next(
-                        (i for i, name in enumerate(action_names) if "CANDIDATE_" in name),
-                        1
-                    )
-                    action = candidate_action_start
-                    
-            actions[agent_id] = action
+                    if target_part.part_id in used_part_ids:
+                        continue
+                    found = 0
+                    for idx, cand in enumerate(candidates):
+                        cand_part = cand.get("part") if isinstance(cand, dict) else cand[0]
+                        if cand_part and cand_part.part_id == target_part.part_id:
+                            candidate_action_start = next(
+                                (i for i, name in enumerate(action_names) if "CANDIDATE_" in name),
+                                1
+                            )
+                            found = candidate_action_start + idx
+                            break
+                    if found != 0:
+                        chosen_actions.append(int(found))
+                        used_part_ids.add(target_part.part_id)
+                # 补齐为k个（不足时用IDLE=0）
+                while len(chosen_actions) < k:
+                    chosen_actions.append(0)
+                actions[agent_id] = np.array(chosen_actions, dtype=sp.dtype)
+            else:
+                # 单设备环境：回退为原有单一动作逻辑
+                action = 0
+                if selected_parts:
+                    target_part = selected_parts[0]
+                    for idx, cand in enumerate(candidates):
+                        cand_part = cand.get("part") if isinstance(cand, dict) else cand[0]
+                        if cand_part and cand_part.part_id == target_part.part_id:
+                            candidate_action_start = next(
+                                (i for i, name in enumerate(action_names) if "CANDIDATE_" in name),
+                                1
+                            )
+                            action = candidate_action_start + idx
+                            break
+                actions[agent_id] = action
             
         return actions
 
