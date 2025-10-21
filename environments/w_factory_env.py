@@ -452,9 +452,9 @@ class WFactorySim:
         方案B：全局优化观测状态
         - 包含四大部分：
           1. 智能体自身特征 (8维)
-          2. 全局宏观特征 (7维)
-          3. 当前队列摘要统计 (40维)
-          4. 候选工件详细特征 (150维)
+          2. 全局宏观特征 (4维)
+          3. 当前队列摘要统计 (30维)
+          4. 候选工件详细特征 (90维)
         """
         station_name = agent_id.replace("agent_", "")
         
@@ -496,7 +496,7 @@ class WFactorySim:
         # --- 3. 当前队列摘要统计 (Queue Summary) - 40维 ---
         queue_summary = self._get_queue_summary_features(station_name)
         
-        # --- 4. 候选工件详细特征 (Candidate Workpieces) - 150维 ---
+        # --- 4. 候选工件详细特征 (Candidate Workpieces) - 90维 ---
         candidate_features = self._get_candidate_features(station_name)
         
         # 组合所有特征
@@ -584,7 +584,8 @@ class WFactorySim:
     
     def _get_candidate_features(self, station_name: str) -> np.ndarray:
         """
-        方案B：获取候选工件详细特征 (150维 = 15维 × 10工件)
+        # 10-21-22-30：更正维度注释
+        # 方案B：获取候选工件详细特征 (90维 = 9维 × 10工件)
         采用多样性采样策略
         """
         candidates = self._get_candidate_workpieces(station_name)
@@ -612,9 +613,7 @@ class WFactorySim:
         - 不再受限于队列前几个位置，实现真正的全局优化
         
         采样策略：
-        1. 最紧急的N个：按EDD策略选择（松弛度最小）
-        2. 最短的N个：按SPT策略选择（加工时间最短）
-        3. 随机N个：随机采样（保证探索多样性）
+        - 随机采样N个（或确定性地取队列前N个，当deterministic_candidates=True）
         
         返回格式：[{"part": Part, "index": int, "category": str}, ...]
         """
@@ -847,7 +846,9 @@ class WFactorySim:
                 "action": agent_action,
                 "selected_part": None,
                 "processed": False,
-                "started_parts": []  # 记录本步该agent启动的所有零件及其决策时slack
+                "started_parts": [],  # 记录本步该agent启动的所有零件及其决策时slack
+                # 10-21-22-45 修复：统计无效/冲突动作尝试次数（即便成功回退也记惩罚）
+                "invalid_attempts": 0
             }
             action_context[agent_id] = context
 
@@ -889,6 +890,8 @@ class WFactorySim:
                                 })
                             else:
                                 # 10-20-21-35 资源回退：目标工件在本步已被锁定，顺延选择未被锁定的候选
+                                # 10-21-22-45 修复：记录一次无效/冲突动作尝试
+                                context["invalid_attempts"] = context.get("invalid_attempts", 0) + 1
                                 fallback_chosen = None
                                 candidates = self._get_candidate_workpieces(station_name)
                                 for cand in candidates:
@@ -907,6 +910,8 @@ class WFactorySim:
                                 # 若没有可用候选，则该设备本步空转（由约束惩罚处理）
                         else:
                             # 10-20-21-35 资源回退：动作无效/未命中时，尝试选择任一未被锁定的候选
+                            # 10-21-22-45 修复：记录一次无效动作尝试
+                            context["invalid_attempts"] = context.get("invalid_attempts", 0) + 1
                             fallback_chosen = None
                             candidates = self._get_candidate_workpieces(station_name)
                             for cand in candidates:
@@ -1177,6 +1182,11 @@ class WFactorySim:
             # 若全部为零且队列非空，判定为不必要的空转
             if all_zero and queue_len_before > 0:
                 rewards[agent_id] += REWARD_CONFIG["unnecessary_idle_penalty"]
+
+            # 10-21-22-45 修复：对被回退机制“修正”的无效/冲突尝试也进行惩罚，避免环境替代学习信号
+            invalid_attempts = int(context.get("invalid_attempts", 0))
+            if invalid_attempts > 0:
+                rewards[agent_id] += REWARD_CONFIG["invalid_action_penalty"] * float(invalid_attempts)
         
         # 2.3 紧急度引导（替代密集奖励）
         urgency_reward = self._calculate_urgency_reduction_reward()

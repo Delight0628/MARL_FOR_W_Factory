@@ -925,15 +925,15 @@ class SimplePPOTrainer:
                 
                 # --- 多任务混合训练逻辑 (仅在泛化阶段) ---
                 if self.foundation_training_completed and self.multi_task_mixing_config.get("enabled", False):
-                    # 根据比例决定该worker是使用基础环境还是随机环境
+                    # 10-21-22-30：使多任务混合训练真正生效，显式设置 custom_orders
                     if i < self.num_base_workers:
-                        # 这个worker使用基础订单
-                        worker_curriculum_config['use_base_orders'] = True
-                        # 可选：是否也对基础环境加扰动
+                        # 基础订单worker：强制使用BASE_ORDERS
+                        worker_curriculum_config['custom_orders'] = BASE_ORDERS
                         worker_curriculum_config['randomize_env'] = self.multi_task_mixing_config.get("randomize_base_env", False)
                     else:
-                        # 这个worker使用随机订单
-                        worker_curriculum_config['use_random_orders'] = True
+                        # 随机订单worker：为每个worker独立生成随机订单
+                        worker_curriculum_config['custom_orders'] = generate_random_orders()
+                        worker_curriculum_config['randomize_env'] = True
                 
                 worker_args_list.append((
                     self.shared_network.actor.get_weights(),
