@@ -22,10 +22,10 @@ TRAINING_FLOW_CONFIG = {
     "foundation_phase": {
         # 毕业标准：必须连续N次达到以下所有条件
         "graduation_criteria": {
-            "target_score": 0.72,           # 从0.72降至0.65，给学习更多空间
-            "target_consistency": 8,        # 从5增至8，确保稳定性
-            "tardiness_threshold": 450.0,   # 从450增至600，更宽松的延期要求
-            "min_completion_rate": 100.0,    # 从100%降至95%，允许少量未完成
+            "target_score": 0.72,          
+            "target_consistency": 8,        
+            "tardiness_threshold": 450.0,   
+            "min_completion_rate": 100.0,    
         },
         
         # 可选：在基础训练内部启用课程学习，以循序渐进的方式达到最终目标

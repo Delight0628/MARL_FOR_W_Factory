@@ -17,7 +17,6 @@ from tensorflow.keras import layers, Model
 from tensorflow.keras.optimizers import Adam
 from tensorflow.keras.optimizers.schedules import PolynomialDecay
 from multiprocessing import Pool
-from concurrent.futures import ThreadPoolExecutor
 
 
 TENSORBOARD_AVAILABLE = hasattr(tf.summary, "create_file_writer")
@@ -185,7 +184,7 @@ class PPONetwork:
             self.critic_optimizer = None
         
     def _build_networks(self):
-        """MAPPO：使用配置文件参数构建网络"""
+        """10-21-23-01 恢复并完善多头网络架构，以从根本上解决MultiDiscrete协同问题"""
         # 导入配置
         if self.config:
             config = self.config
@@ -194,128 +193,61 @@ class PPONetwork:
             config = PPO_NETWORK_CONFIG
 
         hidden_sizes = config["hidden_sizes"]
-        dropout_rate = config.get("dropout_rate", 0.1) # Use .get for safety
+        dropout_rate = config.get("dropout_rate", 0.1)
         
-         # Actor网络 (去中心化) - 共享权重逐候选打分 + 上下文条件化
-        # 观测结构：非候选上下文 + 候选矩阵 (num_candidates × candidate_dim)
-        from environments.w_factory_config import ENHANCED_OBS_CONFIG
-        num_candidates = int(ENHANCED_OBS_CONFIG.get("num_candidate_workpieces", 0))
-        candidate_dim = int(ENHANCED_OBS_CONFIG.get("candidate_feature_dim", 0))
-        context_dim = int(self.state_dim - num_candidates * candidate_dim)
-        if context_dim <= 0 or num_candidates <= 0 or candidate_dim <= 0:
-            raise ValueError("Invalid observation split: please verify ENHANCED_OBS_CONFIG and observation construction.")
-
+        # Actor网络
         state_input = tf.keras.layers.Input(shape=(self.state_dim,))
+        
+        # 共享的主干网络
+        actor_x = state_input
+        for hidden_size in hidden_sizes:
+            actor_x = tf.keras.layers.Dense(hidden_size, activation="relu")(actor_x)
+            if dropout_rate > 0:
+                actor_x = tf.keras.layers.Dropout(dropout_rate)(actor_x)
 
-        # 切分上下文与候选
-        context_input = tf.keras.layers.Lambda(lambda x: x[:, :context_dim])(state_input)
-        candidates_flat = tf.keras.layers.Lambda(lambda x: x[:, context_dim:])(state_input)
-        candidates_input = tf.keras.layers.Lambda(
-            lambda x: tf.reshape(x, (-1, num_candidates, candidate_dim))
-        )(candidates_flat)
-
-        # 上下文编码（稳定、小步堆叠）
-        context_x = tf.keras.layers.LayerNormalization()(context_input)
-        context_x = tf.keras.layers.Dense(
-            hidden_sizes[1], activation='relu',
-            kernel_initializer=tf.keras.initializers.Orthogonal(gain=np.sqrt(2)),
-            bias_initializer=tf.keras.initializers.Constant(0.0)
-        )(context_x)
-        context_x = tf.keras.layers.Dropout(dropout_rate)(context_x)
-        context_embed = tf.keras.layers.Dense(
-            hidden_sizes[2], activation='relu',
-            kernel_initializer=tf.keras.initializers.Orthogonal(gain=np.sqrt(2)),
-            bias_initializer=tf.keras.initializers.Constant(0.0)
-        )(context_x)
-
-        # 候选编码（共享权重）
-        cand_x = tf.keras.layers.TimeDistributed(tf.keras.layers.LayerNormalization())(candidates_input)
-        cand_x = tf.keras.layers.TimeDistributed(tf.keras.layers.Dense(
-            hidden_sizes[1], activation='relu',
-            kernel_initializer=tf.keras.initializers.Orthogonal(gain=np.sqrt(2)),
-            bias_initializer=tf.keras.initializers.Constant(0.0)
-        ))(cand_x)
-
-        # 将上下文嵌入广播到每个候选并拼接
-        context_tiled = tf.keras.layers.RepeatVector(num_candidates)(context_embed)
-        cand_ctx = tf.keras.layers.Concatenate(axis=-1)([cand_x, context_tiled])
-        cand_ctx = tf.keras.layers.TimeDistributed(tf.keras.layers.Dropout(dropout_rate))(cand_ctx)
-        cand_ctx = tf.keras.layers.TimeDistributed(tf.keras.layers.Dense(
-            hidden_sizes[2], activation='relu',
-            kernel_initializer=tf.keras.initializers.Orthogonal(gain=np.sqrt(2)),
-            bias_initializer=tf.keras.initializers.Constant(0.0)
-        ))(cand_ctx)
-
-        # 每个候选的打分（logit），共享最后一层
-        candidate_logits = tf.keras.layers.TimeDistributed(tf.keras.layers.Dense(
-            1, activation=None,
-            kernel_initializer=tf.keras.initializers.Orthogonal(gain=0.01),
-            bias_initializer=tf.keras.initializers.Constant(0.0)
-        ))(cand_ctx)
-        candidate_logits = tf.keras.layers.Lambda(lambda x: tf.squeeze(x, axis=-1))(candidate_logits)  # (B, N)
-
-        # IDLE 的logit使用上下文决定
-        idle_logit = tf.keras.layers.Dense(
-            1, activation=None,
-            kernel_initializer=tf.keras.initializers.Orthogonal(gain=0.01),
-            bias_initializer=tf.keras.initializers.Constant(0.0)
-        )(context_embed)  # (B, 1)
-
-        # 拼接得到完整动作logits: [IDLE, candidate_1..candidate_N]
-        action_logits = tf.keras.layers.Concatenate(axis=1)([idle_logit, candidate_logits])
-        action_probs = tf.keras.layers.Softmax(axis=1)(action_logits)
-
-        actor = tf.keras.Model(inputs=state_input, outputs=action_probs)
+        # 为MultiDiscrete空间创建真正的多头输出，让网络学会协同
+        if self.is_multidiscrete:
+            num_heads = len(self.action_dims)
+            action_dim_per_head = self.action_dims[0]
+            actor_outputs = []
+            for i in range(num_heads):
+                # 为每个动作"头"创建一个独立的输出层
+                head_output = tf.keras.layers.Dense(action_dim_per_head, activation="softmax", name=f"actor_output_{i}")(actor_x)
+                actor_outputs.append(head_output)
+            # Actor模型的输出现在是一个包含多个张量的列表
+            self.actor = tf.keras.Model(inputs=state_input, outputs=actor_outputs)
+        else:
+            actor_output = tf.keras.layers.Dense(self.action_dims[0], activation="softmax", name="actor_output")(actor_x)
+            self.actor = tf.keras.Model(inputs=state_input, outputs=actor_output)
 
         # Critic网络 (中心化) - 使用全局状态
         global_state_input = tf.keras.layers.Input(shape=(self.global_state_dim,))
         
-        # Critic加层归一化
-        critic_x = tf.keras.layers.LayerNormalization()(global_state_input)
-        
-        critic_x = tf.keras.layers.Dense(
-            hidden_sizes[0],
-            activation='relu',
-            kernel_initializer=tf.keras.initializers.Orthogonal(gain=np.sqrt(2)),
-            bias_initializer=tf.keras.initializers.Constant(0.0)
-        )(critic_x)
-        critic_x = tf.keras.layers.Dropout(dropout_rate)(critic_x)
-        critic_x = tf.keras.layers.Dense(
-            hidden_sizes[1],
-            activation='relu',
-            kernel_initializer=tf.keras.initializers.Orthogonal(gain=np.sqrt(2)),
-            bias_initializer=tf.keras.initializers.Constant(0.0)
-        )(critic_x)
-        critic_x = tf.keras.layers.Dropout(dropout_rate)(critic_x)
-        critic_x = tf.keras.layers.Dense(
-            hidden_sizes[2],
-            activation='relu',
-            kernel_initializer=tf.keras.initializers.Orthogonal(gain=np.sqrt(2)),
-            bias_initializer=tf.keras.initializers.Constant(0.0)
-        )(critic_x)
+        # 共享主干网络
+        critic_x = global_state_input
+        for hidden_size in hidden_sizes:
+            critic_x = tf.keras.layers.Dense(hidden_size, activation="relu")(critic_x)
+            if dropout_rate > 0:
+                critic_x = tf.keras.layers.Dropout(dropout_rate)(critic_x)
+
         # Value输出层
-        value_output = tf.keras.layers.Dense(
-            1,
-            activation=None,
-            kernel_initializer=tf.keras.initializers.Orthogonal(gain=1.0),
-            bias_initializer=tf.keras.initializers.Constant(0.0)
-        )(critic_x)
+        value_output = tf.keras.layers.Dense(1, activation=None, kernel_initializer=tf.keras.initializers.Orthogonal(gain=1.0), bias_initializer=tf.keras.initializers.Constant(0.0))(critic_x)
         critic = tf.keras.Model(inputs=global_state_input, outputs=value_output)
         
-        return actor, critic
+        return self.actor, critic
     
-    # 10-20-21-35 移除tf.function以避免函数内 .numpy() 在图模式报错
     def get_action_and_value(self, state: np.ndarray, global_state: np.ndarray) -> Tuple[int, np.float32, np.float32]:
         """获取动作、动作概率和状态价值"""
         # Actor
-        action_probs = self.actor(state)  # (B, A) 或 对于多头是 list of (B, A)
+        action_probs = self.actor(state)
         
         # Critic
         value = self.critic(global_state) # (B, 1)
 
-        # 10-20-22-10 修复：适配多头Actor的动作采样和概率计算
+        # 10-21-23-01 修复：适配多头Actor的动作采样和联合概率计算
         if self.is_multidiscrete:
-            action_prob_list = action_probs
+            # 确保action_probs是一个列表
+            action_prob_list = action_probs if isinstance(action_probs, list) else [action_probs]
             action_list = []
             log_prob_list = []
 
@@ -330,8 +262,7 @@ class PPONetwork:
                 log_prob_list.append(log_prob_for_head)
             
             # 动作组合
-            action = tf.stack(action_list, axis=1) # (B, k, 1)
-            action = tf.squeeze(action, axis=-1)   # (B, k)
+            action = tf.squeeze(tf.stack(action_list, axis=1), axis=-1)   # (B, k)
             
             # 独立动作的联合对数概率是各自对数概率之和
             joint_log_prob = tf.add_n(log_prob_list)
@@ -339,20 +270,18 @@ class PPONetwork:
             # 返回numpy时，确保批次维度被正确处理 (B=1 -> 标量)
             return action.numpy()[0], tf.squeeze(value).numpy(), joint_log_prob.numpy()[0]
         else:
-            # 原始逻辑 (Discrete)
-            action = tf.random.categorical(tf.math.log(action_probs + 1e-8), 1)
-            action_one_hot = tf.one_hot(tf.squeeze(action), self.action_dims[0])
-            # 获取选中动作的对数概率
-            current_probs = tf.math.log(tf.reduce_sum(action_probs * action_one_hot, axis=1) + 1e-8)
+            # 离散动作（单头）
+            sampled = tf.random.categorical(tf.math.log(action_probs + 1e-8), 1)
+            action_one_hot = tf.one_hot(tf.squeeze(sampled, axis=-1), self.action_dims[0])
+            action_prob = tf.math.log(tf.reduce_sum(action_probs * action_one_hot, axis=1) + 1e-8)
+            action = tf.squeeze(sampled, axis=-1)
         
-        # 10-20-21-35 保持在函数末尾转换为numpy，避免返回Tensor到调用方再转换的重复逻辑
-        return action.numpy(), tf.squeeze(value).numpy(), tf.squeeze(current_probs).numpy()
+        return action.numpy(), tf.squeeze(value).numpy(), tf.squeeze(action_prob).numpy()
     
     def get_value(self, global_state: np.ndarray) -> float:
         """获取状态价值
-        10-20-21-35：兼容传入已批次形状或未批次形状，避免双重扩维导致维度 (1,1,D)
+        10-21-23-01 修复：兼容传入已批次或未批次形状，避免双重扩维
         """
-        # 如果已经是 (1, D) 形状则直接使用，否则将 (D,) 扩为 (1, D)
         gs = tf.convert_to_tensor(global_state)
         if len(gs.shape) == 1:
             gs = tf.expand_dims(gs, 0)
@@ -367,12 +296,11 @@ class PPONetwork:
 
         with tf.GradientTape() as tape:
             # --- Actor损失 ---
-            action_probs = self.actor(states)  # (N, A) or list of (N, A)
+            action_probs = self.actor(states)
             
-
-            # 10-20-22-10 修复：适配多头Actor的损失和熵计算
+            # 10-21-23-01 修复：适配多头Actor的损失和熵计算
             if self.is_multidiscrete:
-                action_prob_list = action_probs
+                action_prob_list = action_probs if isinstance(action_probs, list) else [action_probs]
                 num_heads = len(self.action_dims)
                 log_probs_list = []
                 entropy_list = []
@@ -397,6 +325,7 @@ class PPONetwork:
                 action_one_hot = tf.one_hot(tf.squeeze(actions), self.action_dims[0])
                 log_prob = tf.math.log(tf.reduce_sum(action_probs * action_one_hot, axis=1) + 1e-8)
                 current_probs = log_prob
+                entropy_loss = -tf.reduce_sum(action_probs * tf.math.log(action_probs + 1e-8), axis=1)
 
             # PPO裁剪目标
             ratio = tf.exp(current_probs - old_probs)
@@ -407,9 +336,7 @@ class PPONetwork:
             clip_fraction = tf.reduce_mean(tf.cast(clipped_mask, tf.float32))
 
             actor_loss = -tf.reduce_mean(tf.minimum(ratio * advantages, clipped_ratio * advantages))
-            
-
-            # 10-20-22-10 使用新的多头熵计算
+            # 10-21-23-01 修复：统一使用多头或单头熵计算
             entropy_mean = tf.reduce_mean(entropy_loss)
             actor_loss -= entropy_coeff * entropy_mean
             
@@ -464,7 +391,7 @@ def run_simulation_worker(network_weights: Dict[str, List[np.ndarray]],
         env_config['training_mode'] = True
         env = make_parallel_env(env_config)
 
-        # 10202115 修复：为Critic构造“智能体条件化”的全局状态（拼接agent one-hot）
+        # 10202115 修复：为Critic构造"智能体条件化"的全局状态（拼接agent one-hot）
         agent_list = list(env.possible_agents)
         agent_to_index = {agent_id: idx for idx, agent_id in enumerate(agent_list)}
         num_agents = len(agent_list)
@@ -475,8 +402,12 @@ def run_simulation_worker(network_weights: Dict[str, List[np.ndarray]],
             one_hot[idx] = 1.0
             return np.concatenate([raw_global_state.astype(np.float32), one_hot], axis=0)
 
-        # 在worker内创建网络实例
+        # 10-22-10-50 修复：在worker内创建网络实例时添加TensorFlow清理，避免权重加载冲突
         # 注意：这里不需要编译或设置优化器，因为只用于推理
+        
+        # 清理TensorFlow会话，确保干净的状态
+        tf.keras.backend.clear_session()
+        
         network = PPONetwork(
             state_dim=state_dim,
             action_space=action_space,
@@ -484,9 +415,27 @@ def run_simulation_worker(network_weights: Dict[str, List[np.ndarray]],
             global_state_dim=global_state_dim,
             network_config=network_config
         )
+        
+        # 10-22-10-50 使用更健壮的权重加载机制
         if network_weights:
-            network.actor.set_weights(network_weights['actor'])
-            network.critic.set_weights(network_weights['critic'])
+            try:
+                network.actor.set_weights(network_weights['actor'])
+                network.critic.set_weights(network_weights['critic'])
+            except (ValueError, RuntimeError) as e:
+                print(f"⚠️ Worker {curriculum_config.get('worker_id', 'N/A')} 权重加载警告: {e}")
+                print(f"   尝试重建网络...")
+                # 重建网络作为fallback
+                tf.keras.backend.clear_session()
+                network = PPONetwork(
+                    state_dim=state_dim,
+                    action_space=action_space,
+                    lr=0.001,
+                    global_state_dim=global_state_dim,
+                    network_config=network_config
+                )
+                # 再次尝试加载
+                network.actor.set_weights(network_weights['actor'])
+                network.critic.set_weights(network_weights['critic'])
 
         buffers = {agent: ExperienceBuffer() for agent in env.possible_agents}
         
@@ -534,7 +483,7 @@ def run_simulation_worker(network_weights: Dict[str, List[np.ndarray]],
                 if agent in observations:
                     buffers[agent].store(
                         observations[agent], 
-                        # 10202115 缓冲区存入“智能体条件化”的全局状态
+                        # 10202115 缓冲区存入"智能体条件化"的全局状态
                         _condition_global_state(infos[agent]['global_state'], agent), 
                         actions[agent], 
                         rewards[agent], 
@@ -565,7 +514,7 @@ def run_simulation_worker(network_weights: Dict[str, List[np.ndarray]],
                     last_values = {}
                     for agent in active_agents_in_step:
                         if agent in observations:
-                            # 10202115 bootstrap时同样使用“智能体条件化”的全局状态
+                            # 10202115 bootstrap时同样使用"智能体条件化"的全局状态
                             conditioned_global = _condition_global_state(infos[agent]['global_state'], agent)
                             global_state = tf.expand_dims(conditioned_global, 0)
                             # 如果是因为truncated，用critic计算next_value，否则为0
@@ -583,7 +532,7 @@ def run_simulation_worker(network_weights: Dict[str, List[np.ndarray]],
         active_agents_in_step = list(env.agents)
         for agent in active_agents_in_step:
             if agent in observations:
-                # 10202115正常结束时也需使用“智能体条件化”的全局状态
+                # 10202115正常结束时也需使用"智能体条件化"的全局状态
                 conditioned_global = _condition_global_state(infos[agent]['global_state'], agent)
                 global_state = tf.expand_dims(conditioned_global, 0)
                 last_values[agent] = network.get_value(global_state)
@@ -763,9 +712,10 @@ class SimplePPOTrainer:
             self.train_writer = None
             print("⚠️  TensorBoard不可用")
         
-        # 初始化并行采样器（线程池），避免序列化问题
-        # 说明：使用线程池调度Python子任务，其内部仍然运行独立的环境实例
-        self.pool = ThreadPoolExecutor(max_workers=self.num_workers)
+        # 10-22-10-52 修复：切换到进程池，彻底解决TensorFlow权重冲突问题
+        # 说明：使用进程池确保每个worker在完全独立的Python进程中运行
+        # 优点：完全隔离，避免TensorFlow变量名冲突和权重加载问题
+        self.pool = ProcessPoolExecutor(max_workers=self.num_workers)
 
         # 🔧 初始化训练所需的关键成员
         self.seed = RANDOM_SEED
@@ -1150,27 +1100,26 @@ class SimplePPOTrainer:
                     network = self.shared_network
                     
                     if random.random() < EVALUATION_CONFIG["exploration_rate"]:
-                        # 10-20-21-35：MultiDiscrete 随机采样按头数独立采样同一分布
-                        if network.is_multidiscrete:
-                            action_probs = network.actor(state)  # (1, A)
-                            heads = len(network.action_dims)
-                            logits = tf.math.log(action_probs + 1e-8)
-                            sampled = []
-                            for _ in range(heads):
-                                draw = tf.random.categorical(logits, 1)  # (1,1)
-                                sampled.append(int(draw[0, 0]))
-                            action = np.array(sampled, dtype=network.action_space.dtype)
-                        else:
-                            action_probs = network.actor(state)
-                            action = int(tf.random.categorical(tf.math.log(action_probs + 1e-8), 1)[0])
-                    else:
-                        # 10-20-21-52：MultiDiscrete 确定性选择改为按概率降序选择top-k，避免重复
+                        # 10-21-23-01 修复：适配多头Actor的随机评估
                         action_probs = network.actor(state)
                         if network.is_multidiscrete:
-                            heads = len(network.action_dims)
-                            # 获取top-k个最优动作（k=heads）
-                            top_k_indices = tf.argsort(action_probs[0], direction='DESCENDING')[:heads]
-                            action = np.array([int(idx) for idx in top_k_indices], dtype=network.action_space.dtype)
+                            action_prob_list = action_probs if isinstance(action_probs, list) else [action_probs]
+                            actions_list = []
+                            for head_probs in action_prob_list:
+                                logits = tf.math.log(head_probs + 1e-8)
+                                action_for_head = tf.random.categorical(logits, 1)
+                                actions_list.append(int(action_for_head[0, 0]))
+                            action = np.array(actions_list, dtype=network.action_space.dtype)
+                        else:
+                            action = int(tf.random.categorical(tf.math.log(action_probs + 1e-8), 1)[0])
+                    else:
+                        # 10-21-23-01 修复：适配多头Actor的确定性评估
+                        action_probs = network.actor(state)
+                        if network.is_multidiscrete:
+                            action_prob_list = action_probs if isinstance(action_probs, list) else [action_probs]
+                            # 从每个头的分布中独立选择最优动作
+                            actions_list = [int(tf.argmax(p[0])) for p in action_prob_list]
+                            action = np.array(actions_list, dtype=network.action_space.dtype)
                         else:
                             action = int(tf.argmax(action_probs[0]))
                     actions[agent] = action
@@ -1222,16 +1171,16 @@ class SimplePPOTrainer:
             while step_count < self.max_steps_for_eval:
                 actions = {}
                 
-                # 10-20-21-52：使用确定性策略评估（兼容MultiDiscrete，避免重复选择）
+                # 10-21-23-05：使用确定性策略评估（适配多头Actor架构）
                 for agent in env.agents:
                     if agent in observations:
                         state = tf.expand_dims(observations[agent], 0)
-                        action_probs = self.shared_network.actor(state)  # (1, A)
+                        action_probs = self.shared_network.actor(state)
                         if isinstance(self.action_space, gym.spaces.MultiDiscrete):
-                            heads = len(self.action_space.nvec)
-                            # 10-20-21-52：按概率降序选择top-k个动作，避免所有机器选择同一工件
-                            top_k_indices = tf.argsort(action_probs[0], direction='DESCENDING')[:heads]
-                            actions[agent] = np.array([int(idx) for idx in top_k_indices], dtype=self.action_space.dtype)
+                            # 多头输出：每个头独立选择最优动作
+                            action_prob_list = action_probs if isinstance(action_probs, list) else [action_probs]
+                            actions_list = [int(tf.argmax(p[0])) for p in action_prob_list]
+                            actions[agent] = np.array(actions_list, dtype=self.action_space.dtype)
                         else:
                             actions[agent] = int(tf.argmax(action_probs[0]))
                 

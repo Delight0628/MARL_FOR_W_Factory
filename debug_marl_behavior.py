@@ -247,8 +247,14 @@ def debug_marl_actions(model_path: str, config: dict, max_steps: int = 600, dete
         for agent in env.agents:
             if agent in obs:
                 state = tf.expand_dims(obs[agent], 0)
+                # 10220715 修复：兼容多头/单头模型输出，并展平为一维概率向量
                 action_probs_tensor = actor_model(state, training=False)
-                action_probs = action_probs_tensor[0].numpy()
+                if isinstance(action_probs_tensor, (list, tuple)):
+                    # 多头：用于打印/选择时取第一个头的分布
+                    head_tensor = action_probs_tensor[0]
+                    action_probs = np.squeeze(head_tensor.numpy())
+                else:
+                    action_probs = np.squeeze(action_probs_tensor.numpy()[0])
                 space = env.action_space(agent)
                 is_multi = isinstance(space, gym.spaces.MultiDiscrete)
                 num_heads = heads_map.get(agent, 1)
@@ -260,17 +266,17 @@ def debug_marl_actions(model_path: str, config: dict, max_steps: int = 600, dete
                     # 10201530 修复：向decode传入obs_meta
                     decoded_obs_str = decode_observation(obs[agent], agent, info[agent].get('obs_meta', {}))
                     print(decoded_obs_str)
-                    # 打印动作概率
-                    action_probs = action_probs
+                    # 10220715 修复：打印时确保概率为python float
+                    probs_for_print = [float(p) for p in np.ravel(action_probs)]
                     
                     # 从info中获取动作名称
                     action_names = info[agent].get('obs_meta', {}).get('action_names', [])
                     
                     if action_names:
-                        policy_dist_str = ", ".join([f"{name}={prob:.2%}" for name, prob in zip(action_names, action_probs)])
+                        policy_dist_str = ", ".join([f"{name}={prob:.2%}" for name, prob in zip(action_names, probs_for_print)])
                     else:
                         # Fallback if action_names is not available
-                        policy_dist_str = ", ".join([f"Action{i}={prob:.2%}" for i, prob in enumerate(action_probs)])
+                        policy_dist_str = ", ".join([f"Action{i}={prob:.2%}" for i, prob in enumerate(probs_for_print)])
                     print(f"  - 策略分布: [{policy_dist_str}]")
 
                 # 10201530 修复：根据动作空间类型生成标量或并行动作数组

@@ -147,23 +147,29 @@ def evaluate_marl_model(model_path: str, config: dict = STATIC_EVAL_CONFIG, gene
         for agent in env.agents:
             if agent in obs:
                 state = tf.expand_dims(obs[agent], 0)
-                action_probs = actor_model(state, training=False)[0].numpy()  # (A,)
+                # 10220715 修复：兼容多头/单头模型输出，并展平为一维向量
+                model_out = actor_model(state, training=False)
+                if isinstance(model_out, (list, tuple)):
+                    probs_vec = np.squeeze(model_out[0].numpy())  # 取第一个头用于生成top-k集合
+                else:
+                    probs_vec = np.squeeze(model_out.numpy()[0])
                 space = env.action_space(agent)
                 if isinstance(space, gym.spaces.MultiDiscrete):
                     k = len(space.nvec)
-                    # 贪心选前k个不同动作（包含0=IDLE）
-                    sorted_idx = np.argsort(action_probs)[::-1]
+                    # 10220715 修复：安全排序并逐个转为int，避免numpy标量转换错误
+                    sorted_idx = np.argsort(probs_vec)[::-1]
                     chosen = []
                     for idx in sorted_idx:
-                        if int(idx) not in chosen:
-                            chosen.append(int(idx))
+                        idx_int = int(np.asarray(idx).item())
+                        if idx_int not in chosen:
+                            chosen.append(idx_int)
                         if len(chosen) >= k:
                             break
                     while len(chosen) < k:
                         chosen.append(0)
                     actions[agent] = np.array(chosen, dtype=space.dtype)
                 else:
-                    actions[agent] = int(np.argmax(action_probs))
+                    actions[agent] = int(np.argmax(probs_vec))
         return actions
 
     # 🔧 V4 修复：直接通过config传递自定义订单，无需上下文管理器
