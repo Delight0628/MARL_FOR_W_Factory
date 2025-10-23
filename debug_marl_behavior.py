@@ -212,34 +212,37 @@ def debug_marl_actions(model_path: str, config: dict, max_steps: int = 600, dete
     print(f"\n🎯 开始记录前{max_steps}步的动作模式...")
     
     # 10201530 新增：从概率分布生成并行动作的工具函数（去重、可选采样）
-    def choose_parallel_actions_from_probs(probs: np.ndarray, num_heads: int, greedy: bool = True) -> np.ndarray:
-        probs = np.asarray(probs, dtype=np.float64)
-        probs = np.clip(probs, 1e-12, 1.0)
-        probs = probs / probs.sum()
-
-        # 贪心：从大到小选前K个，避免重复
-        if greedy:
-            sorted_idx = np.argsort(probs)[::-1]
-            chosen = []
-            for idx in sorted_idx:
-                # 允许IDLE(0)被选择；去重相同动作
-                if idx not in chosen:
-                    chosen.append(int(idx))
-                if len(chosen) >= num_heads:
-                    break
-            # 如果不足K，补0
-            while len(chosen) < num_heads:
-                chosen.append(0)
-            return np.array(chosen, dtype=np.int32)
-
-        # 随机：无放回抽样num_heads个动作
-        n = probs.shape[0]
-        if num_heads >= n:
-            # 边界：动作数不足时，允许部分重复
-            sampled = np.random.choice(np.arange(n), size=num_heads, replace=True, p=probs)
-        else:
-            sampled = np.random.choice(np.arange(n), size=num_heads, replace=False, p=probs)
-        return sampled.astype(np.int32)
+    def choose_parallel_actions_from_probs(head_probs_list: list, num_heads: int, greedy: bool = True) -> np.ndarray:
+        """
+        10-23-16-45 修复：切换为逐头无放回选择
+        - 输入：每个头的概率分布列表；若只有共享分布请重复num_heads份
+        - 贪心：每头取argmax，同时对已选index置零
+        - 随机：每头按掩码后的分布独立采样，同时置零保证无放回
+        """
+        used = set()
+        chosen = []
+        for i in range(num_heads):
+            if i >= len(head_probs_list):
+                # 共享分布不足时补共享第0头
+                probs = np.asarray(head_probs_list[0], dtype=np.float64).copy()
+            else:
+                probs = np.asarray(head_probs_list[i], dtype=np.float64).copy()
+            probs = np.clip(probs, 1e-12, 1.0)
+            for u in used:
+                if 0 <= u < probs.shape[0]:
+                    probs[u] = 0.0
+            s = probs.sum()
+            if s <= 1e-12:
+                idx = 0
+            else:
+                probs = probs / s
+                if greedy:
+                    idx = int(np.argmax(probs))
+                else:
+                    idx = int(np.random.choice(np.arange(len(probs)), p=probs))
+            chosen.append(idx)
+            used.add(idx)
+        return np.array(chosen, dtype=np.int32)
 
     while step_count < max_steps:
         # MARL策略
@@ -250,11 +253,11 @@ def debug_marl_actions(model_path: str, config: dict, max_steps: int = 600, dete
                 # 10220715 修复：兼容多头/单头模型输出，并展平为一维概率向量
                 action_probs_tensor = actor_model(state, training=False)
                 if isinstance(action_probs_tensor, (list, tuple)):
-                    # 多头：用于打印/选择时取第一个头的分布
-                    head_tensor = action_probs_tensor[0]
-                    action_probs = np.squeeze(head_tensor.numpy())
+                    head_probs_list = [np.squeeze(t.numpy()) for t in action_probs_tensor]
                 else:
-                    action_probs = np.squeeze(action_probs_tensor.numpy()[0])
+                    shared = np.squeeze(action_probs_tensor.numpy()[0])
+                    # 共享分布：在生成并行动作时重复使用
+                    head_probs_list = [shared]
                 space = env.action_space(agent)
                 is_multi = isinstance(space, gym.spaces.MultiDiscrete)
                 num_heads = heads_map.get(agent, 1)
@@ -281,14 +284,15 @@ def debug_marl_actions(model_path: str, config: dict, max_steps: int = 600, dete
 
                 # 10201530 修复：根据动作空间类型生成标量或并行动作数组
                 if is_multi:
-                    # 80/20策略：主要贪心，少量采样
+                    # 80/20策略：主要贪心，少量采样；逐头无放回
+                    probs_input = head_probs_list if len(head_probs_list) > 1 else head_probs_list * num_heads
                     if deterministic:
-                        action = choose_parallel_actions_from_probs(action_probs, num_heads, greedy=True)
+                        action = choose_parallel_actions_from_probs(probs_input, num_heads, greedy=True)
                     else:
                         if np.random.random() < 0.2:
-                            action = choose_parallel_actions_from_probs(action_probs, num_heads, greedy=False)
+                            action = choose_parallel_actions_from_probs(probs_input, num_heads, greedy=False)
                         else:
-                            action = choose_parallel_actions_from_probs(action_probs, num_heads, greedy=True)
+                            action = choose_parallel_actions_from_probs(probs_input, num_heads, greedy=True)
                 else:
                     if deterministic:
                         action = int(np.argmax(action_probs))

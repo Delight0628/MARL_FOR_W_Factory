@@ -640,9 +640,11 @@ class WFactorySim:
                 # 确定性：直接取队列前N个，确保评估可复现
                 sampled_indices = available_indices[:sample_size]
             else:
-                # 随机：基于(站点, 当前时间, 队列part_id序列)生成种子
+                # 10-23-16-05 新增：稳定哈希种子，确保跨进程/运行可复现
+                import hashlib
                 seed_tuple = (station_name, int(self.env.now), tuple(p.part_id for p in queue))
-                seed = hash(seed_tuple) & 0xffffffff
+                h = hashlib.sha256(str(seed_tuple).encode('utf-8')).hexdigest()
+                seed = int(h[:8], 16)
                 rng = random.Random(seed)
                 sampled_indices = rng.sample(available_indices, sample_size)
             for idx in sampled_indices:
@@ -739,6 +741,15 @@ class WFactorySim:
             # 已超期：压力值设为最大
             time_pressure = 2.0
         time_pressure_normalized = np.clip(time_pressure / 2.0, 0, 1.0)  # 归一化到[0,1]
+
+        # 10-23-14-50 新增：压缩归一化，缓解跨阶段/随机订单的饱和
+        if ENHANCED_OBS_CONFIG.get("use_compressed_norm", False):
+            def _compress(x: float) -> float:
+                return float(x) / (1.0 + float(x)) if x >= 0 else 0.0
+            normalized_total_remaining_time = _compress(np.clip(normalized_total_remaining_time, 0, 10.0))
+            normalized_op_duration = _compress(np.clip(normalized_op_duration, 0, 10.0))
+            # downstream_congestion/priority/is_final_op/product_id本身在[0,1]
+            time_pressure_normalized = _compress(time_pressure_normalized)
 
         feature_list = [
             exists,
@@ -889,44 +900,9 @@ class WFactorySim:
                                     "slack": calculate_slack_time(selected_part, decision_time, self.queues, WORKSTATIONS)
                                 })
                             else:
-                                # 10-20-21-35 资源回退：目标工件在本步已被锁定，顺延选择未被锁定的候选
-                                # 10-21-22-45 修复：记录一次无效/冲突动作尝试
                                 context["invalid_attempts"] = context.get("invalid_attempts", 0) + 1
-                                fallback_chosen = None
-                                candidates = self._get_candidate_workpieces(station_name)
-                                for cand in candidates:
-                                    alt_part = cand.get('part')
-                                    if alt_part and alt_part.part_id not in selected_part_ids_this_step:
-                                        fallback_chosen = alt_part
-                                        break
-                                if fallback_chosen is not None:
-                                    parts_to_process_this_agent.append(fallback_chosen)
-                                    selected_part_ids_this_step.add(fallback_chosen.part_id)
-                                    local_start_count[station_name] += 1
-                                    context["started_parts"].append({
-                                        "part_id": fallback_chosen.part_id,
-                                        "slack": calculate_slack_time(fallback_chosen, decision_time, self.queues, WORKSTATIONS)
-                                    })
-                                # 若没有可用候选，则该设备本步空转（由约束惩罚处理）
                         else:
-                            # 10-20-21-35 资源回退：动作无效/未命中时，尝试选择任一未被锁定的候选
-                            # 10-21-22-45 修复：记录一次无效动作尝试
                             context["invalid_attempts"] = context.get("invalid_attempts", 0) + 1
-                            fallback_chosen = None
-                            candidates = self._get_candidate_workpieces(station_name)
-                            for cand in candidates:
-                                alt_part = cand.get('part')
-                                if alt_part and alt_part.part_id not in selected_part_ids_this_step:
-                                    fallback_chosen = alt_part
-                                    break
-                            if fallback_chosen is not None:
-                                parts_to_process_this_agent.append(fallback_chosen)
-                                selected_part_ids_this_step.add(fallback_chosen.part_id)
-                                local_start_count[station_name] += 1
-                                context["started_parts"].append({
-                                    "part_id": fallback_chosen.part_id,
-                                    "slack": calculate_slack_time(fallback_chosen, decision_time, self.queues, WORKSTATIONS)
-                                })
 
             # --- 阶段二：执行 (Execute Phase) ---
             # 在所有决策完成后，统一处理本智能体已锁定的所有工件

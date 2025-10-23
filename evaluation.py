@@ -141,35 +141,47 @@ def evaluate_marl_model(model_path: str, config: dict = STATIC_EVAL_CONFIG, gene
         print(f"❌ 加载模型失败: {e}", flush=True)
         return None, None
 
-    # 10201530 修复：MARL策略适配MultiDiscrete，按“共享分布×并行设备数”输出动作数组
+    # 10-23-16-45 修复：MARL策略多头输出采用无放回贪心逐头解码，避免系统性冲突
     def marl_policy(obs, env, info, step_count):
         actions = {}
         for agent in env.agents:
             if agent in obs:
                 state = tf.expand_dims(obs[agent], 0)
-                # 10220715 修复：兼容多头/单头模型输出，并展平为一维向量
+                # 10220715 修复：兼容多头/单头模型输出
                 model_out = actor_model(state, training=False)
-                if isinstance(model_out, (list, tuple)):
-                    probs_vec = np.squeeze(model_out[0].numpy())  # 取第一个头用于生成top-k集合
-                else:
-                    probs_vec = np.squeeze(model_out.numpy()[0])
+                is_multi_output = isinstance(model_out, (list, tuple))
                 space = env.action_space(agent)
                 if isinstance(space, gym.spaces.MultiDiscrete):
                     k = len(space.nvec)
-                    # 10220715 修复：安全排序并逐个转为int，避免numpy标量转换错误
-                    sorted_idx = np.argsort(probs_vec)[::-1]
+                    # 10-23-16-45 修复：逐头无放回贪心，使用每个头的分布并对已选index置零
+                    if is_multi_output:
+                        head_probs_list = [np.squeeze(t.numpy()) for t in model_out]
+                    else:
+                        # 单头共享分布：各头从同一分布中按无放回贪心选择
+                        shared = np.squeeze(model_out.numpy()[0])
+                        head_probs_list = [shared for _ in range(k)]
+
+                    used = set()
                     chosen = []
-                    for idx in sorted_idx:
-                        idx_int = int(np.asarray(idx).item())
-                        if idx_int not in chosen:
-                            chosen.append(idx_int)
-                        if len(chosen) >= k:
-                            break
-                    while len(chosen) < k:
-                        chosen.append(0)
+                    for i in range(k):
+                        p = head_probs_list[i].astype(np.float64).copy()
+                        p = np.clip(p, 1e-12, 1.0)
+                        for u in used:
+                            if 0 <= u < p.shape[0]:
+                                p[u] = 0.0
+                        if p.sum() <= 1e-12:
+                            idx = 0
+                        else:
+                            idx = int(np.argmax(p))
+                        chosen.append(idx)
+                        used.add(idx)
                     actions[agent] = np.array(chosen, dtype=space.dtype)
                 else:
-                    actions[agent] = int(np.argmax(probs_vec))
+                    if is_multi_output:
+                        # 单动作用第一个头
+                        actions[agent] = int(np.argmax(np.squeeze(model_out[0].numpy())))
+                    else:
+                        actions[agent] = int(np.argmax(np.squeeze(model_out.numpy()[0])))
         return actions
 
     # 🔧 V4 修复：直接通过config传递自定义订单，无需上下文管理器

@@ -9,6 +9,7 @@ import socket
 from typing import Dict, List, Tuple, Any, Optional
 from datetime import datetime
 from concurrent.futures import ProcessPoolExecutor, as_completed
+import concurrent.futures.process
 import multiprocessing
 import argparse
 from collections import deque, defaultdict
@@ -92,11 +93,17 @@ class ExperienceBuffer:
                     # 使用bootstrap价值（如果提供）
                     next_value = next_value_if_truncated if next_value_if_truncated is not None else 0
             else:
-                next_value = values[t + 1]
+                # 10-23-14-50 修复：处理中间步的截断边界，防止跨episode价值泄漏
+                if truncateds[t]:
+                    # 中间步截断：这是一个episode边界，不应使用下一步的value
+                    next_value = 0
+                else:
+                    next_value = values[t + 1]
             
-            # GAE计算
-            delta = rewards[t] + gamma * next_value * (1 - dones[t]) - values[t]
-            advantages[t] = delta + gamma * lam * (1 - dones[t]) * last_advantage
+            # 10-23-14-50 修复：GAE计算中也要考虑truncated，防止优势传播跨episode
+            # truncated时应阻断GAE的向前传播（类似done的作用）
+            delta = rewards[t] + gamma * next_value * (1 - dones[t]) * (1 - truncateds[t]) - values[t]
+            advantages[t] = delta + gamma * lam * (1 - dones[t]) * (1 - truncateds[t]) * last_advantage
             last_advantage = advantages[t]
         
         returns = advantages + values
@@ -244,27 +251,34 @@ class PPONetwork:
         # Critic
         value = self.critic(global_state) # (B, 1)
 
-        # 10-21-23-01 修复：适配多头Actor的动作采样和联合概率计算
+        # 10-23-16-30 修复：多头Actor采用"无放回"掩码采样，降低训练-执行耦合偏差
         if self.is_multidiscrete:
             # 确保action_probs是一个列表
             action_prob_list = action_probs if isinstance(action_probs, list) else [action_probs]
-            action_list = []
+            batch_size = tf.shape(action_prob_list[0])[0]
+            num_heads = len(self.action_dims)
+            action_dim = int(self.action_dims[0])
+            chosen_actions = []
             log_prob_list = []
-
-            for head_probs in action_prob_list:
-                logits = tf.math.log(head_probs + 1e-8)
-                action_for_head = tf.random.categorical(logits, 1)
-                action_list.append(action_for_head)
-
-                # 计算选中动作的对数概率
-                action_one_hot = tf.one_hot(tf.squeeze(action_for_head, axis=1), self.action_dims[0])
+            # 掩码初始化：False表示可选
+            mask = tf.zeros((batch_size, action_dim), dtype=tf.bool)
+            for i in range(num_heads):
+                probs_i = action_prob_list[i]
+                # 对已选index置零并重归一化
+                masked_probs = tf.where(mask, tf.zeros_like(probs_i), probs_i)
+                norm = tf.reduce_sum(masked_probs, axis=1, keepdims=True) + 1e-8
+                masked_probs = masked_probs / norm
+                logits = tf.math.log(masked_probs + 1e-8)
+                sampled = tf.random.categorical(logits, 1)  # (B,1)
+                sampled = tf.squeeze(sampled, axis=1)       # (B,)
+                chosen_actions.append(sampled)
+                action_one_hot = tf.one_hot(sampled, action_dim)
                 log_prob_for_head = tf.reduce_sum(logits * action_one_hot, axis=1)
                 log_prob_list.append(log_prob_for_head)
-            
-            # 动作组合
-            action = tf.squeeze(tf.stack(action_list, axis=1), axis=-1)   # (B, k)
-            
-            # 独立动作的联合对数概率是各自对数概率之和
+                # 更新掩码：屏蔽已选index
+                mask = tf.logical_or(mask, tf.cast(action_one_hot > 0, tf.bool))
+
+            action = tf.stack(chosen_actions, axis=1)   # (B, k)
             joint_log_prob = tf.add_n(log_prob_list)
             
             # 返回numpy时，确保批次维度被正确处理 (B=1 -> 标量)
@@ -363,6 +377,20 @@ class PPONetwork:
             "approx_kl": 0.0,
             "clip_fraction": clip_fraction.numpy()
         }
+
+# 10-22-10-55 修复：为进程池添加可序列化的包装函数
+def _collect_experience_wrapper(args):
+    """
+    可序列化的包装函数，用于进程池执行
+    这个函数必须在模块级别定义，才能被pickle序列化
+    """
+    (actor_weights, critic_weights, state_dim, action_space, num_steps, 
+     seed, global_state_dim, network_config, curriculum_config) = args
+    
+    network_weights = {'actor': actor_weights, 'critic': critic_weights}
+    
+    return run_simulation_worker(network_weights, state_dim, action_space, num_steps, 
+                                 seed, global_state_dim, network_config, curriculum_config)
 
 # 多进程并行工作函数
 def run_simulation_worker(network_weights: Dict[str, List[np.ndarray]],
@@ -857,16 +885,7 @@ class SimplePPOTrainer:
         """
         # --- 1. 并行运行worker收集数据 ---
         try:
-            # 래핑된 함수
-            def collect_experience_wrapper(args):
-                (actor_weights, critic_weights, state_dim, action_space, num_steps, 
-                 seed, global_state_dim, network_config, curriculum_config) = args
-                
-                network_weights = {'actor': actor_weights, 'critic': critic_weights}
-                
-                return run_simulation_worker(network_weights, state_dim, action_space, num_steps, 
-                                             seed, global_state_dim, network_config, curriculum_config)
-
+            # 10-22-10-55 修复：使用模块级别的包装函数，以便进程池可以序列化
             worker_args_list = []
             for i in range(self.num_workers):
                 # 默认使用当前的课程配置
@@ -897,10 +916,19 @@ class SimplePPOTrainer:
                     worker_curriculum_config
                 ))
 
-            # 并行执行采集任务（线程池）
-            futures = [self.pool.submit(collect_experience_wrapper, args) for args in worker_args_list]
+            # 10-22-10-55 修复：使用模块级别的包装函数，并行执行采集任务（进程池）
+            futures = [self.pool.submit(_collect_experience_wrapper, args) for args in worker_args_list]
             results = [f.result() for f in futures]
 
+        except concurrent.futures.process.BrokenProcessPool as e:
+            print(f"❌ 进程池损坏（可能是内存不足导致子进程崩溃）: {e}")
+            print(f"🔄 尝试重建进程池...")
+            # 关闭损坏的进程池
+            self.pool.shutdown(wait=False)
+            # 重建进程池
+            self.pool = ProcessPoolExecutor(max_workers=self.num_workers)
+            print(f"✅ 进程池已重建")
+            return 0.0, None
         except Exception as e:
             print(f"❌ 并行工作进程失败: {e}")
             import traceback
@@ -1095,33 +1123,24 @@ class SimplePPOTrainer:
             for agent in env.agents:
                 if agent in observations:
                     state = tf.expand_dims(observations[agent], 0)
-                    
-                    # 🔧 使用与worker一致的、可重用的网络实例进行推理
                     network = self.shared_network
-                    
-                    if random.random() < EVALUATION_CONFIG["exploration_rate"]:
-                        # 10-21-23-01 修复：适配多头Actor的随机评估
-                        action_probs = network.actor(state)
-                        if network.is_multidiscrete:
-                            action_prob_list = action_probs if isinstance(action_probs, list) else [action_probs]
-                            actions_list = []
-                            for head_probs in action_prob_list:
-                                logits = tf.math.log(head_probs + 1e-8)
-                                action_for_head = tf.random.categorical(logits, 1)
-                                actions_list.append(int(action_for_head[0, 0]))
-                            action = np.array(actions_list, dtype=network.action_space.dtype)
-                        else:
-                            action = int(tf.random.categorical(tf.math.log(action_probs + 1e-8), 1)[0])
+                    action_probs = network.actor(state)
+                    if network.is_multidiscrete:
+                        # 10-23-16-30 修复：评估阶段使用无放回贪心，避免系统性冲突
+                        action_prob_list = action_probs if isinstance(action_probs, list) else [action_probs]
+                        heads = len(action_prob_list)
+                        used = set()
+                        selected = []
+                        for i in range(heads):
+                            p = action_prob_list[i][0].numpy()
+                            for u in used:
+                                p[u] = 0.0
+                            idx = int(np.argmax(p)) if p.sum() > 1e-8 else 0
+                            selected.append(idx)
+                            used.add(idx)
+                        action = np.array(selected, dtype=network.action_space.dtype)
                     else:
-                        # 10-21-23-01 修复：适配多头Actor的确定性评估
-                        action_probs = network.actor(state)
-                        if network.is_multidiscrete:
-                            action_prob_list = action_probs if isinstance(action_probs, list) else [action_probs]
-                            # 从每个头的分布中独立选择最优动作
-                            actions_list = [int(tf.argmax(p[0])) for p in action_prob_list]
-                            action = np.array(actions_list, dtype=network.action_space.dtype)
-                        else:
-                            action = int(tf.argmax(action_probs[0]))
+                        action = int(tf.argmax(action_probs[0]))
                     actions[agent] = action
             
             observations, rewards, terminations, truncations, infos = env.step(actions)
@@ -1171,16 +1190,24 @@ class SimplePPOTrainer:
             while step_count < self.max_steps_for_eval:
                 actions = {}
                 
-                # 10-21-23-05：使用确定性策略评估（适配多头Actor架构）
+                # 10-23-16-35 修复：确定性评估采用无放回贪心，避免系统性冲突
                 for agent in env.agents:
                     if agent in observations:
                         state = tf.expand_dims(observations[agent], 0)
                         action_probs = self.shared_network.actor(state)
                         if isinstance(self.action_space, gym.spaces.MultiDiscrete):
-                            # 多头输出：每个头独立选择最优动作
                             action_prob_list = action_probs if isinstance(action_probs, list) else [action_probs]
-                            actions_list = [int(tf.argmax(p[0])) for p in action_prob_list]
-                            actions[agent] = np.array(actions_list, dtype=self.action_space.dtype)
+                            heads = len(action_prob_list)
+                            used = set()
+                            selected = []
+                            for i in range(heads):
+                                p = action_prob_list[i][0].numpy()
+                                for u in used:
+                                    p[u] = 0.0
+                                idx = int(np.argmax(p)) if p.sum() > 1e-8 else 0
+                                selected.append(idx)
+                                used.add(idx)
+                            actions[agent] = np.array(selected, dtype=self.action_space.dtype)
                         else:
                             actions[agent] = int(tf.argmax(action_probs[0]))
                 
@@ -1233,16 +1260,16 @@ class SimplePPOTrainer:
             while step_count < self.max_steps_for_eval:
                 actions = {}
                 
-                # 10-20-21-52：使用确定性策略评估（兼容MultiDiscrete，避免重复选择）
+                # 10-23-14-30 修复：使用确定性策略评估（正确处理MultiDiscrete多头输出）
                 for agent in env.agents:
                     if agent in observations:
                         state = tf.expand_dims(observations[agent], 0)
-                        action_probs = self.shared_network.actor(state)  # (1, A)
+                        action_probs = self.shared_network.actor(state)
                         if isinstance(self.action_space, gym.spaces.MultiDiscrete):
-                            heads = len(self.action_space.nvec)
-                            # 10-20-21-52：按概率降序选择top-k个动作，避免所有机器选择同一工件
-                            top_k_indices = tf.argsort(action_probs[0], direction='DESCENDING')[:heads]
-                            actions[agent] = np.array([int(idx) for idx in top_k_indices], dtype=self.action_space.dtype)
+                            # 10-23-14-30 修复：每个头分别选择argmax，而非把多头输出当单个分布
+                            action_prob_list = action_probs if isinstance(action_probs, list) else [action_probs]
+                            actions_list = [int(tf.argmax(p[0])) for p in action_prob_list]
+                            actions[agent] = np.array(actions_list, dtype=self.action_space.dtype)
                         else:
                             actions[agent] = int(tf.argmax(action_probs[0]))
                 
