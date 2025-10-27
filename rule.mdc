@@ -11,7 +11,7 @@ alwaysApply: true
 关键挑战: 模型需要具备鲁棒性，能够应对设备故障和紧急插单等动态事件。
 2. 技术架构与关键文件 (Tech Stack & Key Files)
 核心技术栈:
-训练引擎: XXX(主要使用PPO/MAPPO算法)
+训练引擎: Ray(主要使用PPO/MAPPO算法)
 多智能体接口: PettingZoo
 仿真内核: SimPy (用于离散事件仿真)
 关键文件概览:
@@ -19,9 +19,6 @@ environments/w_factory_config.py: 项目的唯一真理来源 (Single Source of 
 environments/w_factory_env.py: 项目的心脏。包含了两个核心类：
 WFactorySim: 基于SimPy的底层仿真逻辑，模拟真实物理世界。
 WFactoryEnv: 遵循PettingZoo API，将仿真环境封装为MARL接口。
-main.py: 训练启动脚本。负责配置并运行RLlib训练流程。也是项目的核心执行脚本，它负责：
-a.运行基于规则的基准线调度：支持 FIFO（先进先出）和 SPT（最短处理时间）两种传统调度模式，用于对比评估。
-b.执行多智能体强化学习（MARL）训练：使用XXX框架，通过 PPO 算法训练生产设备智能体，以实现最小化最大完工时间、最大化设备利用率和最小化订单延期的目标。
 README.md: 完整的项目说明文档，是理解项目全貌的最佳起点。
 3. MARL建模细节 (MARL Modeling Details)
 智能体 (Agent): 每个工作站/设备类型 (WORKSTATIONS in config) 都是一个独立的智能体。所有智能体共享同一套策略网络以提高训练效率。

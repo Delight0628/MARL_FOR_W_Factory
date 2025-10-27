@@ -1,9 +1,40 @@
-/INSTALL.md
-/itmustbedone
-/ray_marl_train.py
-/simple_train.py
-/tests
-/test_env.py
-/train_windows.py
-/wsl_setup_guide.md
-/__pycache__
+# 忽略所有文件
+*
+
+# 但不忽略这些文件
+!.gitignore
+
+# Directories
+!environments/
+!mappo/
+!.specstory/
+!app/
+!app/**
+!答疑/
+
+# Python scripts
+!auto_train.py
+!advanced_optimization.py
+!debug_marl_behavior.py
+!evaluation.py
+!log_parser.py
+!plotting.py
+!app_scheduler.py
+
+# Documentation
+!README.md
+!奖励显示.md
+!rule.mdc
+
+
+
+# Dependencies
+!requirements.txt
+
+# Explicitly ignored items
+0918_2340_0.3lateness/
+
+# Track specific log file as requested
+!1012_1956_g5改事件驱动/
+1012_1956_g5改事件驱动/*
+!1012_1956_g5改事件驱动/1012_195626_g5改事件驱动.log
