@@ -16,16 +16,38 @@ SIMULATION_TIMEOUT_MULTIPLIER = 2.0
 # =============================================================================
 # 8. 核心训练流程配置 (Core Training Flow Configuration)
 # =============================================================================
+# 10-23-18-00 重大改进：训练范式升级为两阶段渐进式训练
+# 阶段一：随机订单泛化训练 + 25% BASE_ORDERS锚点
+# 阶段二：动态事件鲁棒性训练 + 25% BASE_ORDERS锚点
 TRAINING_FLOW_CONFIG = {
-    # --- 阶段一：基础能力训练 ---
-    # 目标：在标准静态环境下，让模型掌握完成100%任务的核心能力。
+    # --- 阶段一：基础能力训练（随机订单泛化训练）---
+    # 目标：在随机订单环境下，让模型掌握泛化的调度能力。
     "foundation_phase": {
         # 毕业标准：必须连续N次达到以下所有条件
         "graduation_criteria": {
-            "target_score": 0.72,          
+            "target_score": 0.70,          # 随机订单下适当降低分数要求
             "target_consistency": 8,        
-            "tardiness_threshold": 450.0,   
-            "min_completion_rate": 100.0,    
+            "tardiness_threshold": 450.0,   # 随机订单下适当放宽延期要求
+            "min_completion_rate": 95.0,    # 随机订单下允许少量未完成
+        },
+        
+        # 10-23-18-00 新增：阶段一随机订单生成器配置
+        "random_orders_config": {
+            "min_orders": 5,
+            "max_orders": 8,
+            "min_quantity_per_order": 3,
+            "max_quantity_per_order": 12,
+            "due_date_range": (200.0, 700.0),
+            "priority_weights": [0.3, 0.5, 0.2],
+        },
+        
+        # 10-23-18-00 核心改进：多任务混合训练配置（贯穿阶段一）
+        # 含义：在阶段一的每轮数据采集中，按比例将一部分worker固定在基础订单环境，
+        # 其余worker在随机订单环境，防止灾难性遗忘并提供稳定的学习锚点。
+        "multi_task_mixing": {
+            "enabled": True,
+            "base_worker_fraction": 0.25,   # 使用BASE_ORDERS的worker占比
+            "randomize_base_env": False     # 基础订单不加扰动
         },
         
         # 可选：在基础训练内部启用课程学习，以循序渐进的方式达到最终目标
@@ -48,17 +70,17 @@ TRAINING_FLOW_CONFIG = {
         }
     },
 
-    # --- 阶段二：泛化能力强化 ---
-    # 目标：在动态随机环境下，训练模型的鲁棒性和对未知任务的适应能力。
+    # 10-23-18-00 --- 阶段二：泛化能力强化（动态事件鲁棒性训练）---
+    # 目标：在启用设备故障、紧急插单等动态事件的环境下，训练模型的鲁棒性。
     "generalization_phase": {
         # 训练完成标准：连续N次达到以下所有条件
         "completion_criteria": {
-            "target_score": 0.65,  # 泛化阶段分数要求可略微放宽
+            "target_score": 0.60,  # 动态事件下进一步放宽分数要求
             "target_consistency": 10, # 需要更长时间的稳定表现
-            "min_completion_rate": 85.0, # 允许在随机高难度任务下有少量未完成
+            "min_completion_rate": 80.0, # 动态事件下允许更多未完成
         },
         
-        # 随机订单生成器配置
+        # 10-23-18-00 阶段二随机订单生成器配置
         "random_orders_config": {
             "min_orders": 5,
             "max_orders": 8,
@@ -68,13 +90,19 @@ TRAINING_FLOW_CONFIG = {
             "priority_weights": [0.3, 0.5, 0.2],
         },
         
-        # 多任务混合训练配置（per-worker级别混合）,仅在泛化阶段生效
-        # 含义：在泛化阶段的每轮数据采集中，按比例将一部分worker固定在基础订单环境，
-        # 其余worker在随机订单环境，防止灾难性遗忘并稳定策略。
+        # 10-23-18-00 核心改进：多任务混合训练配置（贯穿阶段二）
+        # 含义：在阶段二的每轮数据采集中，按比例将一部分worker固定在基础订单环境，
+        # 其余worker在随机订单+动态事件环境，防止灾难性遗忘并稳定策略。
         "multi_task_mixing": {
             "enabled": True,
-            "base_worker_fraction": 0.25,   # 使用基础订单环境的worker占比（0.0~1.0）
-            "randomize_base_env": False     # 打开则使得基础训练也有扰动
+            "base_worker_fraction": 0.25,   # 使用BASE_ORDERS的worker占比（0.0~1.0）
+            "randomize_base_env": False     # 基础订单不加扰动（保持锚点稳定）
+        },
+        
+        # 10-23-18-00 核心改进：动态事件配置（仅在阶段二启用）
+        "dynamic_events": {
+            "equipment_failure_enabled": True,   # 启用设备故障
+            "emergency_orders_enabled": True,    # 启用紧急插单
         }
     },
     
@@ -194,9 +222,10 @@ EMERGENCY_ORDERS = {
 
 ENHANCED_OBS_CONFIG = {
     "num_candidate_workpieces": 10,         # 候选工件数量（用于详细特征）
-    "num_urgent_candidates": 0,             # ❌ 禁用EDD采样（移除隐性作弊）
-    "num_short_candidates": 0,              # ❌ 禁用SPT采样（移除隐性作弊）
-    "num_random_candidates": 10,            # ✅ 全部改为随机采样（真实学习）
+    # 10-24-21-50 恢复混合候选采样配额（EDD+SPT+随机）
+    "num_urgent_candidates": 3,
+    "num_short_candidates": 3,
+    "num_random_candidates": 4,
     
     # 归一化参数
     "max_op_duration_norm": 60.0,           # 用于归一化操作时长的最大值
@@ -258,7 +287,7 @@ REWARD_CONFIG = {
     # 第二层：时间质量奖励（次要信号）
     # ============================================================
     "on_time_completion_reward": 80.0,      
-    "tardiness_penalty_scaler": -80.0,     
+    "tardiness_penalty_scaler": -10.0,     
     
     # ============================================================
     # 第三层：过程塑形奖励（引导信号）
@@ -334,9 +363,9 @@ LEARNING_RATE_CONFIG = {
     "critic_lr_multiplier": 0.5,         # 专家修复：为Critic设置一个较低的学习率乘数，以稳定价值学习
 }
 
-# 系统资源配置
+# 10-25-12-30 系统资源配置（支持线程池/进程池切换）
 SYSTEM_CONFIG = {
-    "num_parallel_workers": 4,           # 并行worker数量
+    "num_parallel_workers": 4,           # 并行worker数量（建议4-6个）
     "tf_inter_op_threads": 4,            # TensorFlow inter-op线程数
     "tf_intra_op_threads": 8,            # TensorFlow intra-op线程数
 }

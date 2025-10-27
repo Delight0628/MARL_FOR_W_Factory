@@ -82,9 +82,27 @@ def monitor_and_launch(model_run_dir, main_dir_name, folder_name, timeout_hours=
 
     while time.time() - start_time < timeout_seconds:
         try:
-            # 查找所有以 _actor.keras 结尾的模型文件
-            all_models = {f for f in os.listdir(model_run_dir) if f.endswith('_actor.keras')}
-            new_models = all_models - processed_models
+            # 🔧 新增：递归查找所有时间戳子目录中的模型文件
+            all_models = {}  # 改为字典，存储 {model_file: full_path}
+            
+            # 首先检查是否有时间戳子目录（新结构）
+            has_timestamp_subdirs = False
+            for item in os.listdir(model_run_dir):
+                item_path = os.path.join(model_run_dir, item)
+                if os.path.isdir(item_path) and item.count('_') == 1 and len(item) == 9:  # 匹配 MMDD_HHMM 格式
+                    has_timestamp_subdirs = True
+                    # 在时间戳子目录中查找模型
+                    for file in os.listdir(item_path):
+                        if file.endswith('_actor.keras'):
+                            all_models[file] = os.path.join(item_path, file)
+            
+            # 如果没有时间戳子目录，使用旧逻辑（向后兼容）
+            if not has_timestamp_subdirs:
+                for file in os.listdir(model_run_dir):
+                    if file.endswith('_actor.keras'):
+                        all_models[file] = os.path.join(model_run_dir, file)
+            
+            new_models = set(all_models.keys()) - processed_models
 
             if not new_models:
                 time.sleep(30) # 如果没有新模型，等待30秒
@@ -94,7 +112,7 @@ def monitor_and_launch(model_run_dir, main_dir_name, folder_name, timeout_hours=
                 print("\n" + "="*60, flush=True)
                 print(f"⭐ 发现新模型: {model_file}", flush=True)
                 
-                model_path = os.path.join(model_run_dir, model_file)
+                model_path = all_models[model_file]  # 🔧 使用完整路径
                 base_name = model_file.replace('.keras', '')
 
                 # 为当前模型创建一个专属的评估子目录
@@ -105,10 +123,10 @@ def monitor_and_launch(model_run_dir, main_dir_name, folder_name, timeout_hours=
                 eval_log = os.path.join(marl_eval_subdir, f'ev_{base_name}.log')
                 eval_cmd = (
                     f"nohup python evaluation.py "
-                    f"--model_path {model_path} "
+                    f'--model_path "{model_path}" '
                     f"--generalization --gantt "
                     f'--run_name "{folder_name}" '
-                    f"--output_dir {marl_eval_subdir} > {eval_log} 2>&1 &"
+                    f'--output_dir "{marl_eval_subdir}" > "{eval_log}" 2>&1 &'
                 )
                 run_detached_command(eval_cmd)
 
@@ -116,7 +134,7 @@ def monitor_and_launch(model_run_dir, main_dir_name, folder_name, timeout_hours=
                 debug_log = os.path.join(debug_dir, f'db_{base_name}.log')
                 debug_cmd = (
                     f"nohup python debug_marl_behavior.py "
-                    f"--model_path {model_path} > {debug_log} 2>&1 &"
+                    f'--model_path "{model_path}" > "{debug_log}" 2>&1 &'
                 )
                 run_detached_command(debug_cmd)
                 
@@ -158,9 +176,8 @@ def launch_background_process(args):
     print(f"📋 正在复制 {len(files_to_copy)} 个关键脚本到 '{main_dir_name}'...", flush=True)
     for file_path in files_to_copy:
         try:
-            dest_dir = os.path.join(main_dir_name, os.path.dirname(file_path))
-            os.makedirs(dest_dir, exist_ok=True)
-            shutil.copy(file_path, dest_dir)
+            # 将文件直接复制到主目录，不再创建子文件夹
+            shutil.copy(file_path, main_dir_name)
         except Exception as e:
             print(f"   -> 🔴 复制文件 '{file_path}' 时出错: {e}", flush=True)
 

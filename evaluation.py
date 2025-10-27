@@ -1,12 +1,18 @@
 import os
 import sys
 
-# 关键修复：强制评估脚本在CPU上运行，避免与训练进程争夺GPU资源
-os.environ['CUDA_VISIBLE_DEVICES'] = '-1'
+# 设备选择：默认允许使用可用GPU；若需强制CPU，请设置环境变量 FORCE_CPU=1
+if os.environ.get('FORCE_CPU', '0') == '1':
+    os.environ['CUDA_VISIBLE_DEVICES'] = '-1'
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'  # 屏蔽TensorFlow的INFO级别日志
 
 import numpy as np
 import tensorflow as tf
+import random
+# 兼容 TF 2.10：使用传统方式设种子，避免依赖 keras3 的 stateless RNG
+random.seed(42)
+np.random.seed(42)
+tf.random.set_seed(42)
 import pandas as pd
 from tqdm import tqdm
 import argparse
@@ -28,6 +34,196 @@ from environments.w_factory_config import (
 )
 # 10201530 新增：导入gym以识别MultiDiscrete动作空间
 import gymnasium as gym
+import json
+
+# =============================================================================
+# 0. TensorFlow 2.15.0 兼容：健壮的模型加载函数
+# =============================================================================
+
+def load_actor_model_robust(model_path: str):
+    """
+    健壮的模型加载函数 - TensorFlow 2.15.0 兼容版本
+    支持多种加载策略：.keras -> .h5 -> weights+meta重建
+    
+    Args:
+        model_path: 模型文件路径（可以是.keras或.h5或基础路径）
+    
+    Returns:
+        加载的Actor模型，如果失败则返回None
+    """
+    base_path = model_path.replace('.keras', '').replace('.h5', '').replace('_actor', '')
+    
+    # 策略1：优先尝试H5格式（最稳定）
+    h5_paths = [
+        f"{base_path}_actor.h5",
+        model_path if model_path.endswith('.h5') else None
+    ]
+    
+    for h5_path in h5_paths:
+        if h5_path and os.path.exists(h5_path):
+            try:
+                print(f"🔄 从H5格式加载: {h5_path}", flush=True)
+                model = tf.keras.models.load_model(h5_path, compile=False)
+                print(f"✅ 成功从H5格式加载模型", flush=True)
+                return model
+            except Exception as e:
+                print(f"⚠️ H5加载失败: {e}", flush=True)
+    
+    # 策略2：从权重+元数据重建
+    meta_path = f"{base_path}_meta.json"
+    weights_path = f"{base_path}_actor_weights.h5"
+    
+    if os.path.exists(meta_path) and os.path.exists(weights_path):
+        try:
+            print(f"🔄 从权重+元数据重建模型", flush=True)
+            print(f"📄 [调试] meta文件: {meta_path}", flush=True)
+            print(f"📦 [调试] weights文件: {weights_path}", flush=True)
+            
+            with open(meta_path, 'r', encoding='utf-8') as f:
+                meta = json.load(f)
+            # 关键调试输出：核对维度与网络配置
+            try:
+                print(
+                    "[META] state_dim=", meta.get('state_dim'),
+                    " global_state_dim=", meta.get('global_state_dim'),
+                    " action_space=", meta.get('action_space'),
+                    " hidden_sizes=", (meta.get('network_config') or {}).get('hidden_sizes'),
+                    flush=True
+                )
+            except Exception:
+                pass
+
+            # 新增：与当前环境维度做一致性对比，若不一致则直接报错并中止
+            try:
+                _cmp_env = WFactoryEnv(config=EVALUATION_CONFIG)
+                first_agent = _cmp_env.possible_agents[0]
+                cur_state_dim = int(_cmp_env.observation_space(first_agent).shape[0])
+                cur_action_space = _cmp_env.action_space(first_agent)
+                base_global_dim = int(_cmp_env.global_state_space.shape[0])
+                num_agents = int(len(_cmp_env.possible_agents))
+                conditioned_global_dim = base_global_dim + num_agents
+                if isinstance(cur_action_space, gym.spaces.MultiDiscrete):
+                    cur_action = { 'type': 'MultiDiscrete', 'nvec': [int(x) for x in cur_action_space.nvec], 'n': None }
+                else:
+                    cur_action = { 'type': 'Discrete', 'nvec': None, 'n': int(cur_action_space.n) }
+                _cmp_env.close()
+
+                mismatches = []
+                meta_state_dim = int(meta.get('state_dim'))
+                if meta_state_dim != cur_state_dim:
+                    mismatches.append(f"state_dim: meta={meta_state_dim}, current={cur_state_dim}")
+
+                meta_global = int(meta.get('global_state_dim'))
+                if meta_global != base_global_dim and meta_global != conditioned_global_dim:
+                    mismatches.append(
+                        f"global_state_dim: meta={meta_global}, current_base={base_global_dim}, current_conditioned={conditioned_global_dim}"
+                    )
+
+                meta_action = meta.get('action_space', {})
+                meta_type = meta_action.get('type')
+                if meta_type != cur_action['type']:
+                    mismatches.append(f"action_space.type: meta={meta_type}, current={cur_action['type']}")
+                else:
+                    if meta_type == 'MultiDiscrete':
+                        m_nvec = [int(x) for x in (meta_action.get('nvec') or [])]
+                        if m_nvec != cur_action['nvec']:
+                            mismatches.append(f"action_space.nvec: meta={m_nvec}, current={cur_action['nvec']}")
+                    else:
+                        m_n = int(meta_action.get('n')) if meta_action.get('n') is not None else None
+                        if m_n != cur_action['n']:
+                            mismatches.append(f"action_space.n: meta={m_n}, current={cur_action['n']}")
+
+                if mismatches:
+                    print("❌ 维度一致性检查失败，拒绝加载模型以避免形状错误:", flush=True)
+                    for item in mismatches:
+                        print(f"   - {item}", flush=True)
+                    print("📌 请确保训练与评估环境/网络配置完全一致，或重新训练生成匹配的模型。", flush=True)
+                    raise RuntimeError("模型元数据与当前环境不一致")
+            except Exception as _cmp_e:
+                # 若对比过程自身出错，也打印出来便于定位
+                print(f"⚠️ 维度对比过程异常: {_cmp_e}", flush=True)
+            
+            # 重建模型架构
+            from mappo.ppo_marl_train import PPONetwork
+            
+            action_space_meta = meta['action_space']
+            if action_space_meta['type'] == 'MultiDiscrete':
+                action_space = gym.spaces.MultiDiscrete(action_space_meta['nvec'])
+            else:
+                action_space = gym.spaces.Discrete(action_space_meta['n'])
+            
+            def _build_and_load_on(device_ctx=None):
+                if device_ctx is None:
+                    net = PPONetwork(
+                        state_dim=int(meta['state_dim']),
+                        action_space=action_space,
+                        lr=None,
+                        global_state_dim=int(meta['global_state_dim']),
+                        network_config=meta.get('network_config')
+                    )
+                    net.actor.load_weights(weights_path)
+                    return net.actor
+                else:
+                    with device_ctx:
+                        net = PPONetwork(
+                            state_dim=int(meta['state_dim']),
+                            action_space=action_space,
+                            lr=None,
+                            global_state_dim=int(meta['global_state_dim']),
+                            network_config=meta.get('network_config')
+                        )
+                        net.actor.load_weights(weights_path)
+                        return net.actor
+
+            try:
+                actor_model = _build_and_load_on()
+                print(f"✅ 成功从权重+元数据重建模型", flush=True)
+                return actor_model
+            except Exception as e_build:
+                print(f"⚠️ CPU重建失败: {e_build}", flush=True)
+                # 针对 vector::_M_range_check 尝试 GPU 回退
+                if 'vector::_M_range_check' in str(e_build):
+                    try:
+                        gpus = tf.config.list_physical_devices('GPU')
+                        if gpus and os.environ.get('CUDA_VISIBLE_DEVICES', '') != '-1':
+                            print("⚡ 尝试在GPU上重建模型以规避CPU初始化问题...", flush=True)
+                            actor_model = _build_and_load_on(tf.device('/GPU:0'))
+                            print("✅ GPU重建成功", flush=True)
+                            return actor_model
+                    except Exception as e_gpu:
+                        print(f"❌ GPU回退也失败: {e_gpu}", flush=True)
+                # 若不是该错误或GPU也失败，继续抛出让外层处理
+                raise
+            
+        except Exception as e:
+            print(f"❌ 重建失败: {e}", flush=True)
+            import traceback
+            traceback.print_exc()
+    else:
+        if not os.path.exists(meta_path):
+            print(f"❌ [调试] meta文件不存在！", flush=True)
+        if not os.path.exists(weights_path):
+            print(f"❌ [调试] weights文件不存在！", flush=True)
+    
+    # 策略3：尝试.keras格式（最后的手段）
+    keras_paths = [
+        f"{base_path}_actor.keras",
+        model_path if model_path.endswith('.keras') else None
+    ]
+    
+    for keras_path in keras_paths:
+        if keras_path and os.path.exists(keras_path):
+            try:
+                print(f"🔄 尝试Keras格式: {keras_path}", flush=True)
+                model = tf.keras.models.load_model(keras_path, compile=False)
+                print(f"✅ 成功从Keras格式加载模型", flush=True)
+                return model
+            except Exception as e:
+                print(f"⚠️ .keras文件加载失败: {e}", flush=True)
+    
+    print(f"❌ 所有加载策略均失败", flush=True)
+    print(f"💡 提示: 请确保模型文件完整，包括 .h5, _weights.h5, 和 _meta.json", flush=True)
+    return None
 
 # =============================================================================
 # 1. 核心配置 (Core Configuration)
@@ -131,57 +327,55 @@ def evaluate_marl_model(model_path: str, config: dict = STATIC_EVAL_CONFIG, gene
         total_parts = sum(order["quantity"] for order in config['custom_orders'])
         print(f"📦 自定义订单: {len(config['custom_orders'])}个订单, 总计{total_parts}个零件", flush=True)
     
-    if not os.path.exists(model_path):
-        print(f"❌ 错误: 模型文件不存在 at {model_path}", flush=True)
+    # 10-26-16-00 TensorFlow 2.15.0兼容：使用健壮的加载函数
+    actor_model = load_actor_model_robust(model_path)
+    if actor_model is None:
         return None, None
 
-    try:
-        actor_model = tf.keras.models.load_model(model_path)
-    except Exception as e:
-        print(f"❌ 加载模型失败: {e}", flush=True)
-        return None, None
-
-    # 10-23-16-45 修复：MARL策略多头输出采用无放回贪心逐头解码，避免系统性冲突
+    # 10201530 修复：MARL策略适配MultiDiscrete，按“共享分布×并行设备数”输出动作数组
     def marl_policy(obs, env, info, step_count):
+        def choose_parallel_actions_multihead(head_probs_list, num_heads: int) -> np.ndarray:
+            chosen = []
+            used = set()
+            for i in range(num_heads):
+                if isinstance(head_probs_list, (list, tuple)) and len(head_probs_list) > i:
+                    p = np.squeeze(np.asarray(head_probs_list[i], dtype=np.float64))
+                else:
+                    base = head_probs_list[0] if isinstance(head_probs_list, (list, tuple)) else head_probs_list
+                    p = np.squeeze(np.asarray(base, dtype=np.float64))
+                p = np.clip(p, 1e-12, np.inf)
+                if used:
+                    idxs = list(used)
+                    p[idxs] = 0.0
+                s = p.sum()
+                if s <= 1e-12:
+                    idx = 0
+                else:
+                    p = p / s
+                    idx = int(np.argmax(p))  # 评估使用确定性贪心
+                chosen.append(idx)
+                used.add(idx)
+            return np.array(chosen, dtype=np.int32)
+
         actions = {}
         for agent in env.agents:
             if agent in obs:
                 state = tf.expand_dims(obs[agent], 0)
-                # 10220715 修复：兼容多头/单头模型输出
+                # 10-25-14-30 兼容多头/单头输出，推理模式
                 model_out = actor_model(state, training=False)
-                is_multi_output = isinstance(model_out, (list, tuple))
+                if isinstance(model_out, (list, tuple)):
+                    head_probs_list = [np.squeeze(h.numpy()) for h in model_out]
+                else:
+                    head_probs_list = [np.squeeze(model_out.numpy()[0])]
                 space = env.action_space(agent)
                 if isinstance(space, gym.spaces.MultiDiscrete):
                     k = len(space.nvec)
-                    # 10-23-16-45 修复：逐头无放回贪心，使用每个头的分布并对已选index置零
-                    if is_multi_output:
-                        head_probs_list = [np.squeeze(t.numpy()) for t in model_out]
-                    else:
-                        # 单头共享分布：各头从同一分布中按无放回贪心选择
-                        shared = np.squeeze(model_out.numpy()[0])
-                        head_probs_list = [shared for _ in range(k)]
-
-                    used = set()
-                    chosen = []
-                    for i in range(k):
-                        p = head_probs_list[i].astype(np.float64).copy()
-                        p = np.clip(p, 1e-12, 1.0)
-                        for u in used:
-                            if 0 <= u < p.shape[0]:
-                                p[u] = 0.0
-                        if p.sum() <= 1e-12:
-                            idx = 0
-                        else:
-                            idx = int(np.argmax(p))
-                        chosen.append(idx)
-                        used.add(idx)
+                    chosen = choose_parallel_actions_multihead(head_probs_list, k)
                     actions[agent] = np.array(chosen, dtype=space.dtype)
                 else:
-                    if is_multi_output:
-                        # 单动作用第一个头
-                        actions[agent] = int(np.argmax(np.squeeze(model_out[0].numpy())))
-                    else:
-                        actions[agent] = int(np.argmax(np.squeeze(model_out.numpy()[0])))
+                    p = np.asarray(head_probs_list[0], dtype=np.float64)
+                    p = np.clip(p, 1e-12, np.inf)
+                    actions[agent] = int(np.argmax(p))
         return actions
 
     # 🔧 V4 修复：直接通过config传递自定义订单，无需上下文管理器

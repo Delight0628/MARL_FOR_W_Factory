@@ -129,6 +129,11 @@ class WFactorySim:
         if self._training_mode:
             self.debug_level = 'WARNING'
         
+        # 10-23-18-00 新增：从配置中读取动态事件开关（支持阶段级别的动态控制）
+        # 允许在不同训练阶段启用/禁用设备故障和紧急插单
+        self._equipment_failure_enabled = self.config.get('equipment_failure_enabled', EQUIPMENT_FAILURE["enabled"])
+        self._emergency_orders_enabled = self.config.get('emergency_orders_enabled', EMERGENCY_ORDERS["enabled"])
+        
         # 仿真环境
         self.env = simpy.Environment()
         self.current_time = 0
@@ -361,7 +366,9 @@ class WFactorySim:
     def _equipment_process(self, station_name: str):
         """设备处理进程 - 处理设备故障等事件"""
         while True:
-            if EQUIPMENT_FAILURE["enabled"]:
+            # 10-23-18-00 修改：使用实例级别的配置而非全局配置
+            # 这允许不同worker在同一进程中使用不同的故障配置
+            if self._equipment_failure_enabled:
                 # 随机设备故障
                 failure_interval = np.random.exponential(
                     EQUIPMENT_FAILURE["mtbf_hours"] * 60
@@ -612,10 +619,19 @@ class WFactorySim:
         - 通过多样性采样确保agent能看到队列中不同类型的工件
         - 不再受限于队列前几个位置，实现真正的全局优化
         
-        采样策略：
-        - 随机采样N个（或确定性地取队列前N个，当deterministic_candidates=True）
+        采样策略（恢复混合：紧急 + 最短 + 随机）：
+        - 紧急EDD：按最小松弛度(负值更紧急)选取 num_urgent_candidates 个
+        - 最短SPT：按当前工序加工时间从小到大选取 num_short_candidates 个
+        - 随机Random：从剩余索引中选取 num_random_candidates 个
+        - 总候选数不超过 ENHANCED_OBS_CONFIG["num_candidate_workpieces"]
+        
+        当 deterministic_candidates=True 时：
+        - EDD/SPT 分支使用稳定排序后直接取前N个
+        - Random 分支使用队列顺序取前N个（不随机）
         
         返回格式：[{"part": Part, "index": int, "category": str}, ...]
+        
+        10-24-21-50 恢复混合候选采样(EDD+SPT+随机)，并支持确定性评估复现
         """
         queue = self.queues[station_name].items
         
@@ -628,29 +644,95 @@ class WFactorySim:
         if station_name in self._cached_candidates and self._cached_candidates[station_name]:
             return self._cached_candidates[station_name]
 
-        candidates = []
+        candidates: List[Dict[str, Any]] = []
         used_indices = set()
-        
-        # ✅ 候选采样：支持确定性与随机两种策略
-        num_random = ENHANCED_OBS_CONFIG["num_random_candidates"]
+
+        # 10-24-21-50 读取配额（紧急/最短/随机）
+        num_total = int(ENHANCED_OBS_CONFIG.get("num_candidate_workpieces", 0))
+        num_urgent = int(ENHANCED_OBS_CONFIG.get("num_urgent_candidates", 0))
+        num_short = int(ENHANCED_OBS_CONFIG.get("num_short_candidates", 0))
+        num_random = int(ENHANCED_OBS_CONFIG.get("num_random_candidates", 0))
+        # 若三者之和超过总量，进行裁剪
+        quota_sum = num_urgent + num_short + num_random
+        if quota_sum > num_total:
+            # 10-24-21-50 保守裁剪：按比例下调，至少为0
+            scale = num_total / max(1, quota_sum)
+            num_urgent = int(num_urgent * scale)
+            num_short = int(num_short * scale)
+            num_random = max(0, num_total - num_urgent - num_short)
+
         available_indices = list(range(len(queue)))
-        if available_indices:
-            sample_size = min(num_random, len(available_indices))
-            if self._deterministic_candidates:
-                # 确定性：直接取队列前N个，确保评估可复现
-                sampled_indices = available_indices[:sample_size]
-            else:
-                # 10-23-16-05 新增：稳定哈希种子，确保跨进程/运行可复现
-                import hashlib
-                seed_tuple = (station_name, int(self.env.now), tuple(p.part_id for p in queue))
-                h = hashlib.sha256(str(seed_tuple).encode('utf-8')).hexdigest()
-                seed = int(h[:8], 16)
-                rng = random.Random(seed)
-                sampled_indices = rng.sample(available_indices, sample_size)
-            for idx in sampled_indices:
-                candidates.append({"part": queue[idx], "index": idx, "category": "deterministic" if self._deterministic_candidates else "random"})
+
+        # 10-24-21-50 分支一：EDD（最小松弛度）
+        if num_urgent > 0 and available_indices:
+            # 计算每个索引的slack
+            slack_list = []
+            current_time = self.env.now
+            for idx in available_indices:
+                part = queue[idx]
+                slack_val = calculate_slack_time(part, current_time, self.queues, WORKSTATIONS)
+                slack_list.append((idx, slack_val, part.part_id))
+            # 稳定排序：slack升序，part_id次序保证稳定
+            slack_list.sort(key=lambda x: (x[1], x[2]))
+            urgent_indices = [t[0] for t in slack_list[:min(num_urgent, len(slack_list))]] if self._deterministic_candidates else [t[0] for t in slack_list[:min(num_urgent, len(slack_list))]]
+            for idx in urgent_indices:
+                candidates.append({"part": queue[idx], "index": idx, "category": "urgent"})
                 used_indices.add(idx)
-        
+
+        # 10-24-21-50 分支二：SPT（当前工序时间最短）
+        if num_short > 0 and len(used_indices) < len(available_indices):
+            rem_indices = [i for i in available_indices if i not in used_indices]
+            spt_list = []
+            for idx in rem_indices:
+                part = queue[idx]
+                proc = float(part.get_processing_time())
+                spt_list.append((idx, proc, part.part_id))
+            spt_list.sort(key=lambda x: (x[1], x[2]))
+            short_indices = [t[0] for t in spt_list[:min(num_short, len(spt_list))]]
+            for idx in short_indices:
+                candidates.append({"part": queue[idx], "index": idx, "category": "short"})
+                used_indices.add(idx)
+
+        # 10-24-21-50 分支三：随机（或确定性顺序）
+        if num_random > 0 and len(used_indices) < len(available_indices):
+            rem_indices = [i for i in available_indices if i not in used_indices]
+            if rem_indices:
+                sample_size = min(num_random, len(rem_indices))
+                if self._deterministic_candidates:
+                    sampled_indices = rem_indices[:sample_size]
+                else:
+                    # 10-23-16-05 稳定哈希种子，确保跨进程/运行可复现
+                    import hashlib
+                    seed_tuple = (station_name, int(self.env.now), tuple(p.part_id for p in queue), "random")
+                    h = hashlib.sha256(str(seed_tuple).encode('utf-8')).hexdigest()
+                    seed = int(h[:8], 16)
+                    rng = random.Random(seed)
+                    sampled_indices = rng.sample(rem_indices, sample_size)
+                for idx in sampled_indices:
+                    candidates.append({"part": queue[idx], "index": idx, "category": "random"})
+                    used_indices.add(idx)
+
+        # 10-24-21-50 若仍不足总候选配额，补齐（按队列顺序或剩余随机）
+        if len(candidates) < num_total:
+            rem_indices = [i for i in available_indices if i not in used_indices]
+            if rem_indices:
+                need = num_total - len(candidates)
+                if self._deterministic_candidates:
+                    fill_indices = rem_indices[:need]
+                else:
+                    import hashlib
+                    seed_tuple = (station_name, int(self.env.now), tuple(p.part_id for p in queue), "fill")
+                    h = hashlib.sha256(str(seed_tuple).encode('utf-8')).hexdigest()
+                    seed = int(h[:8], 16)
+                    rng = random.Random(seed)
+                    if need >= len(rem_indices):
+                        fill_indices = rem_indices
+                    else:
+                        fill_indices = rng.sample(rem_indices, need)
+                for idx in fill_indices:
+                    candidates.append({"part": queue[idx], "index": idx, "category": "random"})
+                    used_indices.add(idx)
+
         # 缓存本步候选以保证一致性
         self._cached_candidates[station_name] = candidates
         return candidates

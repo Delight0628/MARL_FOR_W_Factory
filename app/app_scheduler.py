@@ -13,10 +13,11 @@ import plotly.graph_objects as go
 from datetime import datetime
 import json
 from i18n import LANGUAGES, get_text
+import gymnasium as gym  # 10-25-14-30 引入以识别MultiDiscrete动作空间
 
-# 禁用GPU，使用CPU运行
-os.environ['CUDA_VISIBLE_DEVICES'] = '-1'
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
+if os.environ.get('FORCE_CPU', '0') == '1':
+    os.environ['CUDA_VISIBLE_DEVICES'] = '-1'
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'  # 屏蔽TensorFlow的INFO级别日志
 
 # 添加项目路径
 app_dir = os.path.dirname(os.path.abspath(__file__))
@@ -29,6 +30,126 @@ from environments.w_factory_config import (
     PRODUCT_ROUTES, WORKSTATIONS, SIMULATION_TIME,
     get_total_parts_count, calculate_episode_score, generate_random_orders
 )
+
+# ============================================================================
+# TensorFlow 2.15.0 兼容：健壮的模型加载函数
+# ============================================================================
+
+def load_actor_model_robust(model_path: str):
+    """
+    健壮的模型加载函数 - TensorFlow 2.15.0 兼容版本
+    支持多种加载策略：.h5 -> .keras -> weights+meta重建
+    
+    10-26-17-30 改进：兼容新的时间戳子目录结构和旧的扁平结构
+    """
+    import re
+    
+    base_path = model_path.replace('.keras', '').replace('.h5', '').replace('_actor', '')
+    
+    # 10-26-17-45 修正：智能路径解析，兼容两种目录结构
+    # 结构1（新）: models/20251026_155337/1026_1527/1026_1527base_train_best （文件名保留时间戳）
+    # 结构2（旧）: models/20251026_155337/1026_1527base_train_best
+    search_paths = [base_path]
+    
+    # 尝试从路径中提取时间戳并构建可能的路径
+    path_parts = base_path.split('/')
+    for i, part in enumerate(path_parts):
+        # 匹配形如 "1026_1527base_train_best" 的模式
+        match = re.match(r'^(\d{4}_\d{4})(.+)$', part)
+        if match:
+            timestamp = match.group(1)
+            full_filename = part  # 完整文件名（保留时间戳）
+            
+            # 构建新结构路径：在文件名前插入时间戳子目录
+            dir_parts = path_parts[:i]
+            new_path = '/'.join(dir_parts + [timestamp, full_filename])
+            if new_path not in search_paths:
+                search_paths.append(new_path)
+            break
+    
+    # 同时检查是否已经是新结构，需要尝试旧结构
+    if len(path_parts) >= 2:
+        parent_dir = path_parts[-2]
+        if parent_dir and re.match(r'^\d{4}_\d{4}$', parent_dir):
+            # 当前是新结构，构建旧结构路径
+            filename = path_parts[-1]
+            old_path = '/'.join(path_parts[:-2] + [filename])
+            if old_path not in search_paths:
+                search_paths.append(old_path)
+    
+    # 策略1：优先尝试H5格式（最稳定）
+    # 在所有可能的路径中搜索
+    for search_base in search_paths:
+        h5_path = f"{search_base}_actor.h5"
+        if os.path.exists(h5_path):
+            try:
+                model = tf.keras.models.load_model(h5_path, compile=False)
+                return model
+            except Exception:
+                pass
+    
+    # 如果原始路径是完整的.h5文件，也尝试加载
+    if model_path.endswith('.h5') and os.path.exists(model_path):
+        try:
+            model = tf.keras.models.load_model(model_path, compile=False)
+            return model
+        except Exception:
+            pass
+    
+    # 策略2：从权重+元数据重建
+    # 在所有可能的路径中搜索
+    for search_base in search_paths:
+        meta_path = f"{search_base}_meta.json"
+        weights_path = f"{search_base}_actor_weights.h5"
+        
+        if os.path.exists(meta_path) and os.path.exists(weights_path):
+            try:
+                with open(meta_path, 'r', encoding='utf-8') as f:
+                    meta = json.load(f)
+                
+                # 重建模型架构
+                from mappo.ppo_marl_train import PPONetwork
+                
+                action_space_meta = meta['action_space']
+                if action_space_meta['type'] == 'MultiDiscrete':
+                    action_space = gym.spaces.MultiDiscrete(action_space_meta['nvec'])
+                else:
+                    action_space = gym.spaces.Discrete(action_space_meta['n'])
+                
+                network = PPONetwork(
+                    state_dim=meta['state_dim'],
+                    action_space=action_space,
+                    lr=None,
+                    global_state_dim=meta['global_state_dim'],
+                    network_config=meta.get('network_config')
+                )
+                
+                network.actor.load_weights(weights_path)
+                return network.actor
+                
+            except Exception:
+                pass
+    
+    # 策略3：尝试.keras格式（最后的手段）
+    # 在所有可能的路径中搜索
+    for search_base in search_paths:
+        keras_path = f"{search_base}_actor.keras"
+        if os.path.exists(keras_path):
+            try:
+                model = tf.keras.models.load_model(keras_path, compile=False)
+                return model
+            except Exception:
+                pass
+    
+    # 如果原始路径是完整的.keras文件，也尝试加载
+    if model_path.endswith('.keras') and os.path.exists(model_path):
+        try:
+            model = tf.keras.models.load_model(model_path, compile=False)
+            return model
+        except Exception:
+            pass
+    
+    return None
 
 # ============================================================================
 # 页面配置
@@ -282,10 +403,11 @@ def validate_order_config(orders: list, custom_products: dict = None) -> dict:
 def load_model(model_path):
     """加载训练好的模型"""
     try:
-        if not os.path.exists(model_path):
-            return None, get_text("error_model_not_found", get_language(), model_path)
+        # 10-26-16-00 使用健壮的加载函数
+        actor_model = load_actor_model_robust(model_path)
+        if actor_model is None:
+            return None, get_text("error_load_model_failed", get_language(), "所有加载策略均失败")
         
-        actor_model = tf.keras.models.load_model(model_path)
         return actor_model, get_text("model_loaded_successfully", get_language())
     except Exception as e:
         return None, get_text("error_load_model_failed", get_language(), str(e))
@@ -379,9 +501,37 @@ def run_scheduling(actor_model, orders_config, custom_products=None, max_steps=1
             for agent in env.agents:
                 if agent in obs:
                     state = tf.expand_dims(obs[agent], 0)
-                    action_probs = actor_model(state, training=False)
-                    action = int(tf.argmax(action_probs[0]))
-                    actions[agent] = action
+                    # 10-25-14-30 统一：兼容多头/单头输出并采用按头无放回贪心选择
+                    action_probs_tensor = actor_model(state, training=False)
+                    if isinstance(action_probs_tensor, (list, tuple)):
+                        head_probs_list = [np.squeeze(h.numpy()) for h in action_probs_tensor]
+                    else:
+                        head_probs_list = [np.squeeze(action_probs_tensor.numpy()[0])]
+                    sp = env.action_space(agent)
+                    if isinstance(sp, gym.spaces.MultiDiscrete):
+                        k = len(sp.nvec)
+                        chosen = []
+                        used = set()
+                        for i in range(k):
+                            base = head_probs_list[i] if i < len(head_probs_list) else head_probs_list[0]
+                            p = np.asarray(base, dtype=np.float64)
+                            p = np.clip(p, 1e-12, np.inf)
+                            if used:
+                                idxs = list(used)
+                                p[idxs] = 0.0
+                            s = p.sum()
+                            if s <= 1e-12:
+                                idx = 0
+                            else:
+                                p = p / s
+                                idx = int(np.argmax(p))
+                            chosen.append(idx)
+                            used.add(idx)
+                        actions[agent] = np.array(chosen, dtype=sp.dtype)
+                    else:
+                        p = np.asarray(head_probs_list[0], dtype=np.float64)
+                        p = np.clip(p, 1e-12, np.inf)
+                        actions[agent] = int(np.argmax(p))
             
             obs, rewards, terminations, truncations, info = env.step(actions)
             total_reward += sum(rewards.values())

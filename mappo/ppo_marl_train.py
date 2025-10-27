@@ -9,7 +9,6 @@ import socket
 from typing import Dict, List, Tuple, Any, Optional
 from datetime import datetime
 from concurrent.futures import ProcessPoolExecutor, as_completed
-import concurrent.futures.process
 import multiprocessing
 import argparse
 from collections import deque, defaultdict
@@ -145,10 +144,11 @@ class PPONetwork:
     # lr参数可以是学习率调度器
     def __init__(self, state_dim: int, action_space: gym.spaces.Space, lr: Any, global_state_dim: int, network_config: Optional[Dict[str, Any]] = None):
         
-        self.state_dim = state_dim
+        # 强化类型安全，避免形状含有非正整数
+        self.state_dim = int(state_dim)
         # 🔧 核心修复：直接使用action_space对象
         self.action_space = action_space
-        self.global_state_dim = global_state_dim
+        self.global_state_dim = int(global_state_dim)
         self.config = network_config or PPO_NETWORK_CONFIG
 
         # 检查是否为MultiDiscrete
@@ -158,6 +158,9 @@ class PPONetwork:
         else: # Discrete
             self.action_dims = [self.action_space.n]
             
+        # 评估场景（lr为None）采用确定性初始化以规避某些Keras版本的RNG问题
+        self._deterministic_init = (lr is None) or bool(int(os.environ.get("DETERMINISTIC_INIT", "1")))
+
         self.actor, self.critic = self._build_networks()
         
         # 🔧 V32 修复：支持学习率调度器
@@ -201,16 +204,38 @@ class PPONetwork:
 
         hidden_sizes = config["hidden_sizes"]
         dropout_rate = config.get("dropout_rate", 0.1)
+        # # --- 诊断输出：在构建前打印关键形状，便于定位 shape 异常 ---
+        # try:
+        #     if bool(int(os.environ.get("DEBUG_MODEL_BUILD", "1"))):
+        #         print(f"[MODEL_BUILD] state_dim={self.state_dim} (type={type(self.state_dim)})", flush=True)
+        #         print(f"[MODEL_BUILD] global_state_dim={self.global_state_dim} (type={type(self.global_state_dim)})", flush=True)
+        #         print(f"[MODEL_BUILD] hidden_sizes={hidden_sizes}", flush=True)
+        # except Exception:
+        #     pass
+        # if int(self.state_dim) <= 0:
+        #     raise ValueError(f"Invalid state_dim: {self.state_dim}")
+        # if int(self.global_state_dim) <= 0:
+        #     raise ValueError(f"Invalid global_state_dim: {self.global_state_dim}")
         
+        # 10-26-15-30 修复：移除unique_id变量的使用，简化层名称
         # Actor网络
-        state_input = tf.keras.layers.Input(shape=(self.state_dim,))
+        state_input = tf.keras.layers.Input(shape=(int(self.state_dim),), dtype=tf.float32, name="actor_input")
         
         # 共享的主干网络
         actor_x = state_input
-        for hidden_size in hidden_sizes:
-            actor_x = tf.keras.layers.Dense(hidden_size, activation="relu")(actor_x)
+        # 确保隐藏层大小为正整数
+        hidden_sizes = [int(max(1, hs)) for hs in hidden_sizes]
+        for i, hidden_size in enumerate(hidden_sizes):
+            kernel_init = tf.keras.initializers.Zeros() if self._deterministic_init else tf.keras.initializers.GlorotUniform(seed=1234 + i)
+            actor_x = tf.keras.layers.Dense(
+                hidden_size,
+                activation="relu",
+                kernel_initializer=kernel_init,
+                bias_initializer=tf.keras.initializers.Zeros(),
+                name=f"actor_dense_{i}"
+            )(actor_x)
             if dropout_rate > 0:
-                actor_x = tf.keras.layers.Dropout(dropout_rate)(actor_x)
+                actor_x = tf.keras.layers.Dropout(dropout_rate, name=f"actor_dropout_{i}")(actor_x)
 
         # 为MultiDiscrete空间创建真正的多头输出，让网络学会协同
         if self.is_multidiscrete:
@@ -218,52 +243,90 @@ class PPONetwork:
             action_dim_per_head = self.action_dims[0]
             actor_outputs = []
             for i in range(num_heads):
-                # 为每个动作"头"创建一个独立的输出层
-                head_output = tf.keras.layers.Dense(action_dim_per_head, activation="softmax", name=f"actor_output_{i}")(actor_x)
+                # 10-23-20-30 修复：为每个动作头添加唯一名称
+                kernel_init = tf.keras.initializers.Zeros() if self._deterministic_init else tf.keras.initializers.GlorotUniform(seed=2000 + i)
+                head_output = tf.keras.layers.Dense(
+                    action_dim_per_head,
+                    activation="softmax",
+                    kernel_initializer=kernel_init,
+                    bias_initializer=tf.keras.initializers.Zeros(),
+                    name=f"actor_output_{i}"
+                )(actor_x)
                 actor_outputs.append(head_output)
             # Actor模型的输出现在是一个包含多个张量的列表
             self.actor = tf.keras.Model(inputs=state_input, outputs=actor_outputs)
         else:
-            actor_output = tf.keras.layers.Dense(self.action_dims[0], activation="softmax", name="actor_output")(actor_x)
+            kernel_init = tf.keras.initializers.Zeros() if self._deterministic_init else tf.keras.initializers.GlorotUniform(seed=3000)
+            actor_output = tf.keras.layers.Dense(
+                self.action_dims[0],
+                activation="softmax",
+                kernel_initializer=kernel_init,
+                bias_initializer=tf.keras.initializers.Zeros(),
+                name="actor_output"
+            )(actor_x)
             self.actor = tf.keras.Model(inputs=state_input, outputs=actor_output)
 
         # Critic网络 (中心化) - 使用全局状态
-        global_state_input = tf.keras.layers.Input(shape=(self.global_state_dim,))
+        global_state_input = tf.keras.layers.Input(shape=(int(self.global_state_dim),), dtype=tf.float32, name="critic_input")
         
         # 共享主干网络
         critic_x = global_state_input
-        for hidden_size in hidden_sizes:
-            critic_x = tf.keras.layers.Dense(hidden_size, activation="relu")(critic_x)
+        for i, hidden_size in enumerate(hidden_sizes):
+            kernel_init = tf.keras.initializers.Zeros() if self._deterministic_init else tf.keras.initializers.GlorotUniform(seed=4000 + i)
+            critic_x = tf.keras.layers.Dense(
+                hidden_size,
+                activation="relu",
+                kernel_initializer=kernel_init,
+                bias_initializer=tf.keras.initializers.Zeros(),
+                name=f"critic_dense_{i}"
+            )(critic_x)
             if dropout_rate > 0:
-                critic_x = tf.keras.layers.Dropout(dropout_rate)(critic_x)
+                critic_x = tf.keras.layers.Dropout(dropout_rate, name=f"critic_dropout_{i}")(critic_x)
 
         # Value输出层
-        value_output = tf.keras.layers.Dense(1, activation=None, kernel_initializer=tf.keras.initializers.Orthogonal(gain=1.0), bias_initializer=tf.keras.initializers.Constant(0.0))(critic_x)
+        value_kernel_init = tf.keras.initializers.Zeros() if self._deterministic_init else tf.keras.initializers.Orthogonal(gain=1.0, seed=5000)
+        value_output = tf.keras.layers.Dense(
+            1,
+            activation=None,
+            kernel_initializer=value_kernel_init,
+            bias_initializer=tf.keras.initializers.Constant(0.0),
+            name="critic_value"
+        )(critic_x)
         critic = tf.keras.Model(inputs=global_state_input, outputs=value_output)
         
         return self.actor, critic
     
     def get_action_and_value(self, state: np.ndarray, global_state: np.ndarray) -> Tuple[int, np.float32, np.float32]:
         """获取动作、动作概率和状态价值"""
-        # Actor
-        action_probs = self.actor(state)
+        # 10-25-14-30 Actor (推理模式，禁用dropout等随机性)
+        action_probs = self.actor(state, training=False)
         
-        # Critic
-        value = self.critic(global_state) # (B, 1)
+        # 10-25-14-30 Critic (推理模式)
+        value = self.critic(global_state, training=False) # (B, 1)
 
         # 10-23-16-30 修复：多头Actor采用"无放回"掩码采样，降低训练-执行耦合偏差
         if self.is_multidiscrete:
             # 确保action_probs是一个列表
             action_prob_list = action_probs if isinstance(action_probs, list) else [action_probs]
-            batch_size = tf.shape(action_prob_list[0])[0]
+            # 10-25-15-05 统一各头张量形状为 (B, action_dim)，并强制dtype=float32
+            normalized_heads = []
+            for head_probs in action_prob_list:
+                hp = tf.convert_to_tensor(head_probs, dtype=tf.float32)
+                if tf.rank(hp) == 1:
+                    hp = tf.expand_dims(hp, 0)
+                # 明确reshape为(B, action_dim)以避免隐式形状推断
+                hp = tf.reshape(hp, (-1, int(self.action_dims[0])))
+                normalized_heads.append(hp)
+            action_prob_list = normalized_heads
             num_heads = len(self.action_dims)
             action_dim = int(self.action_dims[0])
             chosen_actions = []
             log_prob_list = []
-            # 掩码初始化：False表示可选
-            mask = tf.zeros((batch_size, action_dim), dtype=tf.bool)
+            # 10-25-15-05 掩码初始化：与概率张量同形状，避免广播不一致
+            mask = tf.zeros_like(action_prob_list[0], dtype=tf.bool)
             for i in range(num_heads):
-                probs_i = action_prob_list[i]
+                probs_i = tf.convert_to_tensor(action_prob_list[i], dtype=tf.float32)
+                probs_i = tf.reshape(probs_i, (-1, action_dim))
                 # 对已选index置零并重归一化
                 masked_probs = tf.where(mask, tf.zeros_like(probs_i), probs_i)
                 norm = tf.reduce_sum(masked_probs, axis=1, keepdims=True) + 1e-8
@@ -281,8 +344,24 @@ class PPONetwork:
             action = tf.stack(chosen_actions, axis=1)   # (B, k)
             joint_log_prob = tf.add_n(log_prob_list)
             
-            # 返回numpy时，确保批次维度被正确处理 (B=1 -> 标量)
-            return action.numpy()[0], tf.squeeze(value).numpy(), joint_log_prob.numpy()[0]
+            # 10-25-14-30 返回numpy时，健壮处理批次维度
+            action_np = action.numpy()
+            if action_np.ndim == 2 and action_np.shape[0] >= 1:
+                action_out = action_np[0]
+            elif action_np.ndim == 1:
+                action_out = action_np
+            else:
+                action_out = np.zeros((num_heads,), dtype=self.action_space.dtype)
+
+            joint_log_prob_np = joint_log_prob.numpy()
+            if np.ndim(joint_log_prob_np) == 0:
+                jlp_out = float(joint_log_prob_np)
+            elif len(joint_log_prob_np) >= 1:
+                jlp_out = float(joint_log_prob_np[0])
+            else:
+                jlp_out = 0.0
+
+            return action_out, float(tf.squeeze(value).numpy()), jlp_out
         else:
             # 离散动作（单头）
             sampled = tf.random.categorical(tf.math.log(action_probs + 1e-8), 1)
@@ -290,7 +369,8 @@ class PPONetwork:
             action_prob = tf.math.log(tf.reduce_sum(action_probs * action_one_hot, axis=1) + 1e-8)
             action = tf.squeeze(sampled, axis=-1)
         
-        return action.numpy(), tf.squeeze(value).numpy(), tf.squeeze(action_prob).numpy()
+        action_np = action.numpy()
+        return action_np, float(tf.squeeze(value).numpy()), float(tf.squeeze(action_prob).numpy())
     
     def get_value(self, global_state: np.ndarray) -> float:
         """获取状态价值
@@ -363,8 +443,9 @@ class PPONetwork:
         # Critic更新 (使用全局状态)
         with tf.GradientTape() as tape:
             values = self.critic(global_states, training=True)
-            returns_tf = tf.expand_dims(tf.convert_to_tensor(returns, dtype=tf.float32), 1)
-            critic_loss = tf.reduce_mean(tf.square(returns_tf - values))
+            # 10-23-21-00 修复：returns已经是tensor，直接使用
+            returns_expanded = tf.expand_dims(returns, 1) if len(returns.shape) == 1 else returns
+            critic_loss = tf.reduce_mean(tf.square(returns_expanded - values))
         critic_grads = tape.gradient(critic_loss, self.critic.trainable_variables)
         # 梯度裁剪（使用配置值）
         critic_grads, _ = tf.clip_by_global_norm(critic_grads, grad_clip_norm)
@@ -378,20 +459,6 @@ class PPONetwork:
             "clip_fraction": clip_fraction.numpy()
         }
 
-# 10-22-10-55 修复：为进程池添加可序列化的包装函数
-def _collect_experience_wrapper(args):
-    """
-    可序列化的包装函数，用于进程池执行
-    这个函数必须在模块级别定义，才能被pickle序列化
-    """
-    (actor_weights, critic_weights, state_dim, action_space, num_steps, 
-     seed, global_state_dim, network_config, curriculum_config) = args
-    
-    network_weights = {'actor': actor_weights, 'critic': critic_weights}
-    
-    return run_simulation_worker(network_weights, state_dim, action_space, num_steps, 
-                                 seed, global_state_dim, network_config, curriculum_config)
-
 # 多进程并行工作函数
 def run_simulation_worker(network_weights: Dict[str, List[np.ndarray]],
                           state_dim: int, action_space: gym.spaces.Space, num_steps: int, seed: int, 
@@ -402,6 +469,29 @@ def run_simulation_worker(network_weights: Dict[str, List[np.ndarray]],
     - 🔧 核心修复：传递action_space对象而不是action_dim
     """
     try:
+        # 子进程设备策略：默认允许使用GPU并开启按需分配；若设置 FORCE_WORKER_CPU=1 则强制CPU
+        try:
+            import os as _os
+            if _os.environ.get('FORCE_WORKER_CPU', '0') == '1':
+                _os.environ['CUDA_VISIBLE_DEVICES'] = '-1'
+                try:
+                    _gpus = tf.config.list_physical_devices('GPU')
+                    if _gpus:
+                        tf.config.set_visible_devices([], 'GPU')
+                except Exception:
+                    pass
+            else:
+                try:
+                    _gpus = tf.config.list_physical_devices('GPU')
+                    for _g in _gpus:
+                        tf.config.experimental.set_memory_growth(_g, True)
+                except Exception:
+                    pass
+            # 降低子进程中的TF线程占用，提升稳定性
+            tf.config.threading.set_intra_op_parallelism_threads(1)
+            tf.config.threading.set_inter_op_parallelism_threads(1)
+        except Exception:
+            pass
         if curriculum_config:
             # 确保每个worker有独立的随机种子，同时尊重基础seed
             worker_seed = seed + curriculum_config.get('worker_id', 0)
@@ -436,13 +526,34 @@ def run_simulation_worker(network_weights: Dict[str, List[np.ndarray]],
         # 清理TensorFlow会话，确保干净的状态
         tf.keras.backend.clear_session()
         
-        network = PPONetwork(
-            state_dim=state_dim,
-            action_space=action_space,
-            lr=0.001,  # lr值无所谓，因为不在这里训练
-            global_state_dim=global_state_dim,
-            network_config=network_config
-        )
+        # 尝试在CPU构建，若遇到CPU初始化异常则在GPU回退构建
+        try:
+            network = PPONetwork(
+                state_dim=state_dim,
+                action_space=action_space,
+                lr=0.001,  # lr值无所谓，因为不在这里训练
+                global_state_dim=global_state_dim,
+                network_config=network_config
+            )
+        except Exception as _e_build:
+            if 'vector::_M_range_check' in str(_e_build):
+                try:
+                    _gpus = tf.config.list_physical_devices('GPU')
+                    if _gpus and _os.environ.get('FORCE_WORKER_CPU', '0') != '1':
+                        with tf.device('/GPU:0'):
+                            network = PPONetwork(
+                                state_dim=state_dim,
+                                action_space=action_space,
+                                lr=0.001,
+                                global_state_dim=global_state_dim,
+                                network_config=network_config
+                            )
+                    else:
+                        raise
+                except Exception:
+                    raise
+            else:
+                raise
         
         # 10-22-10-50 使用更健壮的权重加载机制
         if network_weights:
@@ -575,6 +686,34 @@ def run_simulation_worker(network_weights: Dict[str, List[np.ndarray]],
         traceback.print_exc()
         # 返回空数据以防主进程崩溃
         return {}, 0.0, None, True, False
+
+
+# 10-26-15-30 修复：添加包装函数以支持线程池/进程池的参数解包
+def _collect_experience_wrapper(args):
+    """
+    包装函数，用于解包元组参数并调用run_simulation_worker
+    这是为了兼容ThreadPoolExecutor/ProcessPoolExecutor的submit方法
+    """
+    # 解包参数元组
+    actor_weights, critic_weights, state_dim, action_space, num_steps, seed, global_state_dim, network_config, curriculum_config = args
+    
+    # 构建network_weights字典
+    network_weights = {
+        'actor': actor_weights,
+        'critic': critic_weights
+    }
+    
+    # 调用实际的worker函数
+    return run_simulation_worker(
+        network_weights=network_weights,
+        state_dim=state_dim,
+        action_space=action_space,
+        num_steps=num_steps,
+        seed=seed,
+        global_state_dim=global_state_dim,
+        network_config=network_config,
+        curriculum_config=curriculum_config
+    )
 
 
 class SimplePPOTrainer:
@@ -749,8 +888,15 @@ class SimplePPOTrainer:
         self.seed = RANDOM_SEED
         self.total_steps = 0
         self.network_config = PPO_NETWORK_CONFIG
-        self.multi_task_mixing_config = TRAINING_FLOW_CONFIG["generalization_phase"].get("multi_task_mixing", {"enabled": False, "base_worker_fraction": 0.0, "randomize_base_env": False})
-        base_fraction = float(self.multi_task_mixing_config.get("base_worker_fraction", 0.0))
+        
+        # 10-23-18-00 核心改进：多任务混合机制贯穿两个阶段
+        # 从foundation_phase和generalization_phase分别读取配置
+        # 两阶段都使用25% BASE_ORDERS worker作为稳定锚点
+        self.foundation_multi_task_config = TRAINING_FLOW_CONFIG["foundation_phase"].get("multi_task_mixing", {"enabled": False, "base_worker_fraction": 0.0, "randomize_base_env": False})
+        self.generalization_multi_task_config = TRAINING_FLOW_CONFIG["generalization_phase"].get("multi_task_mixing", {"enabled": False, "base_worker_fraction": 0.0, "randomize_base_env": False})
+        
+        # 计算BASE_ORDERS worker数量（两阶段使用相同配置）
+        base_fraction = float(self.foundation_multi_task_config.get("base_worker_fraction", 0.0))
         base_fraction = min(max(base_fraction, 0.0), 1.0)
         self.num_base_workers = int(round(self.num_workers * base_fraction))
     
@@ -881,28 +1027,79 @@ class SimplePPOTrainer:
         """
         并行收集经验并进行处理 (GAE计算等)
         - 🔧 MAPPO改造：每个worker独立运行一个完整的episode或指定steps，并返回最后一个全局状态
-        - 🔧 V36 修复：支持多任务混合训练
+        - 10-23-20-00 核心修复：统一MDP - 同一回合所有worker使用相同订单，避免梯度冲突
         """
+        # 10-23-20-00 关键修复：在分配给worker之前，先生成本回合的统一随机订单
+        # 设计理念：
+        #   1. 保证同一回合内所有worker面对相同的MDP（相同订单配置）
+        #   2. 避免多任务梯度冲突，确保训练稳定性
+        #   3. 每个新回合重新生成随机订单，保证泛化训练
+        #   4. 对于多任务混合：通过回合间轮换实现（某些回合用BASE_ORDERS，某些回合用随机订单）
+        
+        # 根据当前阶段选择本回合使用的订单配置
+        if not self.foundation_training_completed:
+            # 阶段一：基础训练（随机订单泛化）
+            current_mixing_config = self.foundation_multi_task_config
+        else:
+            # 阶段二：泛化强化（动态事件）
+            current_mixing_config = self.generalization_multi_task_config
+        
+        # 10-23-20-00 核心改进：回合级别的任务轮换（而非worker级别）
+        # 使用回合数来决定本回合使用哪种订单配置
+        use_base_orders_this_episode = False
+        if current_mixing_config.get("enabled", False):
+            # 根据base_worker_fraction决定使用BASE_ORDERS的频率
+            base_fraction = current_mixing_config.get("base_worker_fraction", 0.25)
+            # 每4回合中有1回合使用BASE_ORDERS（如果base_fraction=0.25）
+            cycle_length = int(1.0 / base_fraction) if base_fraction > 0 else 999999
+            episode_in_cycle = (self.total_steps // num_steps) % cycle_length
+            use_base_orders_this_episode = (episode_in_cycle == 0)
+        
+        # 生成本回合统一的订单配置
+        if use_base_orders_this_episode:
+            # 本回合所有worker使用BASE_ORDERS
+            episode_orders = BASE_ORDERS
+            episode_tag = "BASE_ORDERS"
+        else:
+            # 本回合所有worker使用相同的随机订单
+            episode_orders = generate_random_orders()
+            episode_tag = "随机订单"
+        
+        # 10-23-20-00 确定动态事件配置（所有worker统一）
+        episode_equipment_failure_enabled = False
+        episode_emergency_orders_enabled = False
+        if self.generalization_phase_active:
+            # 阶段二：启用动态事件
+            dynamic_events = TRAINING_FLOW_CONFIG["generalization_phase"].get("dynamic_events", {})
+            episode_equipment_failure_enabled = dynamic_events.get("equipment_failure_enabled", False)
+            episode_emergency_orders_enabled = dynamic_events.get("emergency_orders_enabled", False)
+        
         # --- 1. 并行运行worker收集数据 ---
         try:
-            # 10-22-10-55 修复：使用模块级别的包装函数，以便进程池可以序列化
+            # 10-22-10-55 修复：使用模块级别包装函数（线程池模式）
             worker_args_list = []
             for i in range(self.num_workers):
                 # 默认使用当前的课程配置
                 worker_curriculum_config = curriculum_config.copy() if curriculum_config else {}
                 worker_curriculum_config['worker_id'] = i
                 
-                # --- 多任务混合训练逻辑 (仅在泛化阶段) ---
-                if self.foundation_training_completed and self.multi_task_mixing_config.get("enabled", False):
-                    # 10-21-22-30：使多任务混合训练真正生效，显式设置 custom_orders
-                    if i < self.num_base_workers:
-                        # 基础订单worker：强制使用BASE_ORDERS
-                        worker_curriculum_config['custom_orders'] = BASE_ORDERS
-                        worker_curriculum_config['randomize_env'] = self.multi_task_mixing_config.get("randomize_base_env", False)
-                    else:
-                        # 随机订单worker：为每个worker独立生成随机订单
-                        worker_curriculum_config['custom_orders'] = generate_random_orders()
-                        worker_curriculum_config['randomize_env'] = True
+                # 10-23-20-00 核心修复：所有worker使用相同的订单配置
+                # 设计理念：
+                #   - 避免多MDP梯度冲突
+                #   - 通过回合间轮换实现多任务混合（而非worker间）
+                #   - 保证训练稳定性和收敛性
+                
+                # 10-23-20-00 所有worker使用本回合统一的订单和动态事件配置
+                worker_curriculum_config['custom_orders'] = episode_orders
+                worker_curriculum_config['randomize_env'] = (episode_tag != "BASE_ORDERS")
+                worker_curriculum_config['equipment_failure_enabled'] = episode_equipment_failure_enabled
+                worker_curriculum_config['emergency_orders_enabled'] = episode_emergency_orders_enabled
+                
+                # 10-25-16-10 线程池模式优化：直接传递模型对象而非权重，避免重复构建网络
+                # if self.pool_type == "ThreadPool":
+                #     # 线程池：传递模型对象（线程共享内存，无需序列化）
+                #     worker_curriculum_config['actor_model'] = self.shared_network.actor
+                #     worker_curriculum_config['critic_model'] = self.shared_network.critic
                 
                 worker_args_list.append((
                     self.shared_network.actor.get_weights(),
@@ -916,19 +1113,10 @@ class SimplePPOTrainer:
                     worker_curriculum_config
                 ))
 
-            # 10-22-10-55 修复：使用模块级别的包装函数，并行执行采集任务（进程池）
+            # 10-22-10-55 修复：使用模块级别包装函数，并行执行采集任务（线程池）
             futures = [self.pool.submit(_collect_experience_wrapper, args) for args in worker_args_list]
             results = [f.result() for f in futures]
 
-        except concurrent.futures.process.BrokenProcessPool as e:
-            print(f"❌ 进程池损坏（可能是内存不足导致子进程崩溃）: {e}")
-            print(f"🔄 尝试重建进程池...")
-            # 关闭损坏的进程池
-            self.pool.shutdown(wait=False)
-            # 重建进程池
-            self.pool = ProcessPoolExecutor(max_workers=self.num_workers)
-            print(f"✅ 进程池已重建")
-            return 0.0, None
         except Exception as e:
             print(f"❌ 并行工作进程失败: {e}")
             import traceback
@@ -979,16 +1167,34 @@ class SimplePPOTrainer:
             self._last_collect_finished_workers = self.num_workers
             self._last_collect_completed_workers = 0
             self._last_collect_worker_rewards = worker_rewards  # 🔧 新增：保存worker奖励列表
-            # 保存混合统计摘要（用于日志）
+            # 10-23-20-00 更新：保存回合级别的任务轮换信息（空批次返回）
+            current_mixing_config = self.foundation_multi_task_config if not self.foundation_training_completed else self.generalization_multi_task_config
+            mixing_enabled = current_mixing_config.get("enabled", False)
             self._last_collect_mixing_summary = {
-                'enabled': bool(self.generalization_phase_active and self.multi_task_mixing_config.get("enabled", False)),
-                'base_workers': int(self.num_base_workers) if (self.generalization_phase_active and self.multi_task_mixing_config.get("enabled", False)) else 0,
-                'random_workers': int(self.num_workers - (int(self.num_base_workers) if (self.generalization_phase_active and self.multi_task_mixing_config.get("enabled", False)) else 0)),
-                'base_avg_reward': float(np.mean(worker_rewards[:self.num_base_workers])) if worker_rewards[:self.num_base_workers] else None,
-                'random_avg_reward': float(np.mean(worker_rewards[self.num_base_workers:])) if worker_rewards[self.num_base_workers:] else None,
+                'enabled': bool(mixing_enabled),
+                'episode_task': episode_tag,  # 本回合的任务类型
+                'all_workers': int(self.num_workers),
+                'avg_reward': float(np.mean(worker_rewards)) if worker_rewards else None,
             }
+            
+            # 10-23-20-15 保存本回合的实际环境配置（空批次情况）
+            self._last_episode_config = {
+                'custom_orders': episode_orders,
+                'episode_tag': episode_tag,
+                'equipment_failure_enabled': episode_equipment_failure_enabled,
+                'emergency_orders_enabled': episode_emergency_orders_enabled,
+            }
+            
             avg_reward = total_reward / self.num_workers if self.num_workers > 0 else 0.0
             return avg_reward, None
+
+        # 10-25-14-30 统计成功完成的workers（缓冲区非空即可视为成功）
+        successful_workers = 0
+        for (buffers, _, _, _, _) in results:
+            if buffers:
+                # 至少一个agent有数据
+                if any(len(buf) > 0 for buf in buffers.values()):
+                    successful_workers += 1
 
         # 将聚合后的数据列表转换为NumPy数组，形成最终的训练批次
         batch = {
@@ -1001,15 +1207,24 @@ class SimplePPOTrainer:
         }
         # 记录本轮采集完成worker与达成worker数量，供外层日志打印
         self._last_collect_finished_workers = self.num_workers
-        self._last_collect_completed_workers = len(results)
+        self._last_collect_completed_workers = successful_workers
         self._last_collect_worker_rewards = worker_rewards  # 🔧 新增：保存worker奖励列表
-        # 保存混合统计摘要（用于日志）
+        # 10-23-20-00 更新：保存回合级别的任务轮换信息
+        current_mixing_config = self.foundation_multi_task_config if not self.foundation_training_completed else self.generalization_multi_task_config
+        mixing_enabled = current_mixing_config.get("enabled", False)
         self._last_collect_mixing_summary = {
-            'enabled': bool(self.generalization_phase_active and self.multi_task_mixing_config.get("enabled", False)),
-            'base_workers': int(self.num_base_workers) if (self.generalization_phase_active and self.multi_task_mixing_config.get("enabled", False)) else 0,
-            'random_workers': int(self.num_workers - (int(self.num_base_workers) if (self.generalization_phase_active and self.multi_task_mixing_config.get("enabled", False)) else 0)),
-            'base_avg_reward': float(np.mean(worker_rewards[:self.num_base_workers])) if worker_rewards[:self.num_base_workers] else None,
-            'random_avg_reward': float(np.mean(worker_rewards[self.num_base_workers:])) if worker_rewards[self.num_base_workers:] else None,
+            'enabled': bool(mixing_enabled),
+            'episode_task': episode_tag,  # 本回合的任务类型（BASE_ORDERS或随机订单）
+            'all_workers': int(self.num_workers),
+            'avg_reward': float(np.mean(worker_rewards)) if worker_rewards else None,
+        }
+        
+        # 10-23-20-15 保存本回合的实际环境配置（供评估时使用，确保训练-评估一致性）
+        self._last_episode_config = {
+            'custom_orders': episode_orders,
+            'episode_tag': episode_tag,
+            'equipment_failure_enabled': episode_equipment_failure_enabled,
+            'emergency_orders_enabled': episode_emergency_orders_enabled,
         }
         avg_reward = total_reward / self.num_workers if self.num_workers > 0 else 0.0
         return avg_reward, batch
@@ -1160,20 +1375,27 @@ class SimplePPOTrainer:
             'mean_tardiness': final_stats.get('total_tardiness', 0)
         }
     
-    def quick_kpi_evaluation(self, num_episodes: int = 3, curriculum_config: Dict[str, Any] = None) -> Dict[str, float]:
-        """快速KPI评估（支持课程学习配置和静默模式）"""
-        # 创建环境时传递课程配置，包括静默模式
-        # 课程配置直接通过make_parallel_env传递，由环境内部处理
-        if curriculum_config:
-            curriculum_config = curriculum_config.copy()
-            # 评估步长对齐环境超时
-            curriculum_config['MAX_SIM_STEPS'] = self.max_steps_for_eval
-            # 训练期评估强制确定性候选，保证可复现
-            curriculum_config['deterministic_candidates'] = True
-            env = make_parallel_env(curriculum_config)
-        else:
-            # 🔧 V39 修复一个潜在bug：正确解包create_environment的返回值
-            env, _ = self.create_environment()
+    def quick_kpi_evaluation(self, num_episodes: int = 1, curriculum_config: Dict[str, Any] = None) -> Dict[str, float]:
+        """10-23-20-15 修复版：快速KPI评估，确保评估环境与训练环境完全一致"""
+        # 10-23-20-15 核心改进：使用上一个训练回合的实际配置进行评估
+        # 这确保了评估KPI能够真实反映当前训练环境的表现
+        eval_config = curriculum_config.copy() if curriculum_config else {}
+        
+        # 10-23-20-15 优先使用保存的实际环境配置（如果存在）
+        if hasattr(self, '_last_episode_config') and self._last_episode_config:
+            last_config = self._last_episode_config
+            eval_config['custom_orders'] = last_config['custom_orders']
+            eval_config['equipment_failure_enabled'] = last_config['equipment_failure_enabled']
+            eval_config['emergency_orders_enabled'] = last_config['emergency_orders_enabled']
+            # 保存订单标签供日志使用
+            eval_config['episode_tag'] = last_config['episode_tag']
+        
+        # 评估步长对齐环境超时
+        eval_config['MAX_SIM_STEPS'] = self.max_steps_for_eval
+        # 训练期评估强制确定性候选，保证可复现
+        eval_config['deterministic_candidates'] = True
+        
+        env = make_parallel_env(eval_config)
         
         total_rewards = []
         makespans = []
@@ -1410,14 +1632,17 @@ class SimplePPOTrainer:
                     curriculum_just_completed = True
 
                 if not self.foundation_training_completed or curriculum_just_completed:
-                    # 阶段1：基础能力训练阶段
-                    # 如果课程学习未启用，或刚刚完成，则使用标准的基础订单进行训练
+                    # 10-23-18-00 新范式：阶段1：基础能力训练（随机订单泛化训练）
+                    # 核心改变：不再使用固定BASE_ORDERS，而是采用随机订单训练
+                    # 注意：多任务混合逻辑会在collect_and_process_experience中应用
+                    # 这里只提供主配置框架，具体的worker级别订单分配在数据采集时完成
                     if not curriculum_enabled or curriculum_just_completed:
                         foundation_config = {
                             'orders_scale': 1.0,
                             'time_scale': 1.0,
-                            'stage_name': '基础能力认证',
-                            'custom_orders': BASE_ORDERS
+                            'stage_name': '基础能力训练-随机订单',
+                            # 10-23-18-00 关键改变：不再设置custom_orders，让多任务混合逻辑处理
+                            # 随机订单将在collect_and_process_experience中按worker分配
                         }
                         current_curriculum_config = foundation_config
                     
@@ -1426,37 +1651,44 @@ class SimplePPOTrainer:
                             current_curriculum_config['current_episode'] = episode
                 
                 elif not self.generalization_phase_active:
-                    # 基础训练刚完成，准备进入泛化阶段
+                    # 10-23-18-00 阶段转换：基础训练完成，进入泛化强化阶段
                     self.generalization_phase_active = True
                     print("\n" + "="*80)
-                    print(f"🚀 [回合 {episode+1}] 基础训练已完成，正式进入随机领域强化阶段!")
-                    print("   每轮将使用全新的随机订单配置，并启用环境扰动。")
-                    print("   这将全面锻炼模型的泛化能力和鲁棒性。")
+                    print(f"🚀 [回合 {episode+1}] 基础训练已完成，正式进入泛化能力强化阶段!")
                     print("="*80 + "\n")
                 
                 if self.generalization_phase_active:
-                    # 阶段2：随机领域强化阶段
-                    # 每轮生成全新的随机订单配置
-                    random_orders = generate_random_orders()
+                    # 10-23-18-00 新范式：阶段2：泛化能力强化（动态事件鲁棒性训练）
+                    # 核心改变：启用设备故障、紧急插单等动态事件
+                    # 注意：多任务混合逻辑会在collect_and_process_experience中应用
+                    # 动态事件（设备故障、紧急插单）也在那里启用
                     generalization_config = {
-                        'custom_orders': random_orders,
                         'randomize_env': True,  # 启用环境扰动
-                        'stage_name': f'随机领域强化-R{episode}',
+                        'stage_name': f'泛化强化-动态事件-R{episode}',
                         'current_episode': episode
+                        # 10-23-18-00 关键改变：不再在这里设置custom_orders和动态事件配置
+                        # 这些将在collect_and_process_experience中按worker分配
                     }
                     
                     current_curriculum_config = generalization_config
                     
                     if episode % 20 == 0:
-                        total_parts = sum(order["quantity"] for order in random_orders)
+                        # 10-23-18-00 新范式：信息显示调整（不再在这里生成random_orders）
+                        # 动态事件状态由配置文件控制
                         generalization_criteria = self.training_flow_config["generalization_phase"]["completion_criteria"]
-                        print(f"🎲 随机领域强化: 本轮{len(random_orders)}个订单，共{total_parts}个零件")
+                        dynamic_events = TRAINING_FLOW_CONFIG["generalization_phase"].get("dynamic_events", {})
+                        print(f"🎲 泛化强化阶段: 动态事件训练")
+                        print(f"   设备故障: {'✓' if dynamic_events.get('equipment_failure_enabled', False) else '✗'}")
+                        print(f"   紧急插单: {'✓' if dynamic_events.get('emergency_orders_enabled', False) else '✗'}")
                         print(f"   泛化阶段连续达标: {self.generalization_achievement_count}/{generalization_criteria['target_consistency']} 次")
                 
 
                 collect_start_time = time.time()
                 episode_reward, batch = self.collect_and_process_experience(steps_per_episode, current_curriculum_config)
                 collect_duration = time.time() - collect_start_time
+
+                # 10-25-14-30 🔧 修复：递增总步数用于多任务混合与seed多样化
+                self.total_steps += steps_per_episode
                 
                 # 🔧 V6 安全的策略更新（包含内存检查）
                 update_start_time = time.time()
@@ -1647,7 +1879,7 @@ class SimplePPOTrainer:
                 if current_curriculum_config:
                     self._current_orders_scale = current_curriculum_config.get('orders_scale', 1.0)
                 
-                # 🔧 重构版：简化的性能监控，移除复杂的重启机制
+                # 简化的性能监控，移除复杂的重启机制
                 # 基础性能跟踪（用于调试和监控）
                 current_performance = kpi_results.get('mean_completed_parts', 0)
                 if not hasattr(self, '_performance_history'):
@@ -1658,50 +1890,8 @@ class SimplePPOTrainer:
                 if len(self._performance_history) > 20:
                     self._performance_history.pop(0)
                 
-                
-                # 🔧 V38修复：每30回合进行一次完整难度评估（静默模式，避免输出污染）
-                if curriculum_enabled and episode > 0 and episode % 30 == 0:
-                    print("\n" + "="*60)
-                    print("🎓 进行完整难度评估（100%订单，标准时间）...")
-                    full_config = {
-                        'orders_scale': 1.0,
-                        'time_scale': 1.0,
-                        'stage_name': '完整评估',
-                        'silent_evaluation': True  # 🔧 V38 关键：启用静默模式
-                    }
-                    full_kpi = self.quick_kpi_evaluation(num_episodes=3, curriculum_config=full_config)
-                    
-                    # 计算真实性能指标
-                    real_completion = full_kpi.get('mean_completed_parts', 0)
-                    real_completion_rate = real_completion / get_total_parts_count() * 100
-                    real_makespan = full_kpi.get('mean_makespan', 0)
-                    real_utilization = full_kpi.get('mean_utilization', 0)
-                    
-                    # 🔧 V34 修复：获取完整的评估指标，修复设备利用率显示异常
-                    real_tardiness = full_kpi.get('mean_tardiness', 0)  
-                    real_reward = full_kpi.get('mean_reward', 0)
-                    
-                    print(f"🎯 完整难度评估结果（3轮平均）:")
-                    print(f"   平均完成零件: {real_completion:.1f}/{get_total_parts_count()} ({real_completion_rate:.1f}%)")
-                    print(f"   平均总完工时间: {real_makespan:.1f}分钟")
-                    print(f"   平均设备利用率: {real_utilization*100:.1f}%")
-                    print(f"   平均订单延期时间: {real_tardiness:.1f}分钟") 
-                    print(f"   平均奖励: {real_reward:.1f}")
-                    
-                    # 评估进展
-                    if real_completion_rate > 90:
-                        print(f"🏆 优秀！接近完全掌握任务!")
-                    elif real_completion_rate > 60:
-                        print(f"💪 良好！已具备基本能力!")
-                    elif real_completion_rate > 30:
-                        print(f"📈 进步中！继续努力!")
-                    else:
-                        print(f"📚 仍需更多训练!")
-                    print("="*60 + "\n")
-                
-                # 🔧 V12 TensorBoard KPI记录 (V36已整合)
-                
-                # 🔧 修复：正确更新最佳记录（只有当makespan > 0时才更新）
+
+                # 正确更新最佳记录（只有当makespan > 0时才更新）
                 current_makespan = kpi_results['mean_makespan']
                 if current_makespan > 0 and current_makespan < best_makespan:
                     best_makespan = current_makespan
@@ -1729,6 +1919,10 @@ class SimplePPOTrainer:
                 
                 model_update_info = ""
                 
+                # 🔧 新增：为当前时间戳创建子文件夹
+                timestamp_dir = os.path.join(self.models_dir, timestamp)
+                os.makedirs(timestamp_dir, exist_ok=True)
+                
                 if curriculum_enabled:
                     # --- 启用课程学习时的保存逻辑 ---
                     if not self.foundation_training_completed:
@@ -1736,7 +1930,7 @@ class SimplePPOTrainer:
                         if current_score > stage_best_scores[current_stage]:
                             stage_best_scores[current_stage] = current_score
                             stage_name = current_curriculum_config['stage_name'].replace(" ", "_")
-                            model_path = self.save_model(f"{self.models_dir}/{timestamp}_{stage_name}_best")
+                            model_path = self.save_model(f"{timestamp_dir}/{timestamp}_{stage_name}_best")
                             if model_path:
                                 stage_display_name = current_curriculum_config['stage_name']
                                 model_update_info = f"✅ {stage_display_name}阶段最佳! 模型保存至: {model_path}"
@@ -1750,7 +1944,7 @@ class SimplePPOTrainer:
                             self.best_score_generalization_phase = current_score
                             self.best_kpi_generalization_phase = kpi_results.copy()
                             self.best_episode_generalization_phase = episode + 1
-                            model_path = self.save_model(f"{self.models_dir}/{timestamp}general_train_best")
+                            model_path = self.save_model(f"{timestamp_dir}/{timestamp}general_train_best")
                             if model_path:
                                 model_update_info = f"🏆 泛化强化阶段最佳! 模型保存至: {model_path}"
                                 # 🔧 修复：泛化阶段保存最佳模型时重置停滞计数器
@@ -1764,7 +1958,7 @@ class SimplePPOTrainer:
                             self.best_score_foundation_phase = current_score
                             self.best_kpi_foundation_phase = kpi_results.copy()
                             self.best_episode_foundation_phase = episode + 1
-                            model_path = self.save_model(f"{self.models_dir}/{timestamp}base_train_best")
+                            model_path = self.save_model(f"{timestamp_dir}/{timestamp}base_train_best")
                             if model_path:
                                 model_update_info = f"✅ 基础训练阶段最佳! 模型保存至: {model_path}"
                                 # 🔧 修复：非课程学习模式下，基础阶段也可以重置（因为allow_entropy_increase=True）
@@ -1776,7 +1970,7 @@ class SimplePPOTrainer:
                             self.best_score_generalization_phase = current_score
                             self.best_kpi_generalization_phase = kpi_results.copy()
                             self.best_episode_generalization_phase = episode + 1
-                            model_path = self.save_model(f"{self.models_dir}/{timestamp}general_train_best")
+                            model_path = self.save_model(f"{timestamp_dir}/{timestamp}general_train_best")
                             if model_path:
                                 model_update_info = f"🏆 泛化强化阶段最佳! 模型保存至: {model_path}"
                                 # 🔧 修复：泛化阶段保存最佳模型时重置停滞计数器
@@ -1809,7 +2003,7 @@ class SimplePPOTrainer:
                     self.best_score_dual_objective = current_score
                     self.best_kpi_dual_objective = kpi_results.copy()
                     self.best_episode_dual_objective = episode + 1
-                    dual_objective_best_path = self.save_model(f"{self.models_dir}/{timestamp}Twin_best")
+                    dual_objective_best_path = self.save_model(f"{timestamp_dir}/{timestamp}Twin_best")
                     if dual_objective_best_path:
                         dual_objective_model_update_info = f" ⭐完成所有零件得分最佳!模型保存至: {dual_objective_best_path}"
                         
@@ -1840,21 +2034,23 @@ class SimplePPOTrainer:
                     f" (CPU采集: {collect_duration:.1f}s, GPU更新: {update_duration:.1f}s)"
                 )
 
-                # 如开启多任务混合，追加分组奖励与配比摘要
+                # 10-23-20-00 如开启多任务混合，显示本回合的任务类型（回合级轮换）
                 mixing_summary = getattr(self, '_last_collect_mixing_summary', None)
                 if mixing_summary and mixing_summary.get('enabled', False):
-                    base_workers = mixing_summary.get('base_workers', 0)
-                    random_workers = mixing_summary.get('random_workers', 0)
-                    base_avg = mixing_summary.get('base_avg_reward')
-                    rand_avg = mixing_summary.get('random_avg_reward')
-                    base_avg_str = f"{base_avg:.1f}" if base_avg is not None else "N/A"
-                    rand_avg_str = f"{rand_avg:.1f}" if rand_avg is not None else "N/A"
+                    episode_task = mixing_summary.get('episode_task', 'Unknown')
+                    avg_reward = mixing_summary.get('avg_reward')
+                    avg_reward_str = f"{avg_reward:.1f}" if avg_reward is not None else "N/A"
+                    
+                    # 10-23-20-00 显示本回合任务类型和动态事件配置
+                    task_display = episode_task
+                    if self.generalization_phase_active and episode_task != "BASE_ORDERS":
+                        task_display += "+动态事件"
+                    
                     line1 += (
-                        f" | 混合: 基础{base_workers} / 随机{random_workers}"
-                        f" (基础均奖:{base_avg_str}, 随机均奖:{rand_avg_str})"
+                        f" | 本回合任务: [{task_display}]×{self.num_workers}workers(均奖:{avg_reward_str})"
                     )
 
-                # 第二行：KPI数据和阶段信息 (核心修复：动态显示目标零件数)
+                # 10-23-20-15 第二行：KPI数据和阶段信息（包含实际评估环境配置）
                 target_parts_for_log = self._get_target_parts(current_curriculum_config)
                 stage_info_str = ""
                 if current_curriculum_config and 'stage_name' in current_curriculum_config:
@@ -1866,6 +2062,24 @@ class SimplePPOTrainer:
                         stage_info_str = f"   | 课程: '{curriculum_stage_name}' | 大阶段: '{foundation_phase}'"
                     else:
                         stage_info_str = f"   | 阶段: '{stage_name}'"
+                
+                # 10-23-20-15 核心修复：显示实际评估环境的配置（确保训练-评估一致）
+                if hasattr(self, '_last_episode_config') and self._last_episode_config:
+                    eval_task = self._last_episode_config['episode_tag']
+                    eval_failure = self._last_episode_config['equipment_failure_enabled']
+                    eval_emergency = self._last_episode_config['emergency_orders_enabled']
+                    
+                    # 组合评估环境描述
+                    eval_env_desc = f"评估环境:[{eval_task}"
+                    if eval_failure or eval_emergency:
+                        events = []
+                        if eval_failure:
+                            events.append("故障✓")
+                        if eval_emergency:
+                            events.append("插单✓")
+                        eval_env_desc += f"+{'+'.join(events)}"
+                    eval_env_desc += "]"
+                    stage_info_str += f" | {eval_env_desc}"
                 
                 target_parts_str = f"/{target_parts_for_log}"
                 line2 = f"📊 此回合KPI评估 - 总完工时间: {makespan:.1f}min  | 设备利用率: {utilization:.1%} | 订单延期时间: {tardiness:.1f}min |  完成零件数: {completed_parts:.0f}{target_parts_str}{stage_info_str}"
@@ -2047,18 +2261,116 @@ class SimplePPOTrainer:
             pass
     
     def save_model(self, filepath: str) -> str:
-        """保存模型并返回路径"""
-        actor_path = f"{filepath}_actor.keras"
+        """
+        保存模型 - TensorFlow 2.15.0 兼容版本
+        使用多格式冗余保存，确保跨版本兼容性
+        """
+        import json
+        import os
+        import warnings
+        from datetime import datetime
+        
+        # 屏蔽特定的TensorFlow警告（只屏蔽compile_metrics和HDF5 legacy警告）
+        warnings.filterwarnings('ignore', message='.*compile_metrics.*')
+        warnings.filterwarnings('ignore', message='.*HDF5 file.*legacy.*')
+        
+        # 确定基础路径（移除扩展名）
+        base_path = filepath.replace('.keras', '').replace('.h5', '')
+        
+        # 记录保存状态
+        saved_formats = []
+        failed_formats = []
+        
         try:
-            self.shared_network.actor.save(actor_path)
-            self.shared_network.critic.save(f"{filepath}_critic.keras")
-            return actor_path
+            # 策略1：保存为H5格式（最稳定，兼容性最好）
+            try:
+                actor_h5_path = f"{base_path}_actor.h5"
+                self.shared_network.actor.save(actor_h5_path, save_format='h5')
+                critic_h5_path = f"{base_path}_critic.h5"
+                self.shared_network.critic.save(critic_h5_path, save_format='h5')
+                saved_formats.append("H5")
+            except Exception as e:
+                failed_formats.append(f"H5({str(e)[:30]})")
+            
+            # 策略2：保存权重为独立的H5文件（作为备份）
+            try:
+                actor_weights_path = f"{base_path}_actor_weights.h5"
+                self.shared_network.actor.save_weights(actor_weights_path)
+                critic_weights_path = f"{base_path}_critic_weights.h5"
+                self.shared_network.critic.save_weights(critic_weights_path)
+                saved_formats.append("Weights")
+            except Exception as e:
+                failed_formats.append(f"Weights({str(e)[:30]})")
+            
+            # 策略3：保存元数据为JSON（关键！用于重建模型）
+            try:
+                is_multidiscrete = self.shared_network.is_multidiscrete
+                
+                meta = {
+                    'state_dim': int(self.state_dim),
+                    'action_space': {
+                        'type': 'MultiDiscrete' if is_multidiscrete else 'Discrete',
+                        'nvec': [int(x) for x in self.action_space.nvec] if is_multidiscrete else None,
+                        'n': int(self.action_space.n) if not is_multidiscrete else None
+                    },
+                    'global_state_dim': int(self.global_state_dim),
+                    'network_config': self.shared_network.config,
+                    'num_agents': len(self.agent_ids),
+                    'tensorflow_version': tf.__version__,
+                    'save_timestamp': datetime.now().isoformat()
+                }
+                
+                meta_path = f"{base_path}_meta.json"
+                with open(meta_path, 'w', encoding='utf-8') as f:
+                    json.dump(meta, f, indent=2, ensure_ascii=False)
+                saved_formats.append("Meta")
+            except Exception as e:
+                failed_formats.append(f"Meta({str(e)[:30]})")
+            
+            # 策略4：尝试保存为.keras格式（TF 2.15+更稳定）
+            try:
+                keras_actor_path = f"{base_path}_actor.keras"
+                self.shared_network.actor.save(keras_actor_path, save_format='keras')
+                keras_critic_path = f"{base_path}_critic.keras"
+                self.shared_network.critic.save(keras_critic_path, save_format='keras')
+                saved_formats.append("Keras")
+            except Exception as e:
+                failed_formats.append(f"Keras({str(e)[:30]})")
+            
+            # 统一输出：简洁版
+            if len(saved_formats) == 4:
+                # 所有格式都成功 - 只输出一行
+                print(f"✅ 4种格式模型已保存至: {base_path}_*")
+            else:
+                # 有失败的格式 - 输出详细信息
+                if saved_formats:
+                    print(f"✅ 已保存 {len(saved_formats)}/4 种格式: {', '.join(saved_formats)}")
+                if failed_formats:
+                    print(f"⚠️ 保存失败: {', '.join(failed_formats)}")
+            
+            # 返回H5路径作为主要加载目标
+            actor_h5_path = f"{base_path}_actor.h5"
+            return actor_h5_path if "H5" in saved_formats else ""
+            
         except Exception as e:
-            print(f"⚠️ 保存模型时出错: {e}")
+            print(f"❌ 模型保存过程失败: {e}")
+            import traceback
+            traceback.print_exc()
             return ""
+        finally:
+            # 恢复警告设置
+            warnings.filterwarnings('default', message='.*compile_metrics.*')
+            warnings.filterwarnings('default', message='.*HDF5 file.*legacy.*')
 
     def _get_target_parts(self, curriculum_config: Optional[Dict]) -> int:
-        """统一获取当前回合的目标零件数"""
+        """10-23-20-15 修复版：统一获取当前回合的目标零件数，优先使用实际训练配置"""
+        # 10-23-20-15 优先使用上一个训练回合的实际订单配置
+        if hasattr(self, '_last_episode_config') and self._last_episode_config:
+            custom_orders = self._last_episode_config.get('custom_orders')
+            if custom_orders:
+                return get_total_parts_count(custom_orders)
+        
+        # 备用逻辑：从curriculum_config获取
         if curriculum_config and 'custom_orders' in curriculum_config:
             # 泛化阶段或自定义订单
             return get_total_parts_count(curriculum_config['custom_orders'])
@@ -2133,13 +2445,21 @@ def main():
         print("=" * 80)
         foundation_criteria = TRAINING_FLOW_CONFIG["foundation_phase"]["graduation_criteria"]
         generalization_criteria = TRAINING_FLOW_CONFIG["generalization_phase"]["completion_criteria"]
+        foundation_mixing = TRAINING_FLOW_CONFIG["foundation_phase"]["multi_task_mixing"]
+        generalization_mixing = TRAINING_FLOW_CONFIG["generalization_phase"]["multi_task_mixing"]
+        dynamic_events = TRAINING_FLOW_CONFIG["generalization_phase"].get("dynamic_events", {})
         
-        print(f"🎯 基础训练目标: 综合评分 > {foundation_criteria['target_score']:.2f}, "
+        print(f"\n📚阶段一：基础能力训练（随机订单泛化）")
+        print(f"   策略: 随机订单 + {int(foundation_mixing.get('base_worker_fraction', 0)*100)}% worker使用BASE_ORDERS")
+        print(f"   目标: 综合评分 > {foundation_criteria['target_score']:.2f}, "
               f"完成率 > {foundation_criteria['min_completion_rate']:.0f}%, "
               f"延期 < {foundation_criteria['tardiness_threshold']:.0f}min, "
               f"连续{foundation_criteria['target_consistency']}次")
-              
-        print(f"🎯 泛化训练目标: 综合评分 > {generalization_criteria['target_score']:.2f}, "
+        
+        print(f"\n🚀阶段二：泛化能力强化（动态事件鲁棒性）")
+        print(f"   策略: 随机订单 + 动态事件（设备故障{'✓' if dynamic_events.get('equipment_failure_enabled') else '✗'}、紧急插单{'✓' if dynamic_events.get('emergency_orders_enabled') else '✗'}）")
+        print(f"        + {int(generalization_mixing.get('base_worker_fraction', 0)*100)}% worker使用BASE_ORDERS")
+        print(f"   目标: 综合评分 > {generalization_criteria['target_score']:.2f}, "
               f"完成率 > {generalization_criteria['min_completion_rate']:.0f}%, "
               f"连续{generalization_criteria['target_consistency']}次")
 

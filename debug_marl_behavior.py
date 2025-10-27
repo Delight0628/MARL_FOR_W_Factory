@@ -1,8 +1,9 @@
 import os
 import sys
 
-# 关键修复：强制调试脚本在CPU上运行，避免与训练进程争夺GPU资源
-os.environ['CUDA_VISIBLE_DEVICES'] = '-1'
+# 设备选择：默认允许使用可用GPU；若需强制CPU，请设置环境变量 FORCE_CPU=1
+if os.environ.get('FORCE_CPU', '0') == '1':
+    os.environ['CUDA_VISIBLE_DEVICES'] = '-1'
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'  # 屏蔽TensorFlow的INFO级别日志
 
 import numpy as np
@@ -26,7 +27,8 @@ if current_dir not in sys.path:
 from environments.w_factory_env import WFactoryEnv, calculate_slack_time
 from evaluation import (
     STATIC_EVAL_CONFIG, 
-    GENERALIZATION_CONFIG_1, GENERALIZATION_CONFIG_2, GENERALIZATION_CONFIG_3
+    GENERALIZATION_CONFIG_1, GENERALIZATION_CONFIG_2, GENERALIZATION_CONFIG_3,
+    load_actor_model_robust  # 10-26-16-00 导入TensorFlow 2.15.0兼容的加载函数
 )
 
 
@@ -170,20 +172,9 @@ def debug_marl_actions(model_path: str, config: dict, max_steps: int = 600, dete
     print(f"🕹️  策略: {'确定性 (Greedy)' if deterministic else '随机 (与evaluation.py对齐)'}")
     print(f"🌱 随机种子: {seed}")
     
-    # 加载模型
-    try:
-        if not os.path.exists(model_path):
-            raise FileNotFoundError(f"模型文件不存在于路径: {model_path}")
-        actor_model = tf.keras.models.load_model(model_path)
-        print(f"✅ 成功加载模型: {model_path}")
-    except FileNotFoundError as e:
-        print(f"❌ {e}")
-        return
-    except (IOError, tf.errors.OpError) as e:
-        print(f"❌ 加载模型失败，文件可能已损坏或格式不正确: {e}")
-        return
-    except Exception as e:
-        print(f"❌ 加载模型时发生未知错误: {e}")
+    # 10-26-16-00 TensorFlow 2.15.0兼容：使用健壮的加载函数
+    actor_model = load_actor_model_robust(model_path)
+    if actor_model is None:
         return
 
     # 创建环境（默认启用确定性候选，保证调试可复现）
@@ -211,35 +202,31 @@ def debug_marl_actions(model_path: str, config: dict, max_steps: int = 600, dete
     
     print(f"\n🎯 开始记录前{max_steps}步的动作模式...")
     
-    # 10201530 新增：从概率分布生成并行动作的工具函数（去重、可选采样）
-    def choose_parallel_actions_from_probs(head_probs_list: list, num_heads: int, greedy: bool = True) -> np.ndarray:
-        """
-        10-23-16-45 修复：切换为逐头无放回选择
-        - 输入：每个头的概率分布列表；若只有共享分布请重复num_heads份
-        - 贪心：每头取argmax，同时对已选index置零
-        - 随机：每头按掩码后的分布独立采样，同时置零保证无放回
-        """
-        used = set()
+    # 10-25-14-30 统一：按头顺序、带无放回掩码的并行动作生成
+    def choose_parallel_actions_multihead(head_probs_list, num_heads: int, greedy: bool = True) -> np.ndarray:
         chosen = []
+        used = set()
         for i in range(num_heads):
-            if i >= len(head_probs_list):
-                # 共享分布不足时补共享第0头
-                probs = np.asarray(head_probs_list[0], dtype=np.float64).copy()
+            # 取对应头的分布，不足则复用第一个头
+            if isinstance(head_probs_list, (list, tuple)) and len(head_probs_list) > i:
+                p = np.squeeze(np.asarray(head_probs_list[i], dtype=np.float64))
             else:
-                probs = np.asarray(head_probs_list[i], dtype=np.float64).copy()
-            probs = np.clip(probs, 1e-12, 1.0)
-            for u in used:
-                if 0 <= u < probs.shape[0]:
-                    probs[u] = 0.0
-            s = probs.sum()
+                base = head_probs_list[0] if isinstance(head_probs_list, (list, tuple)) else head_probs_list
+                p = np.squeeze(np.asarray(base, dtype=np.float64))
+            p = np.clip(p, 1e-12, np.inf)
+            # 掩码：无放回
+            if used:
+                idxs = list(used)
+                p[idxs] = 0.0
+            s = p.sum()
             if s <= 1e-12:
                 idx = 0
             else:
-                probs = probs / s
+                p = p / s
                 if greedy:
-                    idx = int(np.argmax(probs))
+                    idx = int(np.argmax(p))
                 else:
-                    idx = int(np.random.choice(np.arange(len(probs)), p=probs))
+                    idx = int(np.random.choice(np.arange(len(p)), p=p))
             chosen.append(idx)
             used.add(idx)
         return np.array(chosen, dtype=np.int32)
@@ -250,14 +237,12 @@ def debug_marl_actions(model_path: str, config: dict, max_steps: int = 600, dete
         for agent in env.agents:
             if agent in obs:
                 state = tf.expand_dims(obs[agent], 0)
-                # 10220715 修复：兼容多头/单头模型输出，并展平为一维概率向量
+                # 10-25-14-30 兼容多头/单头输出
                 action_probs_tensor = actor_model(state, training=False)
                 if isinstance(action_probs_tensor, (list, tuple)):
-                    head_probs_list = [np.squeeze(t.numpy()) for t in action_probs_tensor]
+                    head_probs_list = [np.squeeze(h.numpy()) for h in action_probs_tensor]
                 else:
-                    shared = np.squeeze(action_probs_tensor.numpy()[0])
-                    # 共享分布：在生成并行动作时重复使用
-                    head_probs_list = [shared]
+                    head_probs_list = [np.squeeze(action_probs_tensor.numpy()[0])]
                 space = env.action_space(agent)
                 is_multi = isinstance(space, gym.spaces.MultiDiscrete)
                 num_heads = heads_map.get(agent, 1)
@@ -269,8 +254,8 @@ def debug_marl_actions(model_path: str, config: dict, max_steps: int = 600, dete
                     # 10201530 修复：向decode传入obs_meta
                     decoded_obs_str = decode_observation(obs[agent], agent, info[agent].get('obs_meta', {}))
                     print(decoded_obs_str)
-                    # 10220715 修复：打印时确保概率为python float
-                    probs_for_print = [float(p) for p in np.ravel(action_probs)]
+                    # 10-25-14-30 10220715 修复：打印时确保概率为python float（展示第一头）
+                    probs_for_print = [float(p) for p in np.ravel(head_probs_list[0])]
                     
                     # 从info中获取动作名称
                     action_names = info[agent].get('obs_meta', {}).get('action_names', [])
@@ -282,25 +267,26 @@ def debug_marl_actions(model_path: str, config: dict, max_steps: int = 600, dete
                         policy_dist_str = ", ".join([f"Action{i}={prob:.2%}" for i, prob in enumerate(probs_for_print)])
                     print(f"  - 策略分布: [{policy_dist_str}]")
 
-                # 10201530 修复：根据动作空间类型生成标量或并行动作数组
+                # 10-25-14-30 统一动作生成逻辑
                 if is_multi:
-                    # 80/20策略：主要贪心，少量采样；逐头无放回
-                    probs_input = head_probs_list if len(head_probs_list) > 1 else head_probs_list * num_heads
                     if deterministic:
-                        action = choose_parallel_actions_from_probs(probs_input, num_heads, greedy=True)
+                        action = choose_parallel_actions_multihead(head_probs_list, num_heads, greedy=True)
                     else:
                         if np.random.random() < 0.2:
-                            action = choose_parallel_actions_from_probs(probs_input, num_heads, greedy=False)
+                            action = choose_parallel_actions_multihead(head_probs_list, num_heads, greedy=False)
                         else:
-                            action = choose_parallel_actions_from_probs(probs_input, num_heads, greedy=True)
+                            action = choose_parallel_actions_multihead(head_probs_list, num_heads, greedy=True)
                 else:
+                    p = np.asarray(head_probs_list[0], dtype=np.float64)
+                    p = np.clip(p, 1e-12, np.inf)
+                    p = p / p.sum()
                     if deterministic:
-                        action = int(np.argmax(action_probs))
+                        action = int(np.argmax(p))
                     else:
                         if np.random.random() < 0.2:
-                            action = int(np.random.choice(np.arange(len(action_probs)), p=action_probs))
+                            action = int(np.random.choice(np.arange(len(p)), p=p))
                         else:
-                            action = int(np.argmax(action_probs))
+                            action = int(np.argmax(p))
 
                 # 10201530 修复：在详细阶段打印选择结果
                 if step_count < 5:
