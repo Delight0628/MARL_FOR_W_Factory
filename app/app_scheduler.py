@@ -8,16 +8,26 @@ import sys
 import streamlit as st
 import pandas as pd
 import numpy as np
-import tensorflow as tf
 import plotly.graph_objects as go
 from datetime import datetime
 import json
 from i18n import LANGUAGES, get_text
 import gymnasium as gym  # 10-25-14-30 引入以识别MultiDiscrete动作空间
 
+# 设备选择：默认使用可用GPU；若需强制CPU，请设置环境变量 FORCE_CPU=1
 if os.environ.get('FORCE_CPU', '0') == '1':
     os.environ['CUDA_VISIBLE_DEVICES'] = '-1'
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'  # 屏蔽TensorFlow的INFO级别日志
+
+import tensorflow as tf
+try:
+    # 为所有可见GPU开启按需显存，以减少与其他进程的冲突
+    if os.environ.get('FORCE_CPU', '0') != '1':
+        _gpus = tf.config.list_physical_devices('GPU')
+        for _g in _gpus:
+            tf.config.experimental.set_memory_growth(_g, True)
+except Exception:
+    pass
 
 # 添加项目路径
 app_dir = os.path.dirname(os.path.abspath(__file__))
@@ -108,7 +118,7 @@ def load_actor_model_robust(model_path: str):
                     meta = json.load(f)
                 
                 # 重建模型架构
-                from mappo.ppo_marl_train import PPONetwork
+                from mappo.ppo_network import PPONetwork
                 
                 action_space_meta = meta['action_space']
                 if action_space_meta['type'] == 'MultiDiscrete':
@@ -478,9 +488,10 @@ def run_scheduling(actor_model, orders_config, custom_products=None, max_steps=1
         w_factory_config.PRODUCT_ROUTES.update(custom_products)
     
     try:
+        # 10-27-16-30 统一：环境端兼容 'disable_failures'，但为避免误解，这里明确使用 equipment_failure_enabled=False
         config = {
             'custom_orders': orders_config,
-            'disable_failures': True,
+            'equipment_failure_enabled': False,
             'stage_name': '用户自定义调度'
         }
         

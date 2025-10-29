@@ -129,9 +129,15 @@ class WFactorySim:
         if self._training_mode:
             self.debug_level = 'WARNING'
         
-        # 10-23-18-00 新增：从配置中读取动态事件开关（支持阶段级别的动态控制）
+        # 10-27-16-30 修复：统一兼容 'disable_failures' 配置键（应用/评估端常用），并读取动态事件开关
         # 允许在不同训练阶段启用/禁用设备故障和紧急插单
         self._equipment_failure_enabled = self.config.get('equipment_failure_enabled', EQUIPMENT_FAILURE["enabled"])
+        # 10-27-16-30 若传入 'disable_failures'=True，则强制关闭设备故障
+        if 'disable_failures' in self.config:
+            try:
+                self._equipment_failure_enabled = not bool(self.config.get('disable_failures'))
+            except Exception:
+                self._equipment_failure_enabled = False
         self._emergency_orders_enabled = self.config.get('emergency_orders_enabled', EMERGENCY_ORDERS["enabled"])
         
         # 仿真环境
@@ -198,6 +204,10 @@ class WFactorySim:
         self._base_orders_template = [o.copy() for o in BASE_ORDERS]
         self._initialize_orders()
 
+        # 10-27-16-30 新增：若启用紧急插单，则启动插单生成进程
+        if self._emergency_orders_enabled:
+            self.env.process(self._emergency_order_process())
+
         # 🔧 新增：候选采样策略（评估可设为确定性，保证启发式复现性）
         self._deterministic_candidates = bool(self.config.get('deterministic_candidates', False))
     
@@ -225,6 +235,10 @@ class WFactorySim:
         # 重新初始化
         self._initialize_resources()
         self._initialize_orders()
+
+        # 10-27-16-30 新增：reset 后重新启动紧急插单进程
+        if self.config.get('emergency_orders_enabled', EMERGENCY_ORDERS["enabled"]):
+            self.env.process(self._emergency_order_process())
         
         # 完整重置stats字典
         self.stats = {
@@ -390,6 +404,61 @@ class WFactorySim:
             else:
                 # 静态训练模式：设备不会故障，只需要等待仿真结束
                 yield self.env.timeout(SIMULATION_TIME)  # 等待仿真结束
+
+    # 10-27-16-30 新增：紧急插单生成进程
+    def _emergency_order_process(self):
+        """根据配置按泊松过程向系统注入紧急订单。"""
+        while True:
+            if not self._emergency_orders_enabled:
+                # 未启用时，避免忙等
+                yield self.env.timeout(SIMULATION_TIME)
+                continue
+
+            # 10-27-16-30 依据每小时到达率生成指数分布的到达间隔（分钟）
+            arrival_rate_per_hour = float(EMERGENCY_ORDERS.get('arrival_rate', 0.0))
+            if arrival_rate_per_hour <= 0.0:
+                # 无到达，直接等待至仿真结束
+                yield self.env.timeout(SIMULATION_TIME)
+                continue
+            inter_arrival = np.random.exponential(60.0 / arrival_rate_per_hour)
+            yield self.env.timeout(inter_arrival)
+
+            # 10-27-16-30 生成紧急订单参数
+            try:
+                product = random.choice(list(PRODUCT_ROUTES.keys()))
+                # 小批量插单，避免过度干扰基础流
+                quantity = max(1, int(np.random.choice([1, 2, 3], p=[0.5, 0.35, 0.15])))
+                base_priority = 2
+                priority_boost = int(EMERGENCY_ORDERS.get('priority_boost', 0))
+                priority = int(np.clip(base_priority + priority_boost, 1, 5))
+
+                # 交期：基于总加工时间的缩短比例
+                route = get_route_for_product(product)
+                per_item_time = sum(step['time'] for step in route)
+                due_reduction = float(EMERGENCY_ORDERS.get('due_date_reduction', 0.7))
+                # 至少留一段缓冲（30分钟）
+                due_date = self.env.now + max(30.0, per_item_time * quantity * due_reduction)
+
+                # 分配新订单ID
+                next_order_id = (max([o.order_id for o in self.orders]) + 1) if self.orders else 0
+                emerg_order = Order(
+                    order_id=next_order_id,
+                    product=product,
+                    quantity=quantity,
+                    priority=priority,
+                    due_date=due_date,
+                    arrival_time=self.env.now
+                )
+                self.orders.append(emerg_order)
+
+                # 创建零件并注入首工位队列
+                for part in emerg_order.create_parts():
+                    part.start_time = self.env.now  # 立即到达
+                    self.env.process(self._part_process(part))
+                    self.active_parts.append(part)
+            except Exception:
+                # 插单失败不应中断主仿真
+                pass
     
     def _update_equipment_status(self, station_name: str, busy: bool):
         """更新设备状态"""
@@ -500,7 +569,8 @@ class WFactorySim:
             np.clip(queue_len_normalized, 0, 1.0),
         ], dtype=np.float32)
 
-        # --- 3. 当前队列摘要统计 (Queue Summary) - 40维 ---
+        # 10-27-16-30 修复注释：当前队列摘要统计为 30维 = 6特征 × 5统计
+        # --- 3. 当前队列摘要统计 (Queue Summary) - 30维 ---
         queue_summary = self._get_queue_summary_features(station_name)
         
         # --- 4. 候选工件详细特征 (Candidate Workpieces) - 90维 ---
@@ -985,6 +1055,9 @@ class WFactorySim:
                                 context["invalid_attempts"] = context.get("invalid_attempts", 0) + 1
                         else:
                             context["invalid_attempts"] = context.get("invalid_attempts", 0) + 1
+                    else:
+                        # 10-27-17-30 新增：容量不足时对非零动作记录轻微惩罚，减少多头冗余动作对梯度的噪声
+                        context["invalid_attempts"] = context.get("invalid_attempts", 0) + 1
 
             # --- 阶段二：执行 (Execute Phase) ---
             # 在所有决策完成后，统一处理本智能体已锁定的所有工件

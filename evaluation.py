@@ -144,7 +144,7 @@ def load_actor_model_robust(model_path: str):
                 print(f"⚠️ 维度对比过程异常: {_cmp_e}", flush=True)
             
             # 重建模型架构
-            from mappo.ppo_marl_train import PPONetwork
+            from mappo.ppo_network import PPONetwork
             
             action_space_meta = meta['action_space']
             if action_space_meta['type'] == 'MultiDiscrete':
@@ -299,7 +299,9 @@ def run_single_episode(env: WFactoryEnv, policy_fn, seed: int, config: dict = No
     obs, info = env.reset(seed=seed)
     step_count = 0
     
-    while step_count < 1500: # 与训练时保持一致的最大步数
+    # 10-27-16-30 使用环境自身的max_steps以避免与训练设置不一致
+    max_steps = getattr(env, 'max_steps', 1500)
+    while step_count < max_steps:
         # 修复：将 info 和 step_count 传递给策略函数
         actions = policy_fn(obs, env, info, step_count)
         obs, rewards, terminations, truncations, info = env.step(actions)

@@ -155,7 +155,7 @@ def launch_background_process(args):
     """
     作为启动器，创建目录和日志路径，并在后台重新启动脚本作为工作进程。
     """
-    #print(f"✨ 自动化脚本启动器PID: {os.getpid()}", flush=True)
+    print(f"✨ 自动化脚本启动器PID: {os.getpid()}", flush=True)
 
     # 1. 创建主目录
     now = datetime.datetime.now()
@@ -167,8 +167,11 @@ def launch_background_process(args):
     files_to_copy = [
         'environments/w_factory_config.py',
         'environments/w_factory_env.py',
-
         'mappo/ppo_marl_train.py',
+        'mappo/ppo_network.py',
+        'mappo/ppo_buffer.py',
+        'mappo/ppo_worker.py',
+        'mappo/ppo_trainer.py',
         'debug_marl_behavior.py',
         'evaluation.py',
         'plotting.py'
@@ -197,9 +200,24 @@ def launch_background_process(args):
     )
 
     print(f"🚀 正在后台启动自动化脚本...")
-    subprocess.Popen(command_str, shell=True)
-    time.sleep(1)  # 等待片刻以确保进程启动
+    proc = subprocess.Popen(command_str, shell=True)
+    time.sleep(2)  # 等待片刻以确保进程启动并写入日志
+    
+    # 尝试从日志文件中提取工作进程的真实 PID
+    worker_pid = None
+    try:
+        if os.path.exists(log_file_path):
+            with open(log_file_path, 'r') as f:
+                for line in f:
+                    if "✨ 自动化工作进程已启动，PID:" in line:
+                        worker_pid = line.split("PID:")[-1].strip()
+                        break
+    except Exception:
+        pass
+    
     print(f"✅ 自动化流程已在后台开始。您可以关闭此终端。")
+    if worker_pid:
+        print(f"✨ 自动化工作进程已启动，PID: {worker_pid}")
     print(f"📂 所有输出（包括此脚本的日志）将保存在: {main_dir_name}")
     print(f"📜 使用此命令查看实时日志: tail -f \"{log_file_path}\"")
 
