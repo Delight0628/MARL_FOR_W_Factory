@@ -1258,9 +1258,19 @@ class WFactorySim:
                     # 按时完成：额外奖励
                     time_reward = base_reward + REWARD_CONFIG["on_time_completion_reward"]
                 else:
-                    # 延期完成：基础奖励 - 延期惩罚（归一化）
-                    tardiness_penalty = REWARD_CONFIG["tardiness_penalty_scaler"] * (tardiness / 480.0)
-                    time_reward = base_reward + tardiness_penalty  # tardiness_penalty是负数
+                    # 延期完成：基础奖励 - 稳健化（Huber）迟期惩罚（基于归一化 tardiness）
+                    tardiness_norm = float(tardiness / 480.0)
+                    if REWARD_CONFIG.get("use_huber_tardiness", False):
+                        delta = float(REWARD_CONFIG.get("tardiness_huber_delta_norm", 0.3))
+                        ax = abs(tardiness_norm)
+                        if ax <= delta:
+                            huber_val = 0.5 * (tardiness_norm ** 2)
+                        else:
+                            huber_val = delta * (ax - 0.5 * delta)
+                    else:
+                        huber_val = tardiness_norm
+                    tardiness_penalty = REWARD_CONFIG["tardiness_penalty_scaler"] * huber_val
+                    time_reward = base_reward + tardiness_penalty  # 负值为惩罚
                 
                 # 10202115 按各站点对该零件的累计加工时间占比进行奖励分配（替代均分）
                 if part.contribution_map:
@@ -1329,23 +1339,28 @@ class WFactorySim:
         # 它会迫使智能体优先处理最紧急（负松弛时间最大）的工件，从而学会管理延期。
         slack_penalty_coeff = REWARD_CONFIG.get("slack_time_penalty_coeff", 0.0)
         if slack_penalty_coeff != 0.0:
+            tanh_scale = float(REWARD_CONFIG.get("slack_penalty_tanh_scale", 240.0))
+            max_abs_penalty = float(REWARD_CONFIG.get("slack_penalty_max_abs", 50.0))
+            eps = 1e-6
             for station_name in WORKSTATIONS.keys():
                 agent_id = f"agent_{station_name}"
-                total_negative_slack_in_queue = 0
+                total_negative_slack_in_queue = 0.0
                 
                 # 遍历该工作站队列中的每一个工件
                 for part in self.queues[station_name].items:
-                    # 计算松弛时间
                     slack = calculate_slack_time(part, self.env.now)
-                    
-                    # 如果松弛时间为负（预示着将延期），则累加其绝对值
                     if slack < 0:
-                        total_negative_slack_in_queue += abs(slack)
+                        total_negative_slack_in_queue += float(abs(slack))
                 
-                # 如果队列中有预计延期的工件，则施加惩罚
-                # 注意：slack_penalty_coeff本身是负数，所以这是个惩罚
                 if total_negative_slack_in_queue > 0:
-                    penalty = slack_penalty_coeff * total_negative_slack_in_queue
+                    # 使用tanh缩放以限制极端值，并对单步单agent惩罚做绝对上限裁剪
+                    scaled = np.tanh(total_negative_slack_in_queue / (tanh_scale + eps)) * tanh_scale
+                    penalty = float(slack_penalty_coeff) * float(scaled)
+                    # 绝对值裁剪
+                    if penalty > max_abs_penalty:
+                        penalty = max_abs_penalty
+                    if penalty < -max_abs_penalty:
+                        penalty = -max_abs_penalty
                     rewards[agent_id] += penalty
         
         # 更新订单进度与统计
@@ -1527,6 +1542,10 @@ class WFactoryEnv(ParallelEnv):
             'num_stations': len(WORKSTATIONS),
             # 移除固定的动作空间大小，因为它现在是异构的
             # 'action_space_size': ACTION_CONFIG_ENHANCED.get('action_space_size'),
+            # MultiDiscrete结构确认（供外部策略/评估校验）
+            'multi_discrete_num_heads': getattr(self, '_multi_discrete_num_heads', None),
+            'multi_discrete_action_dim': getattr(self, '_multi_discrete_action_dim', None),
+            'multi_discrete_heads_equal_dim': True,
             'action_names': ACTION_CONFIG_ENHANCED.get('action_names'),
             'candidate_action_start': self.sim._candidate_action_start,
             'candidate_action_end': self.sim._candidate_action_end,
@@ -1565,6 +1584,10 @@ class WFactoryEnv(ParallelEnv):
         max_machine_count = 0
         for station_config in WORKSTATIONS.values():
             max_machine_count = max(max_machine_count, station_config.get("count", 1))
+
+        # 保存MultiDiscrete结构确认信息，供下游组件检查/记录
+        self._multi_discrete_num_heads = int(max_machine_count)
+        self._multi_discrete_action_dim = int(action_size)
 
         for agent in self.agents:
             # 所有智能体的动作空间都填充到最大机器数，以支持共享策略网络

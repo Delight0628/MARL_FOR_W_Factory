@@ -30,6 +30,7 @@ from evaluation import (
     GENERALIZATION_CONFIG_1, GENERALIZATION_CONFIG_2, GENERALIZATION_CONFIG_3,
     load_actor_model_robust  # 10-26-16-00 导入TensorFlow 2.15.0兼容的加载函数
 )
+from mappo.sampling_utils import choose_parallel_actions_multihead
 
 
 def decode_observation(obs_vector: np.ndarray, agent_id: str, obs_meta: dict) -> str:
@@ -202,34 +203,6 @@ def debug_marl_actions(model_path: str, config: dict, max_steps: int = 600, dete
     
     print(f"\n🎯 开始记录前{max_steps}步的动作模式...")
     
-    # 10-25-14-30 统一：按头顺序、带无放回掩码的并行动作生成
-    def choose_parallel_actions_multihead(head_probs_list, num_heads: int, greedy: bool = True) -> np.ndarray:
-        chosen = []
-        used = set()
-        for i in range(num_heads):
-            # 取对应头的分布，不足则复用第一个头
-            if isinstance(head_probs_list, (list, tuple)) and len(head_probs_list) > i:
-                p = np.squeeze(np.asarray(head_probs_list[i], dtype=np.float64))
-            else:
-                base = head_probs_list[0] if isinstance(head_probs_list, (list, tuple)) else head_probs_list
-                p = np.squeeze(np.asarray(base, dtype=np.float64))
-            p = np.clip(p, 1e-12, np.inf)
-            # 掩码：无放回
-            if used:
-                idxs = list(used)
-                p[idxs] = 0.0
-            s = p.sum()
-            if s <= 1e-12:
-                idx = 0
-            else:
-                p = p / s
-                if greedy:
-                    idx = int(np.argmax(p))
-                else:
-                    idx = int(np.random.choice(np.arange(len(p)), p=p))
-            chosen.append(idx)
-            used.add(idx)
-        return np.array(chosen, dtype=np.int32)
 
     while step_count < max_steps:
         # MARL策略
@@ -272,10 +245,7 @@ def debug_marl_actions(model_path: str, config: dict, max_steps: int = 600, dete
                     if deterministic:
                         action = choose_parallel_actions_multihead(head_probs_list, num_heads, greedy=True)
                     else:
-                        if np.random.random() < 0.2:
-                            action = choose_parallel_actions_multihead(head_probs_list, num_heads, greedy=False)
-                        else:
-                            action = choose_parallel_actions_multihead(head_probs_list, num_heads, greedy=True)
+                        action = choose_parallel_actions_multihead(head_probs_list, num_heads, greedy=False, sample_eps=0.2)
                 else:
                     p = np.asarray(head_probs_list[0], dtype=np.float64)
                     p = np.clip(p, 1e-12, np.inf)

@@ -172,9 +172,10 @@ def launch_background_process(args):
         'mappo/ppo_buffer.py',
         'mappo/ppo_worker.py',
         'mappo/ppo_trainer.py',
+        'mappo/sampling_utils.py',
         'debug_marl_behavior.py',
         'evaluation.py',
-        'plotting.py'
+        #'plotting.py'
     ]
     print(f"📋 正在复制 {len(files_to_copy)} 个关键脚本到 '{main_dir_name}'...", flush=True)
     for file_path in files_to_copy:

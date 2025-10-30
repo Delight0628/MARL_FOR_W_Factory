@@ -72,26 +72,30 @@ class ExperienceBuffer:
         last_advantage = 0
         
         for t in reversed(range(len(rewards))):
-            # 确定下一状态的价值估计
+            # 确定下一状态的价值估计（bootstrap 与 递推掩码分离）
             if t == len(rewards) - 1:
                 # 轨迹末端
-                if truncateds[t] and next_value_if_truncated is not None:
-                    next_value = next_value_if_truncated  # 截断：bootstrap
-                elif dones[t]:
-                    next_value = 0  # 正常终止：价值为0
+                if dones[t]:
+                    next_value = 0.0  # 正常终止：价值为0
+                elif truncateds[t]:
+                    # 截断：若提供外部bootstrap值则使用，否则回退为0
+                    next_value = next_value_if_truncated if next_value_if_truncated is not None else 0.0
                 else:
-                    next_value = next_value_if_truncated if next_value_if_truncated is not None else 0
+                    # 非终止且未标记截断：无法观测下一价值，回退到可选bootstrap或0
+                    next_value = next_value_if_truncated if next_value_if_truncated is not None else 0.0
             else:
-                # 轨迹中间
-                if truncateds[t]:
-                    next_value = 0  # 截断：阻断价值传播
-                else:
-                    next_value = values[t + 1]  # 正常：使用下一步价值
-            
+                # 轨迹中间：使用下一时刻的价值估计
+                next_value = values[t + 1]
+
+            # 分离两类掩码：
+            # - bootstrap_mask：允许在截断步使用价值bootstrap，但在终止步关闭
+            # - recursion_mask：终止或截断都阻断优势的递推项
+            bootstrap_mask = (1 - dones[t])
+            recursion_mask = (1 - dones[t]) * (1 - truncateds[t])
+
             # GAE递推：δ_t + γλ * A_{t+1}
-            mask = (1 - dones[t]) * (1 - truncateds[t])
-            delta = rewards[t] + gamma * next_value * mask - values[t]
-            advantages[t] = delta + gamma * lam * mask * last_advantage
+            delta = rewards[t] + gamma * next_value * bootstrap_mask - values[t]
+            advantages[t] = delta + gamma * lam * recursion_mask * last_advantage
             last_advantage = advantages[t]
         
         # 计算目标回报

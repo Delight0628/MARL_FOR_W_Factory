@@ -40,6 +40,7 @@ from environments.w_factory_config import (
     PRODUCT_ROUTES, WORKSTATIONS, SIMULATION_TIME,
     get_total_parts_count, calculate_episode_score, generate_random_orders
 )
+from mappo.sampling_utils import choose_parallel_actions_multihead
 
 # ============================================================================
 # TensorFlow 2.15.0 兼容：健壮的模型加载函数
@@ -521,23 +522,7 @@ def run_scheduling(actor_model, orders_config, custom_products=None, max_steps=1
                     sp = env.action_space(agent)
                     if isinstance(sp, gym.spaces.MultiDiscrete):
                         k = len(sp.nvec)
-                        chosen = []
-                        used = set()
-                        for i in range(k):
-                            base = head_probs_list[i] if i < len(head_probs_list) else head_probs_list[0]
-                            p = np.asarray(base, dtype=np.float64)
-                            p = np.clip(p, 1e-12, np.inf)
-                            if used:
-                                idxs = list(used)
-                                p[idxs] = 0.0
-                            s = p.sum()
-                            if s <= 1e-12:
-                                idx = 0
-                            else:
-                                p = p / s
-                                idx = int(np.argmax(p))
-                            chosen.append(idx)
-                            used.add(idx)
+                        chosen = choose_parallel_actions_multihead(head_probs_list, k, greedy=True)
                         actions[agent] = np.array(chosen, dtype=sp.dtype)
                     else:
                         p = np.asarray(head_probs_list[0], dtype=np.float64)

@@ -76,6 +76,87 @@
 
 ---
 
+## 🧩 MAPPO模块化架构
+
+### 设计理念
+
+为提升代码可维护性和复用性，训练算法采用**分层模块化设计**，将原先的单体脚本拆分为5个职责清晰的模块：
+
+```
+模块组织（自底向上）：
+┌─────────────────────────────────────┐
+│  ppo_marl_train.py                  │  ← 训练入口（154行）
+│  职责：参数解析、流程启动            │
+└─────────────────────────────────────┘
+              ↓ 调用
+┌─────────────────────────────────────┐
+│  ppo_trainer.py                     │  ← 训练器主类（1818行）
+│  职责：                              │
+│  • 两阶段训练流程管理                │
+│  • 课程学习与自适应熵                │
+│  • 模型保存与评估                    │
+│  • TensorBoard监控                  │
+└─────────────────────────────────────┘
+      ↓ 依赖         ↓ 依赖        ↓ 依赖
+┌──────────┐  ┌──────────┐  ┌──────────┐
+│ppo_      │  │ppo_      │  │ppo_      │
+│network.py│  │buffer.py │  │worker.py │
+│          │  │          │  │          │
+│Actor-    │  │GAE优势   │  │并行经验  │
+│Critic    │  │函数计算  │  │采集      │
+│网络架构  │  │          │  │          │
+│(457行)   │  │(128行)   │  │(304行)   │
+└──────────┘  └──────────┘  └──────────┘
+```
+
+### 模块职责说明
+
+| 模块 | 代码量 | 核心职责 | 关键类/函数 |
+|------|--------|----------|------------|
+| **ppo_marl_train.py** | 154行 | 训练入口 | `main()` - 参数解析、流程启动 |
+| **ppo_trainer.py** | 1818行 | 训练主控 | `SimplePPOTrainer` - 完整训练流程管理 |
+| **ppo_network.py** | 457行 | 神经网络 | `PPONetwork` - Actor-Critic架构 |
+| **ppo_buffer.py** | 128行 | 经验管理 | `ExperienceBuffer` - GAE计算 |
+| **ppo_worker.py** | 304行 | 并行采集 | `run_simulation_worker()` - 多进程仿真 |
+
+### 模块交互流程
+
+```
+训练循环中的数据流：
+
+1. SimplePPOTrainer 初始化
+   ├─ 创建 PPONetwork (Actor + Critic)
+   └─ 初始化 ProcessPoolExecutor
+
+2. 每个训练回合
+   ├─ 提取网络权重
+   │   └─ network.actor.get_weights()
+   │       network.critic.get_weights()
+   │
+   ├─ 并行采集经验（4个worker）
+   │   └─ ppo_worker.run_simulation_worker()
+   │       ├─ 创建环境实例
+   │       ├─ 重建网络并加载权重
+   │       ├─ 运行num_steps步仿真
+   │       └─ 返回 ExperienceBuffer
+   │
+   ├─ 聚合所有worker数据
+   │   └─ buffer.get_batch() → GAE计算
+   │
+   └─ 策略更新
+       └─ network.update() → PPO损失优化
+```
+
+### 模块化优势
+
+✅ **职责分离**：每个模块专注单一职责，降低耦合度  
+✅ **易于测试**：可独立测试网络、缓冲、Worker等组件  
+✅ **代码复用**：网络和缓冲模块可用于其他MARL项目  
+✅ **并行开发**：团队可同时开发不同模块  
+✅ **调试友好**：问题定位更精确（如Worker崩溃、网络梯度异常）
+
+---
+
 ## 🏗️ 系统架构
 
 ### 整体架构图
@@ -90,12 +171,21 @@
 └─────────────────────────────────────────────────────────────┘
                             ↓
 ┌─────────────────────────────────────────────────────────────┐
-│              MAPPO算法层 (ppo_marl_train.py)                 │
+│            MAPPO算法层 (模块化架构 - mappo/)                  │
 │  ┌────────────────────────────────────────────────────┐     │
-│  │  SimplePPOTrainer (训练器)                          │     │
-│  │  ├─ PPONetwork (Actor-Critic网络)                   │     │
-│  │  ├─ ExperienceBuffer (经验缓冲)                     │     │
-│  │  └─ 并行环境采集 (ProcessPoolExecutor)              │     │
+│  │  ppo_marl_train.py (训练入口)                       │     │
+│  │    ↓                                                │     │
+│  │  ppo_trainer.py (SimplePPOTrainer)                  │     │
+│  │    ├─ 两阶段训练流程管理                            │     │
+│  │    ├─ 课程学习与自适应熵                            │     │
+│  │    └─ TensorBoard监控                               │     │
+│  │    ↓ ↓ ↓ (依赖三个核心模块)                         │     │
+│  │  ┌──────────┬──────────┬──────────┐                │     │
+│  │  │ppo_      │ppo_      │ppo_      │                │     │
+│  │  │network.py│buffer.py │worker.py │                │     │
+│  │  │Actor-    │GAE优势   │并行经验  │                │     │
+│  │  │Critic网络│函数计算  │采集      │                │     │
+│  │  └──────────┴──────────┴──────────┘                │     │
 │  └────────────────────────────────────────────────────┘     │
 │           ↓ (state, reward)          ↑ (action)            │
 └─────────────────────────────────────────────────────────────┘
@@ -684,8 +774,12 @@ MARL_FOR_W_Factory/
 │   ├── w_factory_env.py            # PettingZoo环境 + SimPy仿真
 │   └── w_factory_config.py         # 统一配置文件（单一真理源）
 │
-├── mappo/                           # MAPPO算法
-│   ├── ppo_marl_train.py           # 训练主脚本
+├── mappo/                           # MAPPO算法（模块化架构）
+│   ├── ppo_marl_train.py           # 训练入口主脚本 (154行)
+│   ├── ppo_trainer.py              # 训练器主类 (1818行)
+│   ├── ppo_network.py              # Actor-Critic网络 (457行)
+│   ├── ppo_buffer.py               # 经验缓冲与GAE计算 (128行)
+│   ├── ppo_worker.py               # 并行Worker进程 (304行)
 │   ├── ppo_models/                 # 模型保存目录
 │   └── tensorboard_logs/           # TensorBoard日志
 │
@@ -704,13 +798,28 @@ MARL_FOR_W_Factory/
 
 ### 核心文件说明
 
+#### 环境与仿真
 | 文件 | 代码量 | 核心功能 |
 |------|--------|---------|
 | `w_factory_env.py` | ~1720行 | SimPy仿真 + PettingZoo接口 |
-| `ppo_marl_train.py` | ~2630行 | MAPPO算法 + 训练流程 |
 | `w_factory_config.py` | ~550行 | 全局配置（工作站/订单/奖励/训练参数） |
+
+#### MAPPO算法模块（模块化架构）
+| 文件 | 代码量 | 核心功能 |
+|------|--------|---------|
+| `ppo_marl_train.py` | 154行 | **训练入口** - 参数解析、流程启动 |
+| `ppo_trainer.py` | 1818行 | **训练器主类** - 两阶段训练流程、课程学习、自适应熵、模型保存 |
+| `ppo_network.py` | 457行 | **神经网络** - Actor-Critic架构、CTDE范式、MultiDiscrete支持 |
+| `ppo_buffer.py` | 128行 | **经验缓冲** - 数据存储、GAE优势函数计算 |
+| `ppo_worker.py` | 304行 | **并行Worker** - 多进程环境采集、设备管理 |
+
+#### 评估与应用
+| 文件 | 代码量 | 核心功能 |
+|------|--------|---------|
 | `evaluation.py` | ~790行 | 模型评估 + 启发式对比 + 甘特图 |
+| `debug_marl_behavior.py` | ~446行 | 详细行为分析 + 决策过程可视化 |
 | `app_scheduler.py` | ~1330行 | Streamlit可视化应用 |
+| `auto_train.py` | ~303行 | 自动化训练管理器 |
 
 ---
 
@@ -748,3 +857,368 @@ streamlit run app/app_scheduler.py
    - 保存甘特图（PNG）
 
 ---
+
+## 🔧 模块化使用示例
+
+### 独立使用各模块
+
+模块化设计允许您独立使用各个组件，或集成到自己的项目中：
+
+#### 示例1: 独立使用PPONetwork
+
+```python
+from mappo.ppo_network import PPONetwork
+import gymnasium as gym
+import tensorflow as tf
+
+# 创建网络实例
+state_dim = 132
+action_space = gym.spaces.MultiDiscrete([11] * 10)
+global_state_dim = 50
+lr = 1e-4
+
+network = PPONetwork(
+    state_dim=state_dim,
+    action_space=action_space,
+    lr=lr,
+    global_state_dim=global_state_dim
+)
+
+# 使用网络进行推理
+state = tf.random.normal([1, state_dim])
+global_state = tf.random.normal([1, global_state_dim])
+action, value, log_prob = network.get_action_and_value(state, global_state)
+```
+
+#### 示例2: 独立使用ExperienceBuffer
+
+```python
+from mappo.ppo_buffer import ExperienceBuffer
+
+# 创建缓冲区
+buffer = ExperienceBuffer()
+
+# 存储经验
+for step in range(100):
+    buffer.store(
+        state=observation,
+        global_state=global_obs,
+        action=action,
+        reward=reward,
+        value=value,
+        action_prob=log_prob,
+        done=done,
+        truncated=truncated
+    )
+
+# 计算GAE并获取训练批次
+states, global_states, actions, old_probs, advantages, returns = buffer.get_batch(
+    gamma=0.99,
+    lam=0.95,
+    next_value_if_truncated=last_value
+)
+```
+
+#### 示例3: 自定义并行Worker
+
+```python
+from mappo.ppo_worker import run_simulation_worker
+from concurrent.futures import ProcessPoolExecutor
+
+# 准备网络权重
+network_weights = {
+    'actor': network.actor.get_weights(),
+    'critic': network.critic.get_weights()
+}
+
+# 并行运行多个worker
+with ProcessPoolExecutor(max_workers=4) as pool:
+    futures = []
+    for i in range(4):
+        future = pool.submit(
+            run_simulation_worker,
+            network_weights=network_weights,
+            state_dim=state_dim,
+            action_space=action_space,
+            num_steps=1000,
+            seed=42 + i,
+            global_state_dim=global_state_dim,
+            network_config=network_config,
+            curriculum_config={'worker_id': i}
+        )
+        futures.append(future)
+    
+    # 收集结果
+    results = [f.result() for f in futures]
+```
+
+---
+
+## 🔧 高级配置
+
+### 课程学习配置
+
+在 `w_factory_config.py` 中启用课程学习：
+
+```python
+TRAINING_FLOW_CONFIG = {
+    "foundation_phase": {
+        "curriculum_learning": {
+            "enabled": True,  # 开启课程学习
+            "stages": [
+                {
+                    "name": "入门阶段",
+                    "orders_scale": 0.4,  # 40%订单量
+                    "time_scale": 1.0,
+                    "graduation_criteria": {
+                        "target_score": 0.80,
+                        "min_completion_rate": 100.0,
+                        "target_consistency": 10
+                    }
+                },
+                # 更多阶段...
+            ]
+        }
+    }
+}
+```
+
+### 动态事件配置
+
+```python
+# 设备故障
+EQUIPMENT_FAILURE = {
+    "enabled": True,           # 启用故障
+    "mtbf_hours": 24,          # 平均24小时故障一次
+    "mttr_minutes": 30,        # 平均30分钟修复
+}
+
+# 紧急插单
+EMERGENCY_ORDERS = {
+    "enabled": True,           # 启用紧急订单
+    "arrival_rate": 0.1,       # 每小时0.1个
+    "priority_boost": 0,       # 优先级提升
+}
+```
+
+### 奖励权重调整
+
+```python
+REWARD_CONFIG = {
+    "part_completion_reward": 100.0,  # 提高完成奖励
+    "tardiness_penalty_scaler": -15.0,  # 加重延期惩罚
+    "unnecessary_idle_penalty": -2.0,  # 加重空闲惩罚
+    # ...
+}
+```
+
+---
+
+## 📝 训练最佳实践
+
+### 1. 阶段化训练策略
+
+```
+推荐流程：
+1. 课程学习（可选） → 40% → 80% → 100% 订单量
+2. 基础泛化训练 → 随机订单 + 25% BASE_ORDERS锚点
+3. 动态鲁棒性训练 → 设备故障 + 紧急插单
+```
+
+### 2. 超参数调优建议
+
+| 场景 | 建议调整 |
+|------|---------|
+| **训练不稳定** | ↓ 学习率 (5e-5), ↑ 梯度裁剪 (0.5) |
+| **收敛过慢** | ↑ 初始熵系数 (0.6), ↑ PPO epochs (15) |
+| **过拟合BASE_ORDERS** | ↑ 随机订单比例 (90%), ↓ BASE锚点 (10%) |
+| **动态事件性能差** | 延长阶段二训练, ↑ 故障频率 |
+
+### 3. 模型检查点策略
+
+```python
+# 自动保存以下检查点：
+1. 各课程阶段最佳模型
+2. 基础训练阶段最佳模型
+3. 泛化阶段最佳模型
+4. 双达标模型（完成率100% + 最高分）
+```
+
+---
+
+## 🐛 常见问题
+
+<details>
+<summary><b>Q1: 训练过程中出现NaN损失？</b></summary>
+
+**原因**：梯度爆炸或奖励尺度过大
+
+**解决**：
+```python
+# 1. 降低学习率
+LEARNING_RATE_CONFIG["initial_lr"] = 5e-5
+
+# 2. 增强梯度裁剪
+PPO_NETWORK_CONFIG["grad_clip_norm"] = 0.5
+
+# 3. 检查奖励尺度
+print(f"Max reward: {max(episode_rewards)}")
+```
+</details>
+
+<details>
+<summary><b>Q2: 多进程采集报错 "CUDA initialization error"？</b></summary>
+
+**原因**：子进程GPU资源冲突
+
+**解决**：
+```bash
+# 方案1: 强制子进程使用CPU
+export FORCE_WORKER_CPU=1
+python mappo/ppo_marl_train.py
+
+# 方案2: 减少worker数量
+# 在w_factory_config.py中
+SYSTEM_CONFIG["num_parallel_workers"] = 2
+```
+</details>
+
+<details>
+<summary><b>Q3: 模型加载失败 "Incompatible model format"？</b></summary>
+
+**原因**：TensorFlow版本不兼容
+
+**解决**：
+```bash
+# 检查TensorFlow版本
+python -c "import tensorflow as tf; print(tf.__version__)"
+
+# 如果版本不匹配，重新安装
+pip install tensorflow==2.15.0
+
+# 如果仍然失败，尝试加载权重而非完整模型
+# 在evaluation.py中使用weights加载模式
+```
+</details>
+
+<details>
+<summary><b>Q4: 训练速度很慢（< 1 iter/min）？</b></summary>
+
+**优化建议**：
+
+```python
+# 1. 减少PPO epochs
+PPO_NETWORK_CONFIG["ppo_epochs"] = 8
+
+# 2. 减少每回合步数
+TRAINING_FLOW_CONFIG["general_params"]["steps_per_episode"] = 1000
+
+# 3. 增加并行workers（如果CPU/内存充足）
+SYSTEM_CONFIG["num_parallel_workers"] = 6
+
+# 4. 使用GPU加速
+# 确保CUDA可用: nvidia-smi
+```
+</details>
+
+<details>
+<summary><b>Q5: 如何调试特定模块的问题？</b></summary>
+
+**模块化调试策略**：
+
+```python
+# 调试PPONetwork
+from mappo.ppo_network import PPONetwork
+network = PPONetwork(...)
+# 添加断点或打印中间层输出
+
+# 调试ExperienceBuffer
+from mappo.ppo_buffer import ExperienceBuffer
+buffer = ExperienceBuffer()
+# 检查GAE计算逻辑
+
+# 调试Worker
+# 设置环境变量启用详细日志
+export TF_CPP_MIN_LOG_LEVEL=0
+# 单独运行worker测试
+```
+</details>
+
+---
+
+## 📚 参考文献
+
+1. **PPO算法**  
+   Schulman, J., et al. (2017). "Proximal Policy Optimization Algorithms." arXiv:1707.06347
+
+2. **MAPPO**  
+   Yu, C., et al. (2021). "The Surprising Effectiveness of PPO in Cooperative Multi-Agent Games." arXiv:2103.01955
+
+3. **GAE**  
+   Schulman, J., et al. (2015). "High-Dimensional Continuous Control Using Generalized Advantage Estimation." arXiv:1506.02438
+
+4. **CTDE范式**  
+   Lowe, R., et al. (2017). "Multi-Agent Actor-Critic for Mixed Cooperative-Competitive Environments." NIPS 2017
+
+---
+
+## 🤝 贡献指南
+
+欢迎提交Issue和Pull Request！
+
+**开发流程**：
+
+1. Fork本仓库
+2. 创建特性分支 (`git checkout -b feature/AmazingFeature`)
+3. 提交更改 (`git commit -m 'Add some AmazingFeature'`)
+4. 推送到分支 (`git push origin feature/AmazingFeature`)
+5. 开启Pull Request
+
+**代码规范**：
+
+- 遵循PEP 8
+- 添加类型注解
+- 编写docstring
+- 通过单元测试
+
+**模块化开发建议**：
+
+- 新功能优先考虑添加到现有模块
+- 如需新模块，确保职责单一
+- 更新相应的README文档
+- 添加使用示例
+
+---
+
+## 📄 许可证
+
+本项目采用 MIT 许可证 - 详见 [LICENSE](LICENSE) 文件
+
+---
+
+## 👥 作者与致谢
+
+**项目作者**: [Your Name]
+
+**特别致谢**:
+- TensorFlow团队提供深度学习框架
+- PettingZoo团队提供多智能体环境接口
+- SimPy团队提供离散事件仿真引擎
+
+---
+
+## 📞 联系方式
+
+- **Issues**: [GitHub Issues](https://github.com/your-repo/MARL_FOR_W_Factory/issues)
+- **Discussions**: [GitHub Discussions](https://github.com/your-repo/MARL_FOR_W_Factory/discussions)
+- **Email**: your.email@example.com
+
+---
+
+<div align="center">
+
+**⭐ 如果这个项目对您有帮助，请给我们一个Star！ ⭐**
+
+Made with ❤️ for Smart Manufacturing
+
+</div>

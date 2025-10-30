@@ -35,6 +35,7 @@ from environments.w_factory_config import (
 # 10201530 新增：导入gym以识别MultiDiscrete动作空间
 import gymnasium as gym
 import json
+from mappo.sampling_utils import choose_parallel_actions_multihead
 
 # =============================================================================
 # 0. TensorFlow 2.15.0 兼容：健壮的模型加载函数
@@ -336,29 +337,6 @@ def evaluate_marl_model(model_path: str, config: dict = STATIC_EVAL_CONFIG, gene
 
     # 10201530 修复：MARL策略适配MultiDiscrete，按“共享分布×并行设备数”输出动作数组
     def marl_policy(obs, env, info, step_count):
-        def choose_parallel_actions_multihead(head_probs_list, num_heads: int) -> np.ndarray:
-            chosen = []
-            used = set()
-            for i in range(num_heads):
-                if isinstance(head_probs_list, (list, tuple)) and len(head_probs_list) > i:
-                    p = np.squeeze(np.asarray(head_probs_list[i], dtype=np.float64))
-                else:
-                    base = head_probs_list[0] if isinstance(head_probs_list, (list, tuple)) else head_probs_list
-                    p = np.squeeze(np.asarray(base, dtype=np.float64))
-                p = np.clip(p, 1e-12, np.inf)
-                if used:
-                    idxs = list(used)
-                    p[idxs] = 0.0
-                s = p.sum()
-                if s <= 1e-12:
-                    idx = 0
-                else:
-                    p = p / s
-                    idx = int(np.argmax(p))  # 评估使用确定性贪心
-                chosen.append(idx)
-                used.add(idx)
-            return np.array(chosen, dtype=np.int32)
-
         actions = {}
         for agent in env.agents:
             if agent in obs:
@@ -372,7 +350,7 @@ def evaluate_marl_model(model_path: str, config: dict = STATIC_EVAL_CONFIG, gene
                 space = env.action_space(agent)
                 if isinstance(space, gym.spaces.MultiDiscrete):
                     k = len(space.nvec)
-                    chosen = choose_parallel_actions_multihead(head_probs_list, k)
+                    chosen = choose_parallel_actions_multihead(head_probs_list, k, greedy=True)
                     actions[agent] = np.array(chosen, dtype=space.dtype)
                 else:
                     p = np.asarray(head_probs_list[0], dtype=np.float64)

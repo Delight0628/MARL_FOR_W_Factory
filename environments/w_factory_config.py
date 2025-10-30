@@ -297,7 +297,8 @@ REWARD_CONFIG = {
     # 第二层：时间质量奖励（次要信号）
     # ============================================================
     "on_time_completion_reward": 80.0,      
-    "tardiness_penalty_scaler": -10.0,     
+    # 调低延期惩罚基准，避免负项主导
+    "tardiness_penalty_scaler": -3.0,     
     
     # ============================================================
     # 第三层：过程塑形奖励（引导信号）
@@ -314,7 +315,14 @@ REWARD_CONFIG = {
     
     # 3.4 (核心改进) 基于负松弛时间的持续惩罚
     # 提供即时、密集的惩罚信号, 迫使智能体优先处理预计延期的工件
-    "slack_time_penalty_coeff": -0.1, 
+    # 调低松弛度持续惩罚系数，配合tanh与阈值裁剪
+    "slack_time_penalty_coeff": -0.03, 
+    # 迟期惩罚使用Huber稳健化（基于归一化迟期，单位: 无量纲）
+    "use_huber_tardiness": True,
+    "tardiness_huber_delta_norm": 0.3,
+    # 松弛度惩罚的tanh缩放（分钟）与每步绝对上限（单agent）
+    "slack_penalty_tanh_scale": 240.0,
+    "slack_penalty_max_abs": 50.0,
 }
 
 # =============================================================================
@@ -334,7 +342,8 @@ PPO_NETWORK_CONFIG = {
     "hidden_sizes": [1024, 512, 256],   
     "dropout_rate": 0.1,
     "clip_ratio": 0.2,
-    "entropy_coeff": 0.5,               # 🔧 从0.4提升到0.5，加强初始探索               
+    # 降低熵系数，避免熵项压制策略改进
+    "entropy_coeff": 0.05,               
     "ppo_epochs": 12,                   
     "num_minibatches": 4,                
     "grad_clip_norm": 1.0,               # 🔧 新增：梯度裁剪的范数
@@ -345,7 +354,8 @@ PPO_NETWORK_CONFIG = {
 
 # 🔧 新增：自适应熵调整配置
 ADAPTIVE_ENTROPY_CONFIG = {
-    "enabled": True,             # 是否启用
+    # 暂停自适应熵，先确保策略能稳定朝优势方向改进
+    "enabled": False,             # 是否启用
     "start_episode": 0,          # 🔧 从20改为0，立即启动自适应机制
     "patience": 30,              # 🔧 从200降到30，更快响应停滞
     "boost_factor": 0.15,        # 🔧 从0.1提升到0.15，更强的探索提升
@@ -367,7 +377,8 @@ EVALUATION_CONFIG = {
 
 # 学习率调度配置
 LEARNING_RATE_CONFIG = {
-    "initial_lr": 8e-5,                  # 方案三：微调初始学习率
+    # 适度提升初始学习率，配合较小熵项
+    "initial_lr": 2e-4,
     "end_lr": 1e-6,
     "decay_power": 0.8,
     "critic_lr_multiplier": 0.5,         # 专家修复：为Critic设置一个较低的学习率乘数，以稳定价值学习

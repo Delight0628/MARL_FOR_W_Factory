@@ -171,6 +171,19 @@ def run_simulation_worker(network_weights: Dict[str, List[np.ndarray]],
                 network.actor.set_weights(network_weights['actor'])
                 network.critic.set_weights(network_weights['critic'])
 
+            # 加载后做健壮性校验：若仍为近零权重，放弃该worker采样以避免噪声
+            try:
+                actor_sum = float(np.sum([np.sum(np.abs(w)) for w in network.actor.get_weights()]))
+                critic_sum = float(np.sum([np.sum(np.abs(w)) for w in network.critic.get_weights()]))
+                if not np.isfinite(actor_sum) or not np.isfinite(critic_sum) or (actor_sum + critic_sum) < 1e-8:
+                    print(f"⚠️ Worker {curriculum_config.get('worker_id', 'N/A')} 权重校验失败（近零或非数），跳过本worker采样。")
+                    env.close()
+                    return {}, 0.0, None, True, False
+            except Exception:
+                # 校验异常时安全退出
+                env.close()
+                return {}, 0.0, None, True, False
+
         # ========== 仿真循环 ==========
         buffers = {agent: ExperienceBuffer() for agent in env.possible_agents}
         observations, infos = env.reset(seed=worker_seed)
@@ -198,10 +211,14 @@ def run_simulation_worker(network_weights: Dict[str, List[np.ndarray]],
                     values[agent] = value
                     action_probs[agent] = action_prob
             
-            # 为未观测到的智能体提供默认动作
+            # 为未观测到的智能体提供默认动作（兼容Discrete/MultiDiscrete）
             for agent in env.possible_agents:
                 if agent not in actions:
-                    actions[agent] = np.zeros(network.action_space.shape, dtype=network.action_space.dtype)
+                    sp = network.action_space
+                    if isinstance(sp, gym.spaces.MultiDiscrete):
+                        actions[agent] = np.zeros(len(sp.nvec), dtype=sp.dtype)
+                    else:
+                        actions[agent] = 0
             
             # 执行环境步进
             next_observations, rewards, terminations, truncations, next_infos = env.step(actions)

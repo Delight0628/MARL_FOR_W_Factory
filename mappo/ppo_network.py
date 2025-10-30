@@ -268,8 +268,11 @@ class PPONetwork:
                 log_prob_for_head = log_prob_for_head_full * valid_f
                 log_prob_list.append(log_prob_for_head)
 
-                # 更新掩码（仅对有效样本更新）
+                # 更新掩码（仅对有效样本更新），且允许多个头选择 IDLE(0)
+                is_idle = tf.equal(sampled, tf.zeros_like(sampled))  # (B,)
+                not_idle_ex = tf.expand_dims(tf.cast(tf.logical_not(is_idle), tf.bool), axis=1)  # (B,1)
                 mask_update = tf.logical_and(tf.cast(action_one_hot > 0, tf.bool), tf.cast(valid_f_ex > 0, tf.bool))
+                mask_update = tf.logical_and(mask_update, not_idle_ex)
                 mask = tf.logical_or(mask, mask_update)
 
             action = tf.stack(chosen_actions, axis=1)
@@ -347,8 +350,8 @@ class PPONetwork:
 
         with tf.GradientTape() as tape:
             # ========== Actor损失计算 ==========
-            # 前向传播：训练模式，启用Dropout等正则化
-            action_probs = self.actor(states, training=True)
+            # 前向传播：与采样一致，禁用Dropout等正则化
+            action_probs = self.actor(states, training=False)
             
             # 处理MultiDiscrete多头输出
             if self.is_multidiscrete:
@@ -400,8 +403,11 @@ class PPONetwork:
                     entropy_for_head = entropy_for_head_full * valid_f
                     entropy_list.append(entropy_for_head)
 
-                    # 更新掩码（仅对有效样本更新）
+                    # 更新掩码（仅对有效样本更新），且允许多个头选择 IDLE(0)
+                    is_idle = tf.equal(action_slice, 0)
+                    not_idle_ex = tf.expand_dims(tf.cast(tf.logical_not(is_idle), tf.bool), axis=1)
                     mask_update = tf.logical_and(tf.cast(action_one_hot > 0, tf.bool), tf.cast(valid_f_ex > 0, tf.bool))
+                    mask_update = tf.logical_and(mask_update, not_idle_ex)
                     mask = tf.logical_or(mask, mask_update)
 
                 # 联合对数概率与总熵
@@ -435,7 +441,7 @@ class PPONetwork:
         
         # ========== Critic损失计算 ==========
         with tf.GradientTape() as tape:
-            values = self.critic(global_states, training=True)
+            values = self.critic(global_states, training=False)
             returns_expanded = tf.expand_dims(returns, 1) if len(returns.shape) == 1 else returns
             critic_loss = tf.reduce_mean(tf.square(returns_expanded - values))
         

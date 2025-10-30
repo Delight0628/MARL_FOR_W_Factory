@@ -94,8 +94,8 @@ class SimplePPOTrainer:
         # 移除动态参数调整
         optimized_episodes = total_train_episodes
         optimized_steps = steps_per_episode
-        # 评估步长对齐环境超时（每步推进1分钟）：防止评估被过长步数截断而不一致
-        self.max_steps_for_eval = int(SIMULATION_TIME * SIMULATION_TIMEOUT_MULTIPLIER)
+        # 评估步长与采集步长对齐，避免训练/评估不一致
+        self.max_steps_for_eval = optimized_steps
         
         # 使用配置文件的学习率调度配置
         self.lr_schedule = tf.keras.optimizers.schedules.PolynomialDecay(
@@ -222,6 +222,11 @@ class SimplePPOTrainer:
         # 10-22-10-52 修复：切换到进程池，彻底解决TensorFlow权重冲突问题
         # 说明：使用进程池确保每个worker在完全独立的Python进程中运行
         # 优点：完全隔离，避免TensorFlow变量名冲突和权重加载问题
+        try:
+            import multiprocessing as _mp
+            _mp.set_start_method('spawn', force=True)
+        except Exception:
+            pass
         self.pool = ProcessPoolExecutor(max_workers=self.num_workers)
 
         # 🔧 初始化训练所需的关键成员
@@ -473,6 +478,8 @@ class SimplePPOTrainer:
                 worker_curriculum_config['randomize_env'] = (episode_tag != "BASE_ORDERS")
                 worker_curriculum_config['equipment_failure_enabled'] = episode_equipment_failure_enabled
                 worker_curriculum_config['emergency_orders_enabled'] = episode_emergency_orders_enabled
+                # 统一步长：与采集步数一致
+                worker_curriculum_config['MAX_SIM_STEPS'] = num_steps
                 
                 # 10-25-16-10 线程池模式优化：直接传递模型对象而非权重，避免重复构建网络
                 # if self.pool_type == "ThreadPool":
@@ -728,11 +735,15 @@ class SimplePPOTrainer:
                         selected = []
                         for i in range(heads):
                             p = action_prob_list[i][0].numpy()
-                            for u in used:
-                                p[u] = 0.0
+                            # 允许多个头选择 IDLE(0)，仅屏蔽已选的非零动作
+                            if used:
+                                for u in list(used):
+                                    if u != 0:
+                                        p[u] = 0.0
                             idx = int(np.argmax(p)) if p.sum() > 1e-8 else 0
                             selected.append(idx)
-                            used.add(idx)
+                            if idx != 0:
+                                used.add(idx)
                         action = np.array(selected, dtype=network.action_space.dtype)
                     else:
                         action = int(tf.argmax(action_probs[0]))
@@ -805,11 +816,15 @@ class SimplePPOTrainer:
                             selected = []
                             for i in range(heads):
                                 p = action_prob_list[i][0].numpy()
-                                for u in used:
-                                    p[u] = 0.0
+                                # 允许多个头选择 IDLE(0)，仅屏蔽已选的非零动作
+                                if used:
+                                    for u in list(used):
+                                        if u != 0:
+                                            p[u] = 0.0
                                 idx = int(np.argmax(p)) if p.sum() > 1e-8 else 0
                                 selected.append(idx)
-                                used.add(idx)
+                                if idx != 0:
+                                    used.add(idx)
                             actions[agent] = np.array(selected, dtype=self.action_space.dtype)
                         else:
                             actions[agent] = int(tf.argmax(action_probs[0]))
@@ -1209,43 +1224,53 @@ class SimplePPOTrainer:
                 
                 # 🔧 V36 统一TensorBoard日志记录，并根据课程阶段动态切换run
                 if TENSORBOARD_AVAILABLE:
-                    # 根据课程阶段切换run，在悬停提示中显示阶段名
-                    run_name = "train_default" # Fallback run name
-                    if curriculum_enabled and current_curriculum_config:
-                        # Get stage name and sanitize it for use as a directory name
-                        run_name = current_curriculum_config['stage_name'].replace(" ", "_")
-                    
-                    if self.train_writer is None or self.current_tensorboard_run_name != run_name:
-                        if self.train_writer is not None:
-                            self.train_writer.close()
+                    try:
+                        # 根据课程阶段切换run，在悬停提示中显示阶段名
+                        run_name = "train_default" # Fallback run name
+                        if curriculum_enabled and current_curriculum_config:
+                            # Get stage name and sanitize it for use as a directory name
+                            run_name = current_curriculum_config['stage_name'].replace(" ", "_")
                         
-                        logdir = os.path.join(self.tensorboard_dir, run_name)
-                        self.train_writer = tf.summary.create_file_writer(logdir)
-                        self.current_tensorboard_run_name = run_name
-                        print(f"📊 TensorBoard run已切换至: '{run_name}'")
-
-                    if self.train_writer:
-                        with self.train_writer.as_default():
-                            # 训练核心指标
-                            tf.summary.scalar('Training/Avg_Episode_Reward', episode_reward, step=episode)
-                            tf.summary.scalar('Training/Actor_Loss', losses['actor_loss'], step=episode)
-                            tf.summary.scalar('Training/Critic_Loss', losses['critic_loss'], step=episode)
-                            tf.summary.scalar('Training/Entropy', losses['entropy'], step=episode)
-                            tf.summary.scalar('Training/KL_Divergence', losses['approx_kl'], step=episode)
-                            tf.summary.scalar('Training/Clip_Fraction', losses['clip_fraction'], step=episode)
-                            # 性能指标
-                            tf.summary.scalar('Performance/Iteration_Duration', iteration_duration, step=episode)
-                            tf.summary.scalar('Performance/CPU_Collection_Time', collect_duration, step=episode)
-                            tf.summary.scalar('Performance/GPU_Update_Time', update_duration, step=episode)
-                            # 业务KPI指标
-                            tf.summary.scalar('KPI/Makespan', kpi_results['mean_makespan'], step=episode)
-                            tf.summary.scalar('KPI/Completed_Parts', kpi_results['mean_completed_parts'], step=episode)
-                            tf.summary.scalar('KPI/Utilization', kpi_results['mean_utilization'], step=episode)
-                            tf.summary.scalar('KPI/Tardiness', kpi_results['mean_tardiness'], step=episode)
-                            # 记录综合评分
-                            tf.summary.scalar('KPI/Score', current_score, step=episode)
+                        if self.train_writer is None or self.current_tensorboard_run_name != run_name:
+                            if self.train_writer is not None:
+                                try:
+                                    self.train_writer.flush()  # 🔧 关键修复：关闭前先刷新缓冲
+                                    self.train_writer.close()
+                                except Exception as e:
+                                    print(f"⚠️ 关闭旧TensorBoard writer时出错: {e}")
                             
+                            logdir = os.path.join(self.tensorboard_dir, run_name)
+                            self.train_writer = tf.summary.create_file_writer(logdir)
+                            self.current_tensorboard_run_name = run_name
+                            print(f"📊 TensorBoard run已切换至: '{run_name}' (日志目录: {logdir})")
+
+                        if self.train_writer:
+                            with self.train_writer.as_default():
+                                # 训练核心指标
+                                tf.summary.scalar('Training/Avg_Episode_Reward', episode_reward, step=episode)
+                                tf.summary.scalar('Training/Actor_Loss', losses['actor_loss'], step=episode)
+                                tf.summary.scalar('Training/Critic_Loss', losses['critic_loss'], step=episode)
+                                tf.summary.scalar('Training/Entropy', losses['entropy'], step=episode)
+                                tf.summary.scalar('Training/KL_Divergence', losses['approx_kl'], step=episode)
+                                tf.summary.scalar('Training/Clip_Fraction', losses['clip_fraction'], step=episode)
+                                # 性能指标
+                                tf.summary.scalar('Performance/Iteration_Duration', iteration_duration, step=episode)
+                                tf.summary.scalar('Performance/CPU_Collection_Time', collect_duration, step=episode)
+                                tf.summary.scalar('Performance/GPU_Update_Time', update_duration, step=episode)
+                                # 业务KPI指标
+                                tf.summary.scalar('KPI/Makespan', kpi_results['mean_makespan'], step=episode)
+                                tf.summary.scalar('KPI/Completed_Parts', kpi_results['mean_completed_parts'], step=episode)
+                                tf.summary.scalar('KPI/Utilization', kpi_results['mean_utilization'], step=episode)
+                                tf.summary.scalar('KPI/Tardiness', kpi_results['mean_tardiness'], step=episode)
+                                # 记录综合评分
+                                tf.summary.scalar('KPI/Score', current_score, step=episode)
+                                
+                            # 🔧 关键修复：在with块外调用flush，确保数据立即写入磁盘
                             self.train_writer.flush()
+                    except Exception as e:
+                        print(f"❌ TensorBoard写入失败 (回合{episode}): {e}")
+                        import traceback
+                        traceback.print_exc()
                 
                 # --- 核心创新：新的训练结束逻辑 ---
                 if training_should_end:
