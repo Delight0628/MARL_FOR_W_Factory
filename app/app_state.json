@@ -1,6 +1,6 @@
 {
   "orders": [],
-  "model_path": "/root/MARL_FOR_W_Factory/mappo/ppo_models/20251012_195632/1012_1958base_train_best_actor.keras",
+  "model_path": "/root/MARL_FOR_W_Factory/1031_2213_测试驱动云/models/20251031_221335/1101_0204/1101_0204general_train_best_actor.keras",
   "model_loaded": true,
   "language": "zh-CN",
   "last_simulation": {
@@ -9,5 +9,5 @@
     "score": null,
     "total_reward": null
   },
-  "timestamp": "2025-10-12 23:33:51"
+  "timestamp": "2025-11-03 23:34:01"
 }

@@ -11,6 +11,9 @@ MAPPO并行Worker模块
 """
 
 import os
+# 在导入TensorFlow之前根据环境变量彻底屏蔽GPU，避免子进程设备枚举触发崩溃
+if os.environ.get('FORCE_WORKER_CPU', '0') == '1':
+    os.environ['CUDA_VISIBLE_DEVICES'] = '-1'
 import random
 import numpy as np
 import tensorflow as tf
@@ -130,11 +133,14 @@ def run_simulation_worker(network_weights: Dict[str, List[np.ndarray]],
                 network_config=network_config
             )
         except Exception as _e_build:
-            # CPU初始化失败时，尝试GPU构建
+            # 避免在强制CPU时进行任何GPU设备枚举，直接回退到外层异常处理
             if 'vector::_M_range_check' in str(_e_build):
+                if os.environ.get('FORCE_WORKER_CPU', '0') == '1':
+                    raise
+                # 非强制CPU情况下，尝试GPU回退
                 try:
                     _gpus = tf.config.list_physical_devices('GPU')
-                    if _gpus and _os.environ.get('FORCE_WORKER_CPU', '0') != '1':
+                    if _gpus:
                         with tf.device('/GPU:0'):
                             network = PPONetwork(
                                 state_dim=state_dim,

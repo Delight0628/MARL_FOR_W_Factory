@@ -447,15 +447,35 @@ def find_available_models():
             for timestamp_dir in os.listdir(models_path):
                 run_path = os.path.join(models_path, timestamp_dir)
                 if os.path.isdir(run_path):
+                    # 🔧 修复：支持嵌套的时间戳子目录结构
+                    # 新结构：models/<timestamp1>/<timestamp2>/<model_file>
+                    # 旧结构：models/<timestamp>/<model_file>
+                    
+                    # 首先尝试在当前目录直接查找模型文件（旧结构）
+                    found_in_current = False
                     for file in os.listdir(run_path):
                         if file.endswith("_actor.keras"):
                             model_path = os.path.join(run_path, file)
                             model_name = file.replace("_actor.keras", "")
                             models.append({
-                                # 使用 "实验目录/模型名" 的格式，更具描述性
                                 "name": f"{experiment_dir}/{model_name}",
                                 "path": model_path,
                             })
+                            found_in_current = True
+                    
+                    # 如果当前目录没找到，递归查找子目录（新结构）
+                    if not found_in_current:
+                        for sub_item in os.listdir(run_path):
+                            sub_path = os.path.join(run_path, sub_item)
+                            if os.path.isdir(sub_path):
+                                for file in os.listdir(sub_path):
+                                    if file.endswith("_actor.keras"):
+                                        model_path = os.path.join(sub_path, file)
+                                        model_name = file.replace("_actor.keras", "")
+                                        models.append({
+                                            "name": f"{experiment_dir}/{model_name}",
+                                            "path": model_path,
+                                        })
 
     # --- 搜索旧版路径 (用于兼容) ---
     old_models_path = os.path.join(project_root, "mappo", "ppo_models")
@@ -926,7 +946,7 @@ def main():
             st.write(get_text("added_custom_products", lang))
             
             for prod_name, route in st.session_state['custom_products'].items():
-                col1, col2 = st.columns([0, 1])
+                col1, col2 = st.columns([4, 1])
                 with col1:
                     route_str = " → ".join([f"{s['station']}({s['time']}{get_text('minutes', lang).strip()})" for s in route])
                     st.text(f"• {prod_name}: {route_str}")
