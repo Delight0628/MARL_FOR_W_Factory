@@ -883,6 +883,87 @@ TEXTS = {
         "zh-TW": "件",
         "en": " pcs"
     },
+    
+    # 启发式算法对比
+    "comparison_options": {
+        "zh-CN": "🔬 对比选项",
+        "zh-TW": "🔬 對比選項",
+        "en": "🔬 Comparison Options"
+    },
+    "compare_heuristics_checkbox": {
+        "zh-CN": "同时运行启发式算法进行对比 (FIFO, EDD, SPT)",
+        "zh-TW": "同時運行啟發式算法進行對比 (FIFO, EDD, SPT)",
+        "en": "Run heuristic algorithms for comparison (FIFO, EDD, SPT)"
+    },
+    "compare_heuristics_help": {
+        "zh-CN": "勾选后将自动运行启发式算法并展示对比结果",
+        "zh-TW": "勾選後將自動運行啟發式算法並展示對比結果",
+        "en": "Automatically run heuristic algorithms and show comparison results when checked"
+    },
+    "algorithm_performance_comparison": {
+        "zh-CN": "📊 算法性能对比",
+        "zh-TW": "📊 算法性能對比",
+        "en": "📊 Algorithm Performance Comparison"
+    },
+    "heuristic_gantt_comparison": {
+        "zh-CN": "🔬 启发式算法甘特图对比",
+        "zh-TW": "🔬 啟發式算法甘特圖對比",
+        "en": "🔬 Heuristic Algorithm Gantt Chart Comparison"
+    },
+    
+    # 对比表格列名
+    "algorithm": {
+        "zh-CN": "算法",
+        "zh-TW": "算法",
+        "en": "Algorithm"
+    },
+    "completion_rate": {
+        "zh-CN": "完成率",
+        "zh-TW": "完成率",
+        "en": "Completion Rate"
+    },
+    "completion_time": {
+        "zh-CN": "完工时间",
+        "zh-TW": "完工時間",
+        "en": "Completion Time"
+    },
+    "avg_utilization": {
+        "zh-CN": "平均利用率",
+        "zh-TW": "平均利用率",
+        "en": "Avg. Utilization"
+    },
+    "total_delay": {
+        "zh-CN": "总延迟",
+        "zh-TW": "總延遲",
+        "en": "Total Delay"
+    },
+    "comprehensive_score": {
+        "zh-CN": "综合得分",
+        "zh-TW": "綜合得分",
+        "en": "Comprehensive Score"
+    },
+    
+    # 甘特图相关
+    "gantt_chart_algorithm": {
+        "zh-CN": "甘特图 - {}",
+        "zh-TW": "甘特圖 - {}",
+        "en": "Gantt Chart - {}"
+    },
+    "download_algorithm_gantt": {
+        "zh-CN": "💾 下载 {} 甘特图",
+        "zh-TW": "💾 下載 {} 甘特圖",
+        "en": "💾 Download {} Gantt Chart"
+    },
+    "download_algorithm_gantt_html": {
+        "zh-CN": "下载 {} 甘特图HTML",
+        "zh-TW": "下載 {} 甘特圖HTML",
+        "en": "Download {} Gantt Chart HTML"
+    },
+    "no_gantt_data_algorithm": {
+        "zh-CN": "{}: 无甘特图数据",
+        "zh-TW": "{}: 無甘特圖數據",
+        "en": "{}: No Gantt chart data"
+    },
 }
 
 def get_text(key: str, lang: str = "zh-CN", *args) -> str:

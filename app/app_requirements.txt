@@ -1,18 +1,18 @@
-# W工厂智能调度应用所需依赖
-# 在运行应用前，请安装这些依赖：pip install -r app_requirements.txt
-
-# Web应用框架
+# Web framework
 streamlit>=1.28.0
 
-# 必需的核心依赖（如果尚未安装）
-tensorflow==2.10.0
-numpy>=1.21.0,<2.0
-pandas>=1.5.0
-plotly>=5.0.0
+# TensorFlow compatibility fix
+# protobuf 版本必须 <=3.20.3 才能与 TensorFlow 2.15.0 兼容
+protobuf==3.20.3
 
-# 环境仿真依赖
-pettingzoo>=1.24.0
-gymnasium>=0.29.0
-simpy>=4.0.0
+# Core dependencies (install if not already installed)
+# tensorflow==2.10.0
+# numpy>=1.21.0,<2.0
+# pandas>=1.5.0
+# plotly>=5.0.0
 
+# Environment simulation dependencies
+# pettingzoo>=1.24.0
+# gymnasium>=0.29.0
+# simpy>=4.0.0
 

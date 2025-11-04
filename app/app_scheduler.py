@@ -257,6 +257,20 @@ def get_language():
         st.session_state['language'] = saved_state.get('language', 'zh-CN')
     return st.session_state['language']
 
+def clear_simulation_results():
+    """清空调度结果（订单配置改变后，旧结果失效）"""
+    st.session_state['show_results'] = False
+    if 'final_stats' in st.session_state:
+        del st.session_state['final_stats']
+    if 'gantt_history' in st.session_state:
+        del st.session_state['gantt_history']
+    if 'score' in st.session_state:
+        del st.session_state['score']
+    if 'total_reward' in st.session_state:
+        del st.session_state['total_reward']
+    if 'heuristic_results' in st.session_state:
+        del st.session_state['heuristic_results']
+
 def save_app_state():
     """保存应用状态到文件"""
     state_file = os.path.join(app_dir, "app_state.json")
@@ -497,6 +511,197 @@ def find_available_models():
     models.sort(key=lambda x: x['path'], reverse=True)
     
     return models
+
+def run_heuristic_scheduling(heuristic_name, orders_config, custom_products=None, max_steps=1500, progress_bar=None, status_text=None):
+    """
+    运行启发式算法调度仿真
+    
+    🔧 直接复用 evaluation.py 中的启发式策略实现，确保两个脚本使用完全一致的评估逻辑
+    """
+    from environments import w_factory_config
+    from environments.w_factory_env import calculate_slack_time
+    import copy
+    from environments.w_factory_config import EVALUATION_CONFIG
+    
+    original_routes = None
+    if custom_products:
+        original_routes = w_factory_config.PRODUCT_ROUTES.copy()
+        w_factory_config.PRODUCT_ROUTES.update(custom_products)
+    
+    try:
+        config = {
+            'custom_orders': orders_config,
+            'equipment_failure_enabled': False,
+            'stage_name': f'{heuristic_name}启发式调度'
+        }
+        
+        if status_text:
+            status_text.text(f"初始化{heuristic_name}算法...")
+        
+        # 🔧 与 evaluation.py 保持一致：合并基础配置
+        final_config = copy.deepcopy(EVALUATION_CONFIG)
+        final_config.update(config)
+        
+        env = WFactoryEnv(config=final_config)
+        obs, info = env.reset(seed=42)
+        sim = env.sim
+        
+        step_count = 0
+        
+        if status_text:
+            status_text.text(f"运行{heuristic_name}调度...")
+        
+        # 🌟 关键修改：直接复用 evaluation.py 中的启发式策略函数（417-550行的逻辑）
+        def heuristic_policy(obs, env, info, step_count):
+            """
+            启发式策略函数 - 完全复用 evaluation.py 的实现（417-550行）
+            
+            智能适配版：自动适配任何动作空间结构
+            设计理念：
+            1. 优先检测动作空间中是否存在启发式动作（向后兼容旧版本）
+            2. 如果不存在，独立计算启发式逻辑并映射到候选动作（适配新版本）
+            3. 完全解耦启发式算法与动作空间设计
+            """
+            actions = {}
+            
+            # 获取动作名称映射
+            action_names = []
+            info_source = info
+            
+            if env.agents:
+                first_agent = env.agents[0]
+                if info_source and first_agent in info_source:
+                    action_names = info_source[first_agent].get('obs_meta', {}).get('action_names', [])
+            
+            action_map = {name: idx for idx, name in enumerate(action_names)}
+            
+            # 定义启发式名称到动作名称的映射
+            heuristic_to_action_map = {
+                'FIFO': 'FIFO',
+                'EDD': 'URGENT_EDD',
+                'SPT': 'SHORT_SPT',
+            }
+            
+            target_action_name = heuristic_to_action_map.get(heuristic_name)
+            use_direct_action = (target_action_name in action_map)
+            
+            for agent_id in env.agents:
+                station_name = agent_id.replace("agent_", "")
+                queue = sim.queues[station_name].items
+                
+                if not queue:
+                    sp = env.action_space(agent_id)
+                    if isinstance(sp, gym.spaces.MultiDiscrete):
+                        actions[agent_id] = np.zeros(len(sp.nvec), dtype=sp.dtype)
+                    else:
+                        actions[agent_id] = 0
+                    continue
+                
+                # 分支1：动作空间中存在启发式动作
+                if use_direct_action:
+                    sp = env.action_space(agent_id)
+                    if isinstance(sp, gym.spaces.MultiDiscrete):
+                        k = len(sp.nvec)
+                        actions[agent_id] = np.array([action_map[target_action_name]] * k, dtype=sp.dtype)
+                    else:
+                        actions[agent_id] = action_map[target_action_name]
+                    continue
+                
+                # 分支2：动作空间中不存在启发式动作（独立实现）
+                selected_parts = []
+                
+                if heuristic_name == 'FIFO':
+                    selected_parts = [queue[0]]
+                elif heuristic_name == 'EDD':
+                    selected_parts = sorted(queue, key=lambda p: calculate_slack_time(p, sim.env.now, sim.queues))
+                elif heuristic_name == 'SPT':
+                    selected_parts = sorted(queue, key=lambda p: p.get_processing_time())
+                else:
+                    raise ValueError(f"未知的启发式规则: {heuristic_name}")
+                
+                # 映射到候选动作
+                candidates = sim._get_candidate_workpieces(station_name)
+                sp = env.action_space(agent_id)
+                
+                if isinstance(sp, gym.spaces.MultiDiscrete):
+                    k = len(sp.nvec)
+                    chosen_actions = []
+                    used_part_ids = set()
+                    
+                    for target_part in selected_parts:
+                        if len(chosen_actions) >= k:
+                            break
+                        if target_part.part_id in used_part_ids:
+                            continue
+                        
+                        found = 0
+                        for idx, cand in enumerate(candidates):
+                            cand_part = cand.get("part") if isinstance(cand, dict) else cand[0]
+                            if cand_part and cand_part.part_id == target_part.part_id:
+                                candidate_action_start = next(
+                                    (i for i, name in enumerate(action_names) if "CANDIDATE_" in name),
+                                    1
+                                )
+                                found = candidate_action_start + idx
+                                break
+                        
+                        if found != 0:
+                            chosen_actions.append(int(found))
+                            used_part_ids.add(target_part.part_id)
+                    
+                    while len(chosen_actions) < k:
+                        chosen_actions.append(0)
+                    
+                    actions[agent_id] = np.array(chosen_actions, dtype=sp.dtype)
+                else:
+                    action = 0
+                    if selected_parts:
+                        target_part = selected_parts[0]
+                        for idx, cand in enumerate(candidates):
+                            cand_part = cand.get("part") if isinstance(cand, dict) else cand[0]
+                            if cand_part and cand_part.part_id == target_part.part_id:
+                                candidate_action_start = next(
+                                    (i for i, name in enumerate(action_names) if "CANDIDATE_" in name),
+                                    1
+                                )
+                                action = candidate_action_start + idx
+                                break
+                    actions[agent_id] = action
+            
+            return actions
+        
+        # 运行仿真循环
+        while step_count < max_steps:
+            actions = heuristic_policy(obs, env, info, step_count)
+            obs, rewards, terminations, truncations, info = env.step(actions)
+            step_count += 1
+            
+            if progress_bar and step_count % 10 == 0:
+                progress = min(step_count / max_steps, 1.0)
+                progress_bar.progress(progress)
+                if status_text:
+                    status_text.text(f"运行{heuristic_name}调度... ({step_count}/{max_steps})")
+            
+            if any(terminations.values()) or any(truncations.values()):
+                break
+        
+        if status_text:
+            status_text.text(f"{heuristic_name}调度完成")
+        
+        if progress_bar:
+            progress_bar.progress(1.0)
+        
+        final_stats = env.sim.get_final_stats()
+        gantt_history = env.sim.gantt_chart_history
+        score = calculate_episode_score(final_stats, final_config)
+        
+        env.close()
+        
+        return final_stats, gantt_history, score
+    
+    finally:
+        if original_routes is not None:
+            w_factory_config.PRODUCT_ROUTES = original_routes
 
 def run_scheduling(actor_model, orders_config, custom_products=None, max_steps=1500, progress_bar=None, status_text=None):
     """运行调度仿真"""
@@ -1036,6 +1241,7 @@ def main():
                     "due_date": int(due_date)
                 }
                 st.session_state['orders'].append(order)
+                clear_simulation_results()  # 🔧 清空之前的调度结果
                 save_app_state()  # 💾 保存状态
                 st.success(get_text("order_added_full", lang, product, quantity, arrival_time, due_date))
                 st.rerun()
@@ -1097,6 +1303,7 @@ def main():
                 })
             
             st.session_state['orders'] = random_orders
+            clear_simulation_results()  # 🔧 清空之前的调度结果
             save_app_state()  # 💾 保存状态
             st.success(get_text("random_generated", lang, len(random_orders)))
             st.rerun()
@@ -1123,6 +1330,7 @@ def main():
         with col1:
             if st.button(get_text("clear_orders", lang)):
                 st.session_state['orders'] = []
+                clear_simulation_results()  # 🔧 清空之前的调度结果
                 save_app_state()  # 💾 保存状态
                 st.rerun()
         
@@ -1198,6 +1406,17 @@ def main():
     elif not st.session_state.get('orders', []):
         st.warning(get_text("config_orders_first", lang))
     else:
+        # 添加启发式算法对比选项
+        st.subheader(get_text("comparison_options", lang))
+        compare_heuristics = st.checkbox(
+            get_text("compare_heuristics_checkbox", lang),
+            value=st.session_state.get('compare_heuristics', True),
+            help=get_text("compare_heuristics_help", lang)
+        )
+        st.session_state['compare_heuristics'] = compare_heuristics
+        
+        st.write("")  # 空行
+        
         if st.button(get_text("start_simulation", lang), type="primary", use_container_width=True):
             try:
                 actor_model = st.session_state['actor_model']
@@ -1208,18 +1427,46 @@ def main():
                 progress_bar = st.progress(0)
                 status_text = st.empty()
                 
+                # 运行MARL模型
+                status_text.text("🧠 运行MARL模型...")
                 final_stats, gantt_history, score, total_reward = run_scheduling(
                     actor_model, orders, custom_products, 
                     progress_bar=progress_bar, 
                     status_text=status_text
                 )
                 
-                # 保存结果到session state
+                # 保存MARL结果
                 st.session_state['final_stats'] = final_stats
                 st.session_state['gantt_history'] = gantt_history
                 st.session_state['score'] = score
                 st.session_state['total_reward'] = total_reward
                 st.session_state['show_results'] = True
+                
+                # 如果需要对比启发式算法
+                if compare_heuristics:
+                    heuristic_results = {}
+                    
+                    for heuristic in ['FIFO', 'EDD', 'SPT']:
+                        status_text.text(f"⚙️ 运行 {heuristic} 启发式算法...")
+                        progress_bar.progress(0)
+                        
+                        h_stats, h_history, h_score = run_heuristic_scheduling(
+                            heuristic, orders, custom_products,
+                            progress_bar=progress_bar,
+                            status_text=status_text
+                        )
+                        
+                        heuristic_results[heuristic] = {
+                            'stats': h_stats,
+                            'history': h_history,
+                            'score': h_score
+                        }
+                    
+                    st.session_state['heuristic_results'] = heuristic_results
+                else:
+                    # 如果不对比，清除之前的结果
+                    if 'heuristic_results' in st.session_state:
+                        del st.session_state['heuristic_results']
                 
                 # 同时保存到持久化变量
                 st.session_state['last_stats'] = final_stats
@@ -1228,6 +1475,8 @@ def main():
                 st.session_state['last_total_reward'] = total_reward
                 
                 save_app_state()  # 💾 保存状态
+                progress_bar.empty()
+                status_text.empty()
                 st.success(get_text("simulation_complete", lang))
                 st.rerun()
                 
@@ -1300,23 +1549,91 @@ def main():
             if util_chart:
                 st.plotly_chart(util_chart, use_container_width=True)
         
-        # 甘特图
-        with st.expander(get_text("gantt_chart", lang), expanded=True):
+        # 甘特图（MARL）
+        with st.expander(get_text("gantt_chart", lang) + " - MARL (PPO)", expanded=True):
             gantt_fig = create_gantt_chart(gantt_history)
             if gantt_fig:
+                # 更新标题显示算法名称
+                gantt_fig.update_layout(title=f"{get_text('gantt_chart_title', lang)} - MARL (PPO)")
                 st.plotly_chart(gantt_fig, use_container_width=True)
                 
                 # 提供下载选项
-                if st.button(get_text("download_gantt", lang)):
+                if st.button(get_text("download_gantt", lang), key="download_marl"):
                     html_str = gantt_fig.to_html()
                     st.download_button(
                         label=get_text("download_gantt_btn", lang),
                         data=html_str,
-                        file_name=f"gantt_chart_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html",
-                        mime="text/html"
+                        file_name=f"gantt_marl_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html",
+                        mime="text/html",
+                        key="download_marl_confirm"
                     )
             else:
                 st.warning(get_text("warn_gantt_no_data", lang))
+        
+        # 启发式算法对比结果
+        if 'heuristic_results' in st.session_state:
+            st.divider()
+            st.subheader(get_text("algorithm_performance_comparison", lang))
+            
+            # 创建对比表格
+            comparison_data = []
+            
+            # MARL结果
+            marl_completion_rate = (stats['total_parts'] / total_parts_target) * 100 if total_parts_target > 0 else 0
+            comparison_data.append({
+                get_text("algorithm", lang): "MARL (PPO)",
+                get_text("completion_rate", lang): f"{marl_completion_rate:.1f}%",
+                get_text("completion_time", lang): f"{stats['makespan']:.1f}",
+                get_text("avg_utilization", lang): f"{stats['mean_utilization']*100:.1f}%",
+                get_text("total_delay", lang): f"{stats['total_tardiness']:.1f}",
+                get_text("comprehensive_score", lang): f"{score:.3f}"
+            })
+            
+            # 启发式算法结果
+            for heuristic_name, heuristic_data in st.session_state['heuristic_results'].items():
+                h_stats = heuristic_data['stats']
+                h_score = heuristic_data['score']
+                h_completion_rate = (h_stats['total_parts'] / total_parts_target) * 100 if total_parts_target > 0 else 0
+                
+                comparison_data.append({
+                    get_text("algorithm", lang): heuristic_name,
+                    get_text("completion_rate", lang): f"{h_completion_rate:.1f}%",
+                    get_text("completion_time", lang): f"{h_stats['makespan']:.1f}",
+                    get_text("avg_utilization", lang): f"{h_stats['mean_utilization']*100:.1f}%",
+                    get_text("total_delay", lang): f"{h_stats['total_tardiness']:.1f}",
+                    get_text("comprehensive_score", lang): f"{h_score:.3f}"
+                })
+            
+            # 显示对比表格
+            comparison_df = pd.DataFrame(comparison_data)
+            st.dataframe(comparison_df, use_container_width=True, hide_index=True)
+            
+            # 显示启发式算法的甘特图
+            st.divider()
+            st.subheader(get_text("heuristic_gantt_comparison", lang))
+            
+            for heuristic_name, heuristic_data in st.session_state['heuristic_results'].items():
+                h_history = heuristic_data['history']
+                
+                with st.expander(get_text("gantt_chart_algorithm", lang, heuristic_name), expanded=False):
+                    h_gantt_fig = create_gantt_chart(h_history)
+                    if h_gantt_fig:
+                        # 更新标题显示算法名称
+                        h_gantt_fig.update_layout(title=f"{get_text('gantt_chart_title', lang)} - {heuristic_name}")
+                        st.plotly_chart(h_gantt_fig, use_container_width=True)
+                        
+                        # 提供下载选项
+                        if st.button(get_text("download_algorithm_gantt", lang, heuristic_name), key=f"download_{heuristic_name}"):
+                            html_str = h_gantt_fig.to_html()
+                            st.download_button(
+                                label=get_text("download_algorithm_gantt_html", lang, heuristic_name),
+                                data=html_str,
+                                file_name=f"gantt_{heuristic_name.lower()}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html",
+                                mime="text/html",
+                                key=f"download_{heuristic_name}_confirm"
+                            )
+                    else:
+                        st.warning(get_text("no_gantt_data_algorithm", lang, heuristic_name))
         
         # 详细统计信息
         with st.expander(get_text("detailed_stats", lang)):
