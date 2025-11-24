@@ -38,6 +38,40 @@ from mappo.ppo_worker import _collect_experience_wrapper
 TENSORBOARD_AVAILABLE = hasattr(tf.summary, "create_file_writer")
 
 
+class RunningMeanStd:
+    """
+    🔧 新增：运行均值和标准差归一化器
+    用于对观测、回报等进行在线归一化，提升训练稳定性
+    """
+    def __init__(self, shape: tuple, epsilon: float = 1e-8):
+        self.shape = shape
+        self.epsilon = epsilon
+        self.mean = np.zeros(shape, dtype=np.float32)
+        self.var = np.ones(shape, dtype=np.float32)
+        self.count = 0
+    
+    def update(self, x: np.ndarray):
+        """更新统计量"""
+        batch_mean = np.mean(x, axis=0)
+        batch_var = np.var(x, axis=0)
+        batch_count = x.shape[0]
+        
+        # 增量更新
+        delta = batch_mean - self.mean
+        total_count = self.count + batch_count
+        
+        self.mean += delta * batch_count / max(total_count, 1)
+        m_a = self.var * self.count
+        m_b = batch_var * batch_count
+        M2 = m_a + m_b + np.square(delta) * self.count * batch_count / max(total_count, 1)
+        self.var = M2 / max(total_count, 1)
+        self.count = total_count
+    
+    def normalize(self, x: np.ndarray) -> np.ndarray:
+        """归一化输入"""
+        return (x - self.mean) / np.sqrt(self.var + self.epsilon)
+
+
 class SimplePPOTrainer:
     """
     MAPPO自适应训练器
@@ -233,6 +267,14 @@ class SimplePPOTrainer:
         self.seed = RANDOM_SEED
         self.total_steps = 0
         self.network_config = PPO_NETWORK_CONFIG
+        
+        # 🔧 新增：归一化器（观测、回报归一化，优势白化）
+        self.obs_normalizer = RunningMeanStd(shape=(self.state_dim,))
+        self.global_obs_normalizer = RunningMeanStd(shape=(self.global_state_dim,))
+        self.reward_normalizer = RunningMeanStd(shape=(1,))
+        self.normalize_obs = True
+        self.normalize_rewards = True
+        self.normalize_advantages = True  # 优势白化（已在buffer中实现，这里只是标志）
         
         # 10-23-18-00 核心改进：多任务混合机制贯穿两个阶段
         # 从foundation_phase和generalization_phase分别读取配置
@@ -583,13 +625,31 @@ class SimplePPOTrainer:
                     successful_workers += 1
 
         # 将聚合后的数据列表转换为NumPy数组，形成最终的训练批次
+        states_array = np.array(all_states, dtype=np.float32)
+        global_states_array = np.array(all_global_states, dtype=np.float32)
+        returns_array = np.array(all_returns, dtype=np.float32)
+        
+        # 🔧 新增：观测和回报归一化
+        if self.normalize_obs and len(states_array) > 0:
+            # 更新归一化器统计量
+            self.obs_normalizer.update(states_array)
+            self.global_obs_normalizer.update(global_states_array)
+            # 归一化观测
+            states_array = self.obs_normalizer.normalize(states_array)
+            global_states_array = self.global_obs_normalizer.normalize(global_states_array)
+        
+        if self.normalize_rewards and len(returns_array) > 0:
+            # 回报归一化（使用returns作为目标）
+            self.reward_normalizer.update(returns_array.reshape(-1, 1))
+            returns_array = self.reward_normalizer.normalize(returns_array.reshape(-1, 1)).flatten()
+        
         batch = {
-            "states": np.array(all_states, dtype=np.float32),
-            "global_states": np.array(all_global_states, dtype=np.float32),
+            "states": states_array,
+            "global_states": global_states_array,
             "actions": np.array(all_actions),
             "old_probs": np.array(all_old_probs, dtype=np.float32),
             "advantages": np.array(all_advantages, dtype=np.float32),
-            "returns": np.array(all_returns, dtype=np.float32),
+            "returns": returns_array,
         }
         # 记录本轮采集完成worker与达成worker数量，供外层日志打印
         self._last_collect_finished_workers = self.num_workers
@@ -713,7 +773,7 @@ class SimplePPOTrainer:
         random.seed(seed)
         tf.random.set_seed(seed)
         
-        observations, _ = env.reset(seed=seed)
+        observations, infos = env.reset(seed=seed)
         episode_reward = 0
         step_count = 0
         
@@ -735,6 +795,10 @@ class SimplePPOTrainer:
                         selected = []
                         for i in range(heads):
                             p = action_prob_list[i][0].numpy()
+                            # 🔧 应用动作掩码（若提供）
+                            mask = infos.get(agent, {}).get('action_mask', None)
+                            if mask is not None and len(mask) == p.shape[0]:
+                                p = p * mask
                             # 允许多个头选择 IDLE(0)，仅屏蔽已选的非零动作
                             if used:
                                 for u in list(used):
@@ -795,7 +859,7 @@ class SimplePPOTrainer:
         tardiness_list = []
         
         for episode in range(num_episodes):
-            observations, _ = env.reset()
+            observations, infos = env.reset()
             episode_reward = 0
             step_count = 0
             
@@ -816,6 +880,10 @@ class SimplePPOTrainer:
                             selected = []
                             for i in range(heads):
                                 p = action_prob_list[i][0].numpy()
+                                # 🔧 应用动作掩码（若提供）
+                                mask = infos.get(agent, {}).get('action_mask', None)
+                                if mask is not None and len(mask) == p.shape[0]:
+                                    p = p * mask
                                 # 允许多个头选择 IDLE(0)，仅屏蔽已选的非零动作
                                 if used:
                                     for u in list(used):
@@ -871,7 +939,7 @@ class SimplePPOTrainer:
         tardiness_list = []
         
         for episode in range(num_episodes):
-            observations, _ = env.reset()
+            observations, infos = env.reset()
             episode_reward = 0
             step_count = 0
             
@@ -886,10 +954,21 @@ class SimplePPOTrainer:
                         if isinstance(self.action_space, gym.spaces.MultiDiscrete):
                             # 10-23-14-30 修复：每个头分别选择argmax，而非把多头输出当单个分布
                             action_prob_list = action_probs if isinstance(action_probs, list) else [action_probs]
-                            actions_list = [int(tf.argmax(p[0])) for p in action_prob_list]
+                            actions_list = []
+                            for i, p_head in enumerate(action_prob_list):
+                                p = p_head[0].numpy()
+                                mask = infos.get(agent, {}).get('action_mask', None)
+                                if mask is not None and len(mask) == p.shape[0]:
+                                    p = p * mask
+                                actions_list.append(int(np.argmax(p)) if p.sum() > 1e-8 else 0)
                             actions[agent] = np.array(actions_list, dtype=self.action_space.dtype)
                         else:
-                            actions[agent] = int(tf.argmax(action_probs[0]))
+                            # 单头：应用掩码后取argmax
+                            p = action_probs[0].numpy()
+                            mask = infos.get(agent, {}).get('action_mask', None)
+                            if mask is not None and len(mask) == p.shape[0]:
+                                p = p * mask
+                            actions[agent] = int(np.argmax(p)) if p.sum() > 1e-8 else 0
                 
                 observations, rewards, terminations, truncations, infos = env.step(actions)
                 episode_reward += sum(rewards.values())

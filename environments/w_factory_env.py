@@ -681,6 +681,63 @@ class WFactorySim:
         
         return np.concatenate(feature_list)
     
+    def _get_action_mask(self, station_name: str) -> np.ndarray:
+        """
+        🔧 新增：生成动作掩码，标记哪些动作是有效的
+        
+        掩码规则：
+        - 动作0 (IDLE): 当队列非空且本步仍有可用并发容量时禁用；否则允许
+        - 动作1-N (候选工件): 仅当候选工件存在且前置工序已完成时有效
+        
+        Returns:
+            action_mask: 形状为 (action_space_size,) 的布尔数组，True表示有效动作
+        """
+        action_size = 1 + int(ENHANCED_OBS_CONFIG.get("num_candidate_workpieces", 0))
+        action_mask = np.ones(action_size, dtype=np.bool_)
+        
+        # 计算当前站点是否具备可用并发容量
+        capacity = WORKSTATIONS[station_name]['count']
+        busy = self.equipment_status[station_name]['busy_count']
+        available_capacity = max(0, capacity - busy)
+        queue = self.queues[station_name].items
+
+        # 收紧IDLE：当“有货可做且仍有可用并发容量”时，禁止IDLE
+        # 其余情况下（无货或无可用并发或设备故障等待）允许IDLE
+        action_mask[0] = not (len(queue) > 0 and available_capacity > 0)
+        
+        # 检查候选工件动作的有效性
+        candidates = self._get_candidate_workpieces(station_name)
+        
+        for i in range(len(candidates)):
+            action_idx = self._candidate_action_start + i
+            if action_idx < action_size:
+                candidate_info = candidates[i]
+                part = candidate_info.get('part')
+                
+                # 检查零件是否存在且前置工序已完成
+                if part is None:
+                    action_mask[action_idx] = False
+                else:
+                    # 检查零件是否在当前队列中（可能已被处理）
+                    part_in_queue = any(p.part_id == part.part_id for p in queue)
+                    if not part_in_queue:
+                        action_mask[action_idx] = False
+                    else:
+                        # 检查前置工序是否完成（零件是否在当前工作站）
+                        current_station = part.get_current_station()
+                        if current_station != station_name:
+                            action_mask[action_idx] = False
+                        else:
+                            action_mask[action_idx] = True
+        
+        # 对于超出候选数量的动作，标记为无效
+        for i in range(len(candidates), ENHANCED_OBS_CONFIG.get("num_candidate_workpieces", 0)):
+            action_idx = self._candidate_action_start + i
+            if action_idx < action_size:
+                action_mask[action_idx] = False
+        
+        return action_mask
+    
     def _get_candidate_workpieces(self, station_name: str) -> List[Dict[str, Any]]:
         """
         方案B：获取候选工件列表（多样性采样）
@@ -1363,6 +1420,74 @@ class WFactorySim:
                         penalty = -max_abs_penalty
                     rewards[agent_id] += penalty
         
+        # ============================================================
+        # 🔧 新增：基于Slack的非线性迟交惩罚（奖励函数重塑）
+        # ============================================================
+        if REWARD_CONFIG.get("slack_based_tardiness_enabled", True):
+            normalize_scale = REWARD_CONFIG.get("slack_tardiness_normalize_scale", 480.0)
+            threshold = REWARD_CONFIG.get("slack_tardiness_threshold", 0.0)
+            beta_tard_step = REWARD_CONFIG.get("slack_tardiness_step_penalty", -0.5)
+            gamma_overdue = REWARD_CONFIG.get("slack_tardiness_overdue_penalty", -2.0)
+            zeta_wip = REWARD_CONFIG.get("wip_penalty_coeff", -0.01)
+            eta_idle = REWARD_CONFIG.get("idle_penalty_coeff", -0.005)
+            
+            current_time = self.env.now
+            total_wip = len(self.active_parts)
+            
+            for station_name in WORKSTATIONS.keys():
+                agent_id = f"agent_{station_name}"
+                queue = self.queues[station_name].items
+                station_wip = len(queue)
+                
+                # 计算该站点的总负松弛时间和已迟交增量
+                total_negative_slack = 0.0
+                overdue_delta = 0.0
+                
+                for part in queue:
+                    slack = calculate_slack_time(part, current_time)
+                    remaining_proc_time = _calculate_part_total_remaining_processing_time(part)
+                    
+                    # 即将迟交的惩罚（负松弛时间）
+                    if slack < threshold:
+                        # 归一化负松弛时间
+                        negative_slack_norm = abs(slack) / normalize_scale
+                        total_negative_slack += negative_slack_norm
+                    
+                    # 已迟交的增量惩罚（如果零件已经完成但延期）
+                    if part.completion_time is not None:
+                        overdue = max(0.0, part.completion_time - part.due_date)
+                        if overdue > 0:
+                            overdue_norm = overdue / normalize_scale
+                            # 使用Huber损失避免极端值
+                            delta = 0.3
+                            ax = abs(overdue_norm)
+                            if ax <= delta:
+                                huber_overdue = 0.5 * (overdue_norm ** 2)
+                            else:
+                                huber_overdue = delta * (ax - 0.5 * delta)
+                            overdue_delta += huber_overdue
+                
+                # 应用惩罚（归一化到[-1, 1]范围）
+                if total_negative_slack > 0:
+                    slack_penalty = beta_tard_step * min(total_negative_slack, 1.0)  # 限制在[-1, 0]
+                    rewards[agent_id] += slack_penalty
+                
+                if overdue_delta > 0:
+                    overdue_penalty = gamma_overdue * min(overdue_delta, 1.0)  # 限制在[-2, 0]
+                    rewards[agent_id] += overdue_penalty
+                
+                # WIP拥塞惩罚（归一化）
+                wip_penalty = zeta_wip * min(station_wip / 20.0, 1.0)  # 假设最大WIP为20
+                rewards[agent_id] += wip_penalty
+                
+                # 瓶颈闲置惩罚（如果队列非空但资源空闲）
+                resource = self.resources.get(station_name)
+                if resource and queue:
+                    available_count = resource.count - len(resource.users)
+                    if available_count > 0:
+                        idle_penalty = eta_idle * (available_count / resource.count)
+                        rewards[agent_id] += idle_penalty
+        
         # 更新订单进度与统计
         self._update_order_progress()
         return rewards
@@ -1635,6 +1760,8 @@ class WFactoryEnv(ParallelEnv):
                     'proc_time': float(part.get_processing_time()),
                 })
             self.infos[agent_id]['queue_snapshot'] = queue_snapshot
+            # 🔧 新增：动作掩码
+            self.infos[agent_id]['action_mask'] = self.sim._get_action_mask(station_name)
             
         return self.observations, self.infos
     
@@ -1704,6 +1831,9 @@ class WFactoryEnv(ParallelEnv):
             # 修复缺陷三：使用决策前捕获的信息
             infos[agent_id]['candidates_map'] = pre_step_info[agent_id]['candidates_map']
             infos[agent_id]['queue_snapshot'] = pre_step_info[agent_id]['queue_snapshot']
+            # 🔧 新增：动作掩码（使用当前状态生成）
+            station_name = agent_id.replace("agent_", "")
+            infos[agent_id]['action_mask'] = self.sim._get_action_mask(station_name)
 
         # 将本步信息存入实例，便于外部策略访问候选映射等元信息
         self.infos = infos

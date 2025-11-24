@@ -169,7 +169,7 @@ TEXTS = {
     "num_steps": {
         "zh-CN": "工序数量",
         "zh-TW": "工序數量",
-        "en": "Number of Steps"
+        "en": "Number of Workstation"
     },
     "step_workstation": {
         "zh-CN": "工序 {} - 工作站",

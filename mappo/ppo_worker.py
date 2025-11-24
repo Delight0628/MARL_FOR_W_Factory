@@ -211,7 +211,10 @@ def run_simulation_worker(network_weights: Dict[str, List[np.ndarray]],
                     conditioned_global = _condition_global_state(infos[agent]['global_state'], agent)
                     global_state = tf.expand_dims(conditioned_global, 0)
                     
-                    action, value, action_prob = network.get_action_and_value(state, global_state)
+                    # 🔧 新增：获取动作掩码（如果存在）
+                    action_mask = infos[agent].get('action_mask', None)
+                    
+                    action, value, action_prob = network.get_action_and_value(state, global_state, action_mask)
                     
                     actions[agent] = action
                     values[agent] = value

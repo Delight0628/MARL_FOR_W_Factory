@@ -192,7 +192,7 @@ class PPONetwork:
         
         return self.actor, critic
     
-    def get_action_and_value(self, state: np.ndarray, global_state: np.ndarray) -> Tuple[int, np.float32, np.float32]:
+    def get_action_and_value(self, state: np.ndarray, global_state: np.ndarray, action_mask: Optional[np.ndarray] = None) -> Tuple[int, np.float32, np.float32]:
         """
         采样动作并计算状态价值
         
@@ -245,6 +245,14 @@ class PPONetwork:
             for i in range(num_heads):
                 probs_i = tf.convert_to_tensor(action_prob_list[i], dtype=tf.float32)
                 probs_i = tf.reshape(probs_i, (-1, action_dim))
+                
+                # 🔧 新增：应用动作掩码（如果提供）
+                if action_mask is not None:
+                    action_mask_tf = tf.convert_to_tensor(action_mask, dtype=tf.float32)
+                    if len(action_mask_tf.shape) == 1:
+                        action_mask_tf = tf.expand_dims(action_mask_tf, 0)  # (1, action_dim)
+                    # 将掩码应用到概率分布
+                    probs_i = probs_i * action_mask_tf
                 
                 # 当前头在每个样本中是否有效：i < k_valid_heads
                 valid = tf.less(tf.cast(i, tf.int32), k_valid_heads)  # (B,)
@@ -299,9 +307,20 @@ class PPONetwork:
         
         # Discrete：单头采样
         else:
-            sampled = tf.random.categorical(tf.math.log(action_probs + 1e-8), 1)
+            # 🔧 新增：应用动作掩码（如果提供）
+            probs_to_use = action_probs
+            if action_mask is not None:
+                action_mask_tf = tf.convert_to_tensor(action_mask, dtype=tf.float32)
+                if len(action_mask_tf.shape) == 1:
+                    action_mask_tf = tf.expand_dims(action_mask_tf, 0)  # (1, action_dim)
+                probs_to_use = action_probs * action_mask_tf
+                # 重归一化
+                norm = tf.reduce_sum(probs_to_use, axis=1, keepdims=True) + 1e-8
+                probs_to_use = probs_to_use / norm
+            
+            sampled = tf.random.categorical(tf.math.log(probs_to_use + 1e-8), 1)
             action_one_hot = tf.one_hot(tf.squeeze(sampled, axis=-1), self.action_dims[0])
-            action_prob = tf.math.log(tf.reduce_sum(action_probs * action_one_hot, axis=1) + 1e-8)
+            action_prob = tf.math.log(tf.reduce_sum(probs_to_use * action_one_hot, axis=1) + 1e-8)
             action = tf.squeeze(sampled, axis=-1)
             action_np = action.numpy()
             return action_np, float(tf.squeeze(value).numpy()), float(tf.squeeze(action_prob).numpy())
@@ -347,6 +366,15 @@ class PPONetwork:
         """
         clip_ratio = clip_ratio or self.config.get("clip_ratio", 0.2)
         entropy_coeff = entropy_coeff or self.config.get("entropy_coeff", 0.01)
+
+        # 统一dtype，避免TF运算的float32/float64混用错误
+        states = tf.convert_to_tensor(states, dtype=tf.float32)
+        global_states = tf.convert_to_tensor(global_states, dtype=tf.float32)
+        # 动作用于one_hot索引，需整型
+        actions = tf.convert_to_tensor(actions, dtype=tf.int32)
+        old_probs = tf.convert_to_tensor(old_probs, dtype=tf.float32)
+        advantages = tf.convert_to_tensor(advantages, dtype=tf.float32)
+        returns = tf.convert_to_tensor(returns, dtype=tf.float32)
 
         with tf.GradientTape() as tape:
             # ========== Actor损失计算 ==========
@@ -442,7 +470,10 @@ class PPONetwork:
         # ========== Critic损失计算 ==========
         with tf.GradientTape() as tape:
             values = self.critic(global_states, training=False)
+            # 显式统一 dtype，避免 float64/float32 混用
+            values = tf.cast(values, tf.float32)
             returns_expanded = tf.expand_dims(returns, 1) if len(returns.shape) == 1 else returns
+            returns_expanded = tf.cast(returns_expanded, tf.float32)
             critic_loss = tf.reduce_mean(tf.square(returns_expanded - values))
         
         # Critic梯度更新
