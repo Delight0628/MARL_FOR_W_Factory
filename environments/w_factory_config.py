@@ -489,7 +489,10 @@ def calculate_episode_score(kpi_results: Dict[str, float], config: Dict = None) 
     else:
         target_parts = get_total_parts_count()
 
+    # 🔧 裁剪完成率至[0,1]，避免动态插单导致>100%而扭曲评分
     completion_score = completed_parts / target_parts if target_parts > 0 else 0
+    if completion_score > 1.0:
+        completion_score = 1.0
     
     current_score = (
         completion_score * 0.40 +

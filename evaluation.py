@@ -350,7 +350,22 @@ def evaluate_marl_model(model_path: str, config: dict = STATIC_EVAL_CONFIG, gene
                 space = env.action_space(agent)
                 if isinstance(space, gym.spaces.MultiDiscrete):
                     k = len(space.nvec)
-                    chosen = choose_parallel_actions_multihead(head_probs_list, k, greedy=True)
+                    # 🔧 应用动作掩码（与训练期评估保持一致）
+                    mask = info.get(agent, {}).get('action_mask', None)
+                    if mask is not None:
+                        masked_heads = []
+                        for hp in head_probs_list:
+                            p = np.asarray(hp, dtype=np.float64)
+                            p_masked = p * mask
+                            if np.sum(p_masked) <= 1e-12:
+                                # 全被掩码则回退到未掩码分布，避免全零导致固定选IDLE
+                                masked_heads.append(p)
+                            else:
+                                masked_heads.append(p_masked)
+                        head_probs_used = masked_heads
+                    else:
+                        head_probs_used = head_probs_list
+                    chosen = choose_parallel_actions_multihead(head_probs_used, k, greedy=True)
                     actions[agent] = np.array(chosen, dtype=space.dtype)
                 else:
                     p = np.asarray(head_probs_list[0], dtype=np.float64)

@@ -344,6 +344,8 @@ class SimplePPOTrainer:
         # 10-27-17-30 修复：使用_get_target_parts获取正确的目标零件数（与实际评估订单一致）
         total_parts_target = self._get_target_parts(curriculum_config)
         completion_rate_kpi = (kpi_results.get('mean_completed_parts', 0) / total_parts_target) * 100 if total_parts_target > 0 else 0
+        # 🔧 上限裁剪，避免因动态插单导致>100%的显示与判定
+        completion_rate_kpi = float(min(100.0, completion_rate_kpi))
         
         target_score = criteria["target_score"]
         stability_goal = criteria["target_consistency"]
@@ -1892,6 +1894,7 @@ class SimplePPOTrainer:
         # 获取当前阶段的目标零件数
         target_parts = int(get_total_parts_count() * stage_config.get('orders_scale', 1.0))
         completion_rate_kpi = (kpi_results.get('mean_completed_parts', 0) / target_parts) * 100 if target_parts > 0 else 0
+        completion_rate_kpi = float(min(100.0, completion_rate_kpi))
         
         target_score = criteria["target_score"]
         stability_goal = criteria["target_consistency"]
