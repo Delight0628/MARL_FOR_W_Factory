@@ -1,321 +1,1049 @@
 {
   "orders": [
     {
-      "product": "樱桃木椅子",
-      "quantity": 9,
-      "priority": 1,
+      "product": "黑胡桃木餐桌",
+      "quantity": 1,
+      "priority": 2,
       "arrival_time": 70,
-      "due_date": 620
+      "due_date": 280
     },
     {
       "product": "黑胡桃木餐桌",
-      "quantity": 10,
-      "priority": 1,
-      "arrival_time": 40,
-      "due_date": 700
+      "quantity": 11,
+      "priority": 2,
+      "arrival_time": 120,
+      "due_date": 400
     },
     {
-      "product": "橡木书柜",
-      "quantity": 8,
+      "product": "黑胡桃木餐桌",
+      "quantity": 1,
       "priority": 1,
       "arrival_time": 70,
-      "due_date": 700
+      "due_date": 400
     },
     {
       "product": "橡木办公桌",
-      "quantity": 9,
+      "quantity": 4,
       "priority": 2,
-      "arrival_time": 10,
-      "due_date": 610
+      "arrival_time": 150,
+      "due_date": 350
     },
     {
       "product": "樱桃木椅子",
       "quantity": 10,
       "priority": 1,
-      "arrival_time": 10,
-      "due_date": 630
+      "arrival_time": 180,
+      "due_date": 440
+    },
+    {
+      "product": "橡木书柜",
+      "quantity": 12,
+      "priority": 2,
+      "arrival_time": 80,
+      "due_date": 300
     },
     {
       "product": "松木床架",
-      "quantity": 7,
+      "quantity": 2,
       "priority": 1,
+      "arrival_time": 50,
+      "due_date": 460
+    },
+    {
+      "product": "橡木办公桌",
+      "quantity": 5,
+      "priority": 3,
       "arrival_time": 150,
-      "due_date": 630
-    },
-    {
-      "product": "橡木办公桌",
-      "quantity": 8,
-      "priority": 2,
-      "arrival_time": 70,
-      "due_date": 660
-    },
-    {
-      "product": "橡木办公桌",
-      "quantity": 10,
-      "priority": 2,
-      "arrival_time": 90,
-      "due_date": 700
+      "due_date": 380
     }
   ],
-  "model_path": "D:\\MPU\\毕业论文\\MARL_FOR_W_Factory\\1031_2213_测试驱动云\\models\\20251031_221335\\1101_0204\\1101_0204general_train_best_actor.keras",
+  "model_path": "D:\\MPU\\毕业论文\\MARL_FOR_W_Factory\\1126_0012_g5性能提升\\models\\20251126_001218\\1126_0411\\1126_0411general_train_best_actor.keras",
   "model_loaded": true,
   "language": "zh-CN",
   "last_simulation": {
     "stats": {
-      "last_completed_count": 69,
-      "completed_orders": 7,
+      "last_completed_count": 46,
+      "completed_orders": 8,
       "last_completed_orders": 0,
-      "makespan": 983,
-      "total_tardiness": 533,
-      "max_tardiness": 283,
+      "makespan": 676,
+      "total_tardiness": 650,
+      "max_tardiness": 236,
       "equipment_utilization": {
-        "带锯机": 0.846,
-        "五轴加工中心": 0.584,
-        "砂光机": 0.726,
-        "组装台": 0.5015,
-        "包装台": 0.18
+        "带锯机": 0.723781388478582,
+        "五轴加工中心": 0.6351550960118169,
+        "砂光机": 0.7444608567208272,
+        "组装台": 0.51698670605613,
+        "包装台": 0.19054652880354506
       },
       "queue_lengths": {},
-      "total_parts": 69,
-      "timeout_occurred": true,
-      "incomplete_parts": 2,
-      "mean_utilization": 0.5675
+      "total_parts": 46,
+      "mean_utilization": 0.5621861152141803
     },
     "gantt_history": [
       {
-        "Task": "Part-4000",
-        "Start": 11,
-        "Finish": 17,
-        "Duration": 6,
-        "Resource": "带锯机",
-        "Product": "樱桃木椅子",
-        "Part ID": 4000,
-        "Order ID": 4
-      },
-      {
-        "Task": "Part-4000",
-        "Start": 18,
-        "Finish": 30,
-        "Duration": 12,
-        "Resource": "五轴加工中心",
-        "Product": "樱桃木椅子",
-        "Part ID": 4000,
-        "Order ID": 4
-      },
-      {
-        "Task": "Part-3000",
-        "Start": 18,
-        "Finish": 36,
-        "Duration": 18,
-        "Resource": "带锯机",
-        "Product": "橡木办公桌",
-        "Part ID": 3000,
-        "Order ID": 3
-      },
-      {
-        "Task": "Part-4000",
-        "Start": 31,
-        "Finish": 39,
-        "Duration": 8,
-        "Resource": "砂光机",
-        "Product": "樱桃木椅子",
-        "Part ID": 4000,
-        "Order ID": 4
-      },
-      {
-        "Task": "Part-4001",
-        "Start": 37,
-        "Finish": 43,
-        "Duration": 6,
-        "Resource": "带锯机",
-        "Product": "樱桃木椅子",
-        "Part ID": 4001,
-        "Order ID": 4
-      },
-      {
-        "Task": "Part-4000",
-        "Start": 40,
-        "Finish": 50,
-        "Duration": 10,
-        "Resource": "组装台",
-        "Product": "樱桃木椅子",
-        "Part ID": 4000,
-        "Order ID": 4
-      },
-      {
-        "Task": "Part-4000",
+        "Task": "Part-6000",
         "Start": 51,
-        "Finish": 55,
-        "Duration": 4,
-        "Resource": "包装台",
-        "Product": "樱桃木椅子",
-        "Part ID": 4000,
-        "Order ID": 4
+        "Finish": 61,
+        "Duration": 10,
+        "Resource": "带锯机",
+        "Product": "松木床架",
+        "Part ID": 6000,
+        "Order ID": 6
       },
       {
-        "Task": "Part-4001",
-        "Start": 44,
-        "Finish": 56,
+        "Task": "Part-6001",
+        "Start": 62,
+        "Finish": 72,
+        "Duration": 10,
+        "Resource": "带锯机",
+        "Product": "松木床架",
+        "Part ID": 6001,
+        "Order ID": 6
+      },
+      {
+        "Task": "Part-6000",
+        "Start": 62,
+        "Finish": 74,
         "Duration": 12,
-        "Resource": "五轴加工中心",
-        "Product": "樱桃木椅子",
-        "Part ID": 4001,
-        "Order ID": 4
+        "Resource": "砂光机",
+        "Product": "松木床架",
+        "Part ID": 6000,
+        "Order ID": 6
       },
       {
-        "Task": "Part-3000",
-        "Start": 37,
-        "Finish": 57,
-        "Duration": 20,
-        "Resource": "五轴加工中心",
-        "Product": "橡木办公桌",
-        "Part ID": 3000,
-        "Order ID": 3
-      },
-      {
-        "Task": "Part-3001",
-        "Start": 44,
-        "Finish": 62,
-        "Duration": 18,
-        "Resource": "带锯机",
-        "Product": "橡木办公桌",
-        "Part ID": 3001,
-        "Order ID": 3
-      },
-      {
-        "Task": "Part-4001",
-        "Start": 57,
-        "Finish": 65,
+        "Task": "Part-2000",
+        "Start": 73,
+        "Finish": 81,
         "Duration": 8,
-        "Resource": "砂光机",
-        "Product": "樱桃木椅子",
-        "Part ID": 4001,
-        "Order ID": 4
-      },
-      {
-        "Task": "Part-3000",
-        "Start": 66,
-        "Finish": 76,
-        "Duration": 10,
-        "Resource": "砂光机",
-        "Product": "橡木办公桌",
-        "Part ID": 3000,
-        "Order ID": 3
-      },
-      {
-        "Task": "Part-4001",
-        "Start": 66,
-        "Finish": 76,
-        "Duration": 10,
-        "Resource": "组装台",
-        "Product": "樱桃木椅子",
-        "Part ID": 4001,
-        "Order ID": 4
-      },
-      {
-        "Task": "Part-3002",
-        "Start": 63,
-        "Finish": 81,
-        "Duration": 18,
         "Resource": "带锯机",
-        "Product": "橡木办公桌",
-        "Part ID": 3002,
-        "Order ID": 3
+        "Product": "黑胡桃木餐桌",
+        "Part ID": 2000,
+        "Order ID": 2
       },
       {
-        "Task": "Part-4001",
-        "Start": 77,
-        "Finish": 81,
-        "Duration": 4,
-        "Resource": "包装台",
-        "Product": "樱桃木椅子",
-        "Part ID": 4001,
-        "Order ID": 4
+        "Task": "Part-6001",
+        "Start": 75,
+        "Finish": 87,
+        "Duration": 12,
+        "Resource": "砂光机",
+        "Product": "松木床架",
+        "Part ID": 6001,
+        "Order ID": 6
       },
       {
-        "Task": "Part-3001",
-        "Start": 63,
-        "Finish": 83,
-        "Duration": 20,
-        "Resource": "五轴加工中心",
-        "Product": "橡木办公桌",
-        "Part ID": 3001,
-        "Order ID": 3
-      },
-      {
-        "Task": "Part-3000",
-        "Start": 77,
-        "Finish": 92,
+        "Task": "Part-6000",
+        "Start": 75,
+        "Finish": 90,
         "Duration": 15,
         "Resource": "组装台",
-        "Product": "橡木办公桌",
-        "Part ID": 3000,
-        "Order ID": 3
+        "Product": "松木床架",
+        "Part ID": 6000,
+        "Order ID": 6
       },
       {
-        "Task": "Part-3001",
-        "Start": 84,
-        "Finish": 94,
-        "Duration": 10,
-        "Resource": "砂光机",
-        "Product": "橡木办公桌",
-        "Part ID": 3001,
-        "Order ID": 3
-      },
-      {
-        "Task": "Part-3000",
-        "Start": 93,
-        "Finish": 98,
-        "Duration": 5,
-        "Resource": "包装台",
-        "Product": "橡木办公桌",
-        "Part ID": 3000,
-        "Order ID": 3
-      },
-      {
-        "Task": "Part-3003",
+        "Task": "Part-5000",
         "Start": 82,
-        "Finish": 100,
-        "Duration": 18,
+        "Finish": 94,
+        "Duration": 12,
         "Resource": "带锯机",
-        "Product": "橡木办公桌",
-        "Part ID": 3003,
-        "Order ID": 3
+        "Product": "橡木书柜",
+        "Part ID": 5000,
+        "Order ID": 5
       },
       {
-        "Task": "Part-3002",
+        "Task": "Part-6000",
+        "Start": 91,
+        "Finish": 97,
+        "Duration": 6,
+        "Resource": "包装台",
+        "Product": "松木床架",
+        "Part ID": 6000,
+        "Order ID": 6
+      },
+      {
+        "Task": "Part-2000",
         "Start": 82,
         "Finish": 102,
         "Duration": 20,
         "Resource": "五轴加工中心",
-        "Product": "橡木办公桌",
-        "Part ID": 3002,
-        "Order ID": 3
+        "Product": "黑胡桃木餐桌",
+        "Part ID": 2000,
+        "Order ID": 2
       },
       {
-        "Task": "Part-3001",
-        "Start": 95,
-        "Finish": 110,
+        "Task": "Part-6001",
+        "Start": 88,
+        "Finish": 103,
         "Duration": 15,
         "Resource": "组装台",
-        "Product": "橡木办公桌",
-        "Part ID": 3001,
-        "Order ID": 3
+        "Product": "松木床架",
+        "Part ID": 6001,
+        "Order ID": 6
       },
       {
-        "Task": "Part-3002",
+        "Task": "Part-5001",
+        "Start": 95,
+        "Finish": 107,
+        "Duration": 12,
+        "Resource": "带锯机",
+        "Product": "橡木书柜",
+        "Part ID": 5001,
+        "Order ID": 5
+      },
+      {
+        "Task": "Part-6001",
+        "Start": 104,
+        "Finish": 110,
+        "Duration": 6,
+        "Resource": "包装台",
+        "Product": "松木床架",
+        "Part ID": 6001,
+        "Order ID": 6
+      },
+      {
+        "Task": "Part-2000",
         "Start": 103,
         "Finish": 113,
         "Duration": 10,
         "Resource": "砂光机",
+        "Product": "黑胡桃木餐桌",
+        "Part ID": 2000,
+        "Order ID": 2
+      },
+      {
+        "Task": "Part-5000",
+        "Start": 95,
+        "Finish": 120,
+        "Duration": 25,
+        "Resource": "五轴加工中心",
+        "Product": "橡木书柜",
+        "Part ID": 5000,
+        "Order ID": 5
+      },
+      {
+        "Task": "Part-5002",
+        "Start": 108,
+        "Finish": 120,
+        "Duration": 12,
+        "Resource": "带锯机",
+        "Product": "橡木书柜",
+        "Part ID": 5002,
+        "Order ID": 5
+      },
+      {
+        "Task": "Part-2000",
+        "Start": 114,
+        "Finish": 129,
+        "Duration": 15,
+        "Resource": "组装台",
+        "Product": "黑胡桃木餐桌",
+        "Part ID": 2000,
+        "Order ID": 2
+      },
+      {
+        "Task": "Part-5001",
+        "Start": 108,
+        "Finish": 133,
+        "Duration": 25,
+        "Resource": "五轴加工中心",
+        "Product": "橡木书柜",
+        "Part ID": 5001,
+        "Order ID": 5
+      },
+      {
+        "Task": "Part-5003",
+        "Start": 121,
+        "Finish": 133,
+        "Duration": 12,
+        "Resource": "带锯机",
+        "Product": "橡木书柜",
+        "Part ID": 5003,
+        "Order ID": 5
+      },
+      {
+        "Task": "Part-2000",
+        "Start": 130,
+        "Finish": 135,
+        "Duration": 5,
+        "Resource": "包装台",
+        "Product": "黑胡桃木餐桌",
+        "Part ID": 2000,
+        "Order ID": 2
+      },
+      {
+        "Task": "Part-5000",
+        "Start": 121,
+        "Finish": 136,
+        "Duration": 15,
+        "Resource": "砂光机",
+        "Product": "橡木书柜",
+        "Part ID": 5000,
+        "Order ID": 5
+      },
+      {
+        "Task": "Part-5002",
+        "Start": 121,
+        "Finish": 146,
+        "Duration": 25,
+        "Resource": "五轴加工中心",
+        "Product": "橡木书柜",
+        "Part ID": 5002,
+        "Order ID": 5
+      },
+      {
+        "Task": "Part-5004",
+        "Start": 134,
+        "Finish": 146,
+        "Duration": 12,
+        "Resource": "带锯机",
+        "Product": "橡木书柜",
+        "Part ID": 5004,
+        "Order ID": 5
+      },
+      {
+        "Task": "Part-5001",
+        "Start": 137,
+        "Finish": 152,
+        "Duration": 15,
+        "Resource": "砂光机",
+        "Product": "橡木书柜",
+        "Part ID": 5001,
+        "Order ID": 5
+      },
+      {
+        "Task": "Part-5000",
+        "Start": 137,
+        "Finish": 157,
+        "Duration": 20,
+        "Resource": "组装台",
+        "Product": "橡木书柜",
+        "Part ID": 5000,
+        "Order ID": 5
+      },
+      {
+        "Task": "Part-5003",
+        "Start": 134,
+        "Finish": 159,
+        "Duration": 25,
+        "Resource": "五轴加工中心",
+        "Product": "橡木书柜",
+        "Part ID": 5003,
+        "Order ID": 5
+      },
+      {
+        "Task": "Part-5005",
+        "Start": 147,
+        "Finish": 159,
+        "Duration": 12,
+        "Resource": "带锯机",
+        "Product": "橡木书柜",
+        "Part ID": 5005,
+        "Order ID": 5
+      },
+      {
+        "Task": "Part-5000",
+        "Start": 158,
+        "Finish": 166,
+        "Duration": 8,
+        "Resource": "包装台",
+        "Product": "橡木书柜",
+        "Part ID": 5000,
+        "Order ID": 5
+      },
+      {
+        "Task": "Part-5002",
+        "Start": 153,
+        "Finish": 168,
+        "Duration": 15,
+        "Resource": "砂光机",
+        "Product": "橡木书柜",
+        "Part ID": 5002,
+        "Order ID": 5
+      },
+      {
+        "Task": "Part-5004",
+        "Start": 147,
+        "Finish": 172,
+        "Duration": 25,
+        "Resource": "五轴加工中心",
+        "Product": "橡木书柜",
+        "Part ID": 5004,
+        "Order ID": 5
+      },
+      {
+        "Task": "Part-5006",
+        "Start": 160,
+        "Finish": 172,
+        "Duration": 12,
+        "Resource": "带锯机",
+        "Product": "橡木书柜",
+        "Part ID": 5006,
+        "Order ID": 5
+      },
+      {
+        "Task": "Part-5001",
+        "Start": 153,
+        "Finish": 173,
+        "Duration": 20,
+        "Resource": "组装台",
+        "Product": "橡木书柜",
+        "Part ID": 5001,
+        "Order ID": 5
+      },
+      {
+        "Task": "Part-5001",
+        "Start": 174,
+        "Finish": 182,
+        "Duration": 8,
+        "Resource": "包装台",
+        "Product": "橡木书柜",
+        "Part ID": 5001,
+        "Order ID": 5
+      },
+      {
+        "Task": "Part-5003",
+        "Start": 169,
+        "Finish": 184,
+        "Duration": 15,
+        "Resource": "砂光机",
+        "Product": "橡木书柜",
+        "Part ID": 5003,
+        "Order ID": 5
+      },
+      {
+        "Task": "Part-5005",
+        "Start": 160,
+        "Finish": 185,
+        "Duration": 25,
+        "Resource": "五轴加工中心",
+        "Product": "橡木书柜",
+        "Part ID": 5005,
+        "Order ID": 5
+      },
+      {
+        "Task": "Part-5007",
+        "Start": 173,
+        "Finish": 185,
+        "Duration": 12,
+        "Resource": "带锯机",
+        "Product": "橡木书柜",
+        "Part ID": 5007,
+        "Order ID": 5
+      },
+      {
+        "Task": "Part-5002",
+        "Start": 169,
+        "Finish": 189,
+        "Duration": 20,
+        "Resource": "组装台",
+        "Product": "橡木书柜",
+        "Part ID": 5002,
+        "Order ID": 5
+      },
+      {
+        "Task": "Part-5006",
+        "Start": 173,
+        "Finish": 198,
+        "Duration": 25,
+        "Resource": "五轴加工中心",
+        "Product": "橡木书柜",
+        "Part ID": 5006,
+        "Order ID": 5
+      },
+      {
+        "Task": "Part-5008",
+        "Start": 186,
+        "Finish": 198,
+        "Duration": 12,
+        "Resource": "带锯机",
+        "Product": "橡木书柜",
+        "Part ID": 5008,
+        "Order ID": 5
+      },
+      {
+        "Task": "Part-5002",
+        "Start": 190,
+        "Finish": 198,
+        "Duration": 8,
+        "Resource": "包装台",
+        "Product": "橡木书柜",
+        "Part ID": 5002,
+        "Order ID": 5
+      },
+      {
+        "Task": "Part-5004",
+        "Start": 185,
+        "Finish": 200,
+        "Duration": 15,
+        "Resource": "砂光机",
+        "Product": "橡木书柜",
+        "Part ID": 5004,
+        "Order ID": 5
+      },
+      {
+        "Task": "Part-5003",
+        "Start": 185,
+        "Finish": 205,
+        "Duration": 20,
+        "Resource": "组装台",
+        "Product": "橡木书柜",
+        "Part ID": 5003,
+        "Order ID": 5
+      },
+      {
+        "Task": "Part-5007",
+        "Start": 186,
+        "Finish": 211,
+        "Duration": 25,
+        "Resource": "五轴加工中心",
+        "Product": "橡木书柜",
+        "Part ID": 5007,
+        "Order ID": 5
+      },
+      {
+        "Task": "Part-5009",
+        "Start": 199,
+        "Finish": 211,
+        "Duration": 12,
+        "Resource": "带锯机",
+        "Product": "橡木书柜",
+        "Part ID": 5009,
+        "Order ID": 5
+      },
+      {
+        "Task": "Part-5003",
+        "Start": 206,
+        "Finish": 214,
+        "Duration": 8,
+        "Resource": "包装台",
+        "Product": "橡木书柜",
+        "Part ID": 5003,
+        "Order ID": 5
+      },
+      {
+        "Task": "Part-5005",
+        "Start": 201,
+        "Finish": 216,
+        "Duration": 15,
+        "Resource": "砂光机",
+        "Product": "橡木书柜",
+        "Part ID": 5005,
+        "Order ID": 5
+      },
+      {
+        "Task": "Part-5004",
+        "Start": 201,
+        "Finish": 221,
+        "Duration": 20,
+        "Resource": "组装台",
+        "Product": "橡木书柜",
+        "Part ID": 5004,
+        "Order ID": 5
+      },
+      {
+        "Task": "Part-5008",
+        "Start": 199,
+        "Finish": 224,
+        "Duration": 25,
+        "Resource": "五轴加工中心",
+        "Product": "橡木书柜",
+        "Part ID": 5008,
+        "Order ID": 5
+      },
+      {
+        "Task": "Part-5010",
+        "Start": 212,
+        "Finish": 224,
+        "Duration": 12,
+        "Resource": "带锯机",
+        "Product": "橡木书柜",
+        "Part ID": 5010,
+        "Order ID": 5
+      },
+      {
+        "Task": "Part-5004",
+        "Start": 222,
+        "Finish": 230,
+        "Duration": 8,
+        "Resource": "包装台",
+        "Product": "橡木书柜",
+        "Part ID": 5004,
+        "Order ID": 5
+      },
+      {
+        "Task": "Part-5006",
+        "Start": 217,
+        "Finish": 232,
+        "Duration": 15,
+        "Resource": "砂光机",
+        "Product": "橡木书柜",
+        "Part ID": 5006,
+        "Order ID": 5
+      },
+      {
+        "Task": "Part-5009",
+        "Start": 212,
+        "Finish": 237,
+        "Duration": 25,
+        "Resource": "五轴加工中心",
+        "Product": "橡木书柜",
+        "Part ID": 5009,
+        "Order ID": 5
+      },
+      {
+        "Task": "Part-5005",
+        "Start": 217,
+        "Finish": 237,
+        "Duration": 20,
+        "Resource": "组装台",
+        "Product": "橡木书柜",
+        "Part ID": 5005,
+        "Order ID": 5
+      },
+      {
+        "Task": "Part-5011",
+        "Start": 225,
+        "Finish": 237,
+        "Duration": 12,
+        "Resource": "带锯机",
+        "Product": "橡木书柜",
+        "Part ID": 5011,
+        "Order ID": 5
+      },
+      {
+        "Task": "Part-0",
+        "Start": 238,
+        "Finish": 246,
+        "Duration": 8,
+        "Resource": "带锯机",
+        "Product": "黑胡桃木餐桌",
+        "Part ID": 0,
+        "Order ID": 0
+      },
+      {
+        "Task": "Part-5005",
+        "Start": 238,
+        "Finish": 246,
+        "Duration": 8,
+        "Resource": "包装台",
+        "Product": "橡木书柜",
+        "Part ID": 5005,
+        "Order ID": 5
+      },
+      {
+        "Task": "Part-5007",
+        "Start": 233,
+        "Finish": 248,
+        "Duration": 15,
+        "Resource": "砂光机",
+        "Product": "橡木书柜",
+        "Part ID": 5007,
+        "Order ID": 5
+      },
+      {
+        "Task": "Part-5010",
+        "Start": 225,
+        "Finish": 250,
+        "Duration": 25,
+        "Resource": "五轴加工中心",
+        "Product": "橡木书柜",
+        "Part ID": 5010,
+        "Order ID": 5
+      },
+      {
+        "Task": "Part-5006",
+        "Start": 233,
+        "Finish": 253,
+        "Duration": 20,
+        "Resource": "组装台",
+        "Product": "橡木书柜",
+        "Part ID": 5006,
+        "Order ID": 5
+      },
+      {
+        "Task": "Part-5006",
+        "Start": 254,
+        "Finish": 262,
+        "Duration": 8,
+        "Resource": "包装台",
+        "Product": "橡木书柜",
+        "Part ID": 5006,
+        "Order ID": 5
+      },
+      {
+        "Task": "Part-5011",
+        "Start": 238,
+        "Finish": 263,
+        "Duration": 25,
+        "Resource": "五轴加工中心",
+        "Product": "橡木书柜",
+        "Part ID": 5011,
+        "Order ID": 5
+      },
+      {
+        "Task": "Part-5008",
+        "Start": 249,
+        "Finish": 264,
+        "Duration": 15,
+        "Resource": "砂光机",
+        "Product": "橡木书柜",
+        "Part ID": 5008,
+        "Order ID": 5
+      },
+      {
+        "Task": "Part-3000",
+        "Start": 247,
+        "Finish": 265,
+        "Duration": 18,
+        "Resource": "带锯机",
+        "Product": "橡木办公桌",
+        "Part ID": 3000,
+        "Order ID": 3
+      },
+      {
+        "Task": "Part-5007",
+        "Start": 249,
+        "Finish": 269,
+        "Duration": 20,
+        "Resource": "组装台",
+        "Product": "橡木书柜",
+        "Part ID": 5007,
+        "Order ID": 5
+      },
+      {
+        "Task": "Part-0",
+        "Start": 251,
+        "Finish": 271,
+        "Duration": 20,
+        "Resource": "五轴加工中心",
+        "Product": "黑胡桃木餐桌",
+        "Part ID": 0,
+        "Order ID": 0
+      },
+      {
+        "Task": "Part-5007",
+        "Start": 270,
+        "Finish": 278,
+        "Duration": 8,
+        "Resource": "包装台",
+        "Product": "橡木书柜",
+        "Part ID": 5007,
+        "Order ID": 5
+      },
+      {
+        "Task": "Part-5009",
+        "Start": 265,
+        "Finish": 280,
+        "Duration": 15,
+        "Resource": "砂光机",
+        "Product": "橡木书柜",
+        "Part ID": 5009,
+        "Order ID": 5
+      },
+      {
+        "Task": "Part-3001",
+        "Start": 266,
+        "Finish": 284,
+        "Duration": 18,
+        "Resource": "带锯机",
+        "Product": "橡木办公桌",
+        "Part ID": 3001,
+        "Order ID": 3
+      },
+      {
+        "Task": "Part-5008",
+        "Start": 265,
+        "Finish": 285,
+        "Duration": 20,
+        "Resource": "组装台",
+        "Product": "橡木书柜",
+        "Part ID": 5008,
+        "Order ID": 5
+      },
+      {
+        "Task": "Part-3000",
+        "Start": 266,
+        "Finish": 286,
+        "Duration": 20,
+        "Resource": "五轴加工中心",
+        "Product": "橡木办公桌",
+        "Part ID": 3000,
+        "Order ID": 3
+      },
+      {
+        "Task": "Part-0",
+        "Start": 281,
+        "Finish": 291,
+        "Duration": 10,
+        "Resource": "砂光机",
+        "Product": "黑胡桃木餐桌",
+        "Part ID": 0,
+        "Order ID": 0
+      },
+      {
+        "Task": "Part-5008",
+        "Start": 286,
+        "Finish": 294,
+        "Duration": 8,
+        "Resource": "包装台",
+        "Product": "橡木书柜",
+        "Part ID": 5008,
+        "Order ID": 5
+      },
+      {
+        "Task": "Part-5009",
+        "Start": 281,
+        "Finish": 301,
+        "Duration": 20,
+        "Resource": "组装台",
+        "Product": "橡木书柜",
+        "Part ID": 5009,
+        "Order ID": 5
+      },
+      {
+        "Task": "Part-3002",
+        "Start": 285,
+        "Finish": 303,
+        "Duration": 18,
+        "Resource": "带锯机",
         "Product": "橡木办公桌",
         "Part ID": 3002,
         "Order ID": 3
       },
       {
         "Task": "Part-3001",
-        "Start": 111,
-        "Finish": 116,
+        "Start": 285,
+        "Finish": 305,
+        "Duration": 20,
+        "Resource": "五轴加工中心",
+        "Product": "橡木办公桌",
+        "Part ID": 3001,
+        "Order ID": 3
+      },
+      {
+        "Task": "Part-5010",
+        "Start": 292,
+        "Finish": 307,
+        "Duration": 15,
+        "Resource": "砂光机",
+        "Product": "橡木书柜",
+        "Part ID": 5010,
+        "Order ID": 5
+      },
+      {
+        "Task": "Part-0",
+        "Start": 292,
+        "Finish": 307,
+        "Duration": 15,
+        "Resource": "组装台",
+        "Product": "黑胡桃木餐桌",
+        "Part ID": 0,
+        "Order ID": 0
+      },
+      {
+        "Task": "Part-5009",
+        "Start": 302,
+        "Finish": 310,
+        "Duration": 8,
+        "Resource": "包装台",
+        "Product": "橡木书柜",
+        "Part ID": 5009,
+        "Order ID": 5
+      },
+      {
+        "Task": "Part-0",
+        "Start": 308,
+        "Finish": 313,
+        "Duration": 5,
+        "Resource": "包装台",
+        "Product": "黑胡桃木餐桌",
+        "Part ID": 0,
+        "Order ID": 0
+      },
+      {
+        "Task": "Part-3003",
+        "Start": 304,
+        "Finish": 322,
+        "Duration": 18,
+        "Resource": "带锯机",
+        "Product": "橡木办公桌",
+        "Part ID": 3003,
+        "Order ID": 3
+      },
+      {
+        "Task": "Part-5011",
+        "Start": 308,
+        "Finish": 323,
+        "Duration": 15,
+        "Resource": "砂光机",
+        "Product": "橡木书柜",
+        "Part ID": 5011,
+        "Order ID": 5
+      },
+      {
+        "Task": "Part-3002",
+        "Start": 304,
+        "Finish": 324,
+        "Duration": 20,
+        "Resource": "五轴加工中心",
+        "Product": "橡木办公桌",
+        "Part ID": 3002,
+        "Order ID": 3
+      },
+      {
+        "Task": "Part-5010",
+        "Start": 308,
+        "Finish": 328,
+        "Duration": 20,
+        "Resource": "组装台",
+        "Product": "橡木书柜",
+        "Part ID": 5010,
+        "Order ID": 5
+      },
+      {
+        "Task": "Part-3000",
+        "Start": 324,
+        "Finish": 334,
+        "Duration": 10,
+        "Resource": "砂光机",
+        "Product": "橡木办公桌",
+        "Part ID": 3000,
+        "Order ID": 3
+      },
+      {
+        "Task": "Part-5010",
+        "Start": 329,
+        "Finish": 337,
+        "Duration": 8,
+        "Resource": "包装台",
+        "Product": "橡木书柜",
+        "Part ID": 5010,
+        "Order ID": 5
+      },
+      {
+        "Task": "Part-7000",
+        "Start": 323,
+        "Finish": 341,
+        "Duration": 18,
+        "Resource": "带锯机",
+        "Product": "橡木办公桌",
+        "Part ID": 7000,
+        "Order ID": 7
+      },
+      {
+        "Task": "Part-3003",
+        "Start": 323,
+        "Finish": 343,
+        "Duration": 20,
+        "Resource": "五轴加工中心",
+        "Product": "橡木办公桌",
+        "Part ID": 3003,
+        "Order ID": 3
+      },
+      {
+        "Task": "Part-5011",
+        "Start": 324,
+        "Finish": 344,
+        "Duration": 20,
+        "Resource": "组装台",
+        "Product": "橡木书柜",
+        "Part ID": 5011,
+        "Order ID": 5
+      },
+      {
+        "Task": "Part-3001",
+        "Start": 335,
+        "Finish": 345,
+        "Duration": 10,
+        "Resource": "砂光机",
+        "Product": "橡木办公桌",
+        "Part ID": 3001,
+        "Order ID": 3
+      },
+      {
+        "Task": "Part-3000",
+        "Start": 335,
+        "Finish": 350,
+        "Duration": 15,
+        "Resource": "组装台",
+        "Product": "橡木办公桌",
+        "Part ID": 3000,
+        "Order ID": 3
+      },
+      {
+        "Task": "Part-5011",
+        "Start": 345,
+        "Finish": 353,
+        "Duration": 8,
+        "Resource": "包装台",
+        "Product": "橡木书柜",
+        "Part ID": 5011,
+        "Order ID": 5
+      },
+      {
+        "Task": "Part-3002",
+        "Start": 346,
+        "Finish": 356,
+        "Duration": 10,
+        "Resource": "砂光机",
+        "Product": "橡木办公桌",
+        "Part ID": 3002,
+        "Order ID": 3
+      },
+      {
+        "Task": "Part-3000",
+        "Start": 351,
+        "Finish": 356,
+        "Duration": 5,
+        "Resource": "包装台",
+        "Product": "橡木办公桌",
+        "Part ID": 3000,
+        "Order ID": 3
+      },
+      {
+        "Task": "Part-7001",
+        "Start": 342,
+        "Finish": 360,
+        "Duration": 18,
+        "Resource": "带锯机",
+        "Product": "橡木办公桌",
+        "Part ID": 7001,
+        "Order ID": 7
+      },
+      {
+        "Task": "Part-3001",
+        "Start": 346,
+        "Finish": 361,
+        "Duration": 15,
+        "Resource": "组装台",
+        "Product": "橡木办公桌",
+        "Part ID": 3001,
+        "Order ID": 3
+      },
+      {
+        "Task": "Part-7000",
+        "Start": 342,
+        "Finish": 362,
+        "Duration": 20,
+        "Resource": "五轴加工中心",
+        "Product": "橡木办公桌",
+        "Part ID": 7000,
+        "Order ID": 7
+      },
+      {
+        "Task": "Part-3003",
+        "Start": 357,
+        "Finish": 367,
+        "Duration": 10,
+        "Resource": "砂光机",
+        "Product": "橡木办公桌",
+        "Part ID": 3003,
+        "Order ID": 3
+      },
+      {
+        "Task": "Part-3001",
+        "Start": 362,
+        "Finish": 367,
         "Duration": 5,
         "Resource": "包装台",
         "Product": "橡木办公桌",
@@ -323,3218 +1051,1318 @@
         "Order ID": 3
       },
       {
-        "Task": "Part-3004",
-        "Start": 101,
-        "Finish": 119,
-        "Duration": 18,
-        "Resource": "带锯机",
-        "Product": "橡木办公桌",
-        "Part ID": 3004,
-        "Order ID": 3
-      },
-      {
-        "Task": "Part-3003",
-        "Start": 101,
-        "Finish": 121,
-        "Duration": 20,
-        "Resource": "五轴加工中心",
-        "Product": "橡木办公桌",
-        "Part ID": 3003,
-        "Order ID": 3
-      },
-      {
         "Task": "Part-3002",
-        "Start": 114,
-        "Finish": 129,
-        "Duration": 15,
-        "Resource": "组装台",
-        "Product": "橡木办公桌",
-        "Part ID": 3002,
-        "Order ID": 3
-      },
-      {
-        "Task": "Part-3003",
-        "Start": 122,
-        "Finish": 132,
-        "Duration": 10,
-        "Resource": "砂光机",
-        "Product": "橡木办公桌",
-        "Part ID": 3003,
-        "Order ID": 3
-      },
-      {
-        "Task": "Part-3002",
-        "Start": 130,
-        "Finish": 135,
-        "Duration": 5,
-        "Resource": "包装台",
-        "Product": "橡木办公桌",
-        "Part ID": 3002,
-        "Order ID": 3
-      },
-      {
-        "Task": "Part-3005",
-        "Start": 120,
-        "Finish": 138,
-        "Duration": 18,
-        "Resource": "带锯机",
-        "Product": "橡木办公桌",
-        "Part ID": 3005,
-        "Order ID": 3
-      },
-      {
-        "Task": "Part-3004",
-        "Start": 120,
-        "Finish": 140,
-        "Duration": 20,
-        "Resource": "五轴加工中心",
-        "Product": "橡木办公桌",
-        "Part ID": 3004,
-        "Order ID": 3
-      },
-      {
-        "Task": "Part-3003",
-        "Start": 133,
-        "Finish": 148,
-        "Duration": 15,
-        "Resource": "组装台",
-        "Product": "橡木办公桌",
-        "Part ID": 3003,
-        "Order ID": 3
-      },
-      {
-        "Task": "Part-3004",
-        "Start": 141,
-        "Finish": 151,
-        "Duration": 10,
-        "Resource": "砂光机",
-        "Product": "橡木办公桌",
-        "Part ID": 3004,
-        "Order ID": 3
-      },
-      {
-        "Task": "Part-3003",
-        "Start": 149,
-        "Finish": 154,
-        "Duration": 5,
-        "Resource": "包装台",
-        "Product": "橡木办公桌",
-        "Part ID": 3003,
-        "Order ID": 3
-      },
-      {
-        "Task": "Part-3006",
-        "Start": 139,
-        "Finish": 157,
-        "Duration": 18,
-        "Resource": "带锯机",
-        "Product": "橡木办公桌",
-        "Part ID": 3006,
-        "Order ID": 3
-      },
-      {
-        "Task": "Part-3005",
-        "Start": 139,
-        "Finish": 159,
-        "Duration": 20,
-        "Resource": "五轴加工中心",
-        "Product": "橡木办公桌",
-        "Part ID": 3005,
-        "Order ID": 3
-      },
-      {
-        "Task": "Part-1",
-        "Start": 158,
-        "Finish": 164,
-        "Duration": 6,
-        "Resource": "带锯机",
-        "Product": "樱桃木椅子",
-        "Part ID": 1,
-        "Order ID": 0
-      },
-      {
-        "Task": "Part-3004",
-        "Start": 152,
-        "Finish": 167,
-        "Duration": 15,
-        "Resource": "组装台",
-        "Product": "橡木办公桌",
-        "Part ID": 3004,
-        "Order ID": 3
-      },
-      {
-        "Task": "Part-3005",
-        "Start": 160,
-        "Finish": 170,
-        "Duration": 10,
-        "Resource": "砂光机",
-        "Product": "橡木办公桌",
-        "Part ID": 3005,
-        "Order ID": 3
-      },
-      {
-        "Task": "Part-3",
-        "Start": 165,
-        "Finish": 171,
-        "Duration": 6,
-        "Resource": "带锯机",
-        "Product": "樱桃木椅子",
-        "Part ID": 3,
-        "Order ID": 0
-      },
-      {
-        "Task": "Part-3004",
-        "Start": 168,
-        "Finish": 173,
-        "Duration": 5,
-        "Resource": "包装台",
-        "Product": "橡木办公桌",
-        "Part ID": 3004,
-        "Order ID": 3
-      },
-      {
-        "Task": "Part-1",
-        "Start": 165,
-        "Finish": 177,
-        "Duration": 12,
-        "Resource": "五轴加工中心",
-        "Product": "樱桃木椅子",
-        "Part ID": 1,
-        "Order ID": 0
-      },
-      {
-        "Task": "Part-3006",
-        "Start": 158,
-        "Finish": 178,
-        "Duration": 20,
-        "Resource": "五轴加工中心",
-        "Product": "橡木办公桌",
-        "Part ID": 3006,
-        "Order ID": 3
-      },
-      {
-        "Task": "Part-3005",
-        "Start": 171,
-        "Finish": 186,
-        "Duration": 15,
-        "Resource": "组装台",
-        "Product": "橡木办公桌",
-        "Part ID": 3005,
-        "Order ID": 3
-      },
-      {
-        "Task": "Part-1",
-        "Start": 178,
-        "Finish": 186,
-        "Duration": 8,
-        "Resource": "砂光机",
-        "Product": "樱桃木椅子",
-        "Part ID": 1,
-        "Order ID": 0
-      },
-      {
-        "Task": "Part-3007",
-        "Start": 172,
-        "Finish": 190,
-        "Duration": 18,
-        "Resource": "带锯机",
-        "Product": "橡木办公桌",
-        "Part ID": 3007,
-        "Order ID": 3
-      },
-      {
-        "Task": "Part-3",
-        "Start": 178,
-        "Finish": 190,
-        "Duration": 12,
-        "Resource": "五轴加工中心",
-        "Product": "樱桃木椅子",
-        "Part ID": 3,
-        "Order ID": 0
-      },
-      {
-        "Task": "Part-3005",
-        "Start": 187,
-        "Finish": 192,
-        "Duration": 5,
-        "Resource": "包装台",
-        "Product": "橡木办公桌",
-        "Part ID": 3005,
-        "Order ID": 3
-      },
-      {
-        "Task": "Part-3006",
-        "Start": 187,
-        "Finish": 197,
-        "Duration": 10,
-        "Resource": "砂光机",
-        "Product": "橡木办公桌",
-        "Part ID": 3006,
-        "Order ID": 3
-      },
-      {
-        "Task": "Part-1",
-        "Start": 187,
-        "Finish": 197,
-        "Duration": 10,
-        "Resource": "组装台",
-        "Product": "樱桃木椅子",
-        "Part ID": 1,
-        "Order ID": 0
-      },
-      {
-        "Task": "Part-4",
-        "Start": 191,
-        "Finish": 197,
-        "Duration": 6,
-        "Resource": "带锯机",
-        "Product": "樱桃木椅子",
-        "Part ID": 4,
-        "Order ID": 0
-      },
-      {
-        "Task": "Part-1",
-        "Start": 198,
-        "Finish": 202,
-        "Duration": 4,
-        "Resource": "包装台",
-        "Product": "樱桃木椅子",
-        "Part ID": 1,
-        "Order ID": 0
-      },
-      {
-        "Task": "Part-3",
-        "Start": 198,
-        "Finish": 206,
-        "Duration": 8,
-        "Resource": "砂光机",
-        "Product": "樱桃木椅子",
-        "Part ID": 3,
-        "Order ID": 0
-      },
-      {
-        "Task": "Part-4",
-        "Start": 198,
-        "Finish": 210,
-        "Duration": 12,
-        "Resource": "五轴加工中心",
-        "Product": "樱桃木椅子",
-        "Part ID": 4,
-        "Order ID": 0
-      },
-      {
-        "Task": "Part-3007",
-        "Start": 191,
-        "Finish": 211,
-        "Duration": 20,
-        "Resource": "五轴加工中心",
-        "Product": "橡木办公桌",
-        "Part ID": 3007,
-        "Order ID": 3
-      },
-      {
-        "Task": "Part-3006",
-        "Start": 198,
-        "Finish": 213,
-        "Duration": 15,
-        "Resource": "组装台",
-        "Product": "橡木办公桌",
-        "Part ID": 3006,
-        "Order ID": 3
-      },
-      {
-        "Task": "Part-3008",
-        "Start": 198,
-        "Finish": 216,
-        "Duration": 18,
-        "Resource": "带锯机",
-        "Product": "橡木办公桌",
-        "Part ID": 3008,
-        "Order ID": 3
-      },
-      {
-        "Task": "Part-3",
-        "Start": 207,
-        "Finish": 217,
-        "Duration": 10,
-        "Resource": "组装台",
-        "Product": "樱桃木椅子",
-        "Part ID": 3,
-        "Order ID": 0
-      },
-      {
-        "Task": "Part-4",
-        "Start": 211,
-        "Finish": 219,
-        "Duration": 8,
-        "Resource": "砂光机",
-        "Product": "樱桃木椅子",
-        "Part ID": 4,
-        "Order ID": 0
-      },
-      {
-        "Task": "Part-3006",
-        "Start": 214,
-        "Finish": 219,
-        "Duration": 5,
-        "Resource": "包装台",
-        "Product": "橡木办公桌",
-        "Part ID": 3006,
-        "Order ID": 3
-      },
-      {
-        "Task": "Part-3",
-        "Start": 218,
-        "Finish": 222,
-        "Duration": 4,
-        "Resource": "包装台",
-        "Product": "樱桃木椅子",
-        "Part ID": 3,
-        "Order ID": 0
-      },
-      {
-        "Task": "Part-6",
-        "Start": 217,
-        "Finish": 223,
-        "Duration": 6,
-        "Resource": "带锯机",
-        "Product": "樱桃木椅子",
-        "Part ID": 6,
-        "Order ID": 0
-      },
-      {
-        "Task": "Part-3007",
-        "Start": 220,
-        "Finish": 230,
-        "Duration": 10,
-        "Resource": "砂光机",
-        "Product": "橡木办公桌",
-        "Part ID": 3007,
-        "Order ID": 3
-      },
-      {
-        "Task": "Part-4",
-        "Start": 220,
-        "Finish": 230,
-        "Duration": 10,
-        "Resource": "组装台",
-        "Product": "樱桃木椅子",
-        "Part ID": 4,
-        "Order ID": 0
-      },
-      {
-        "Task": "Part-0",
-        "Start": 224,
-        "Finish": 230,
-        "Duration": 6,
-        "Resource": "带锯机",
-        "Product": "樱桃木椅子",
-        "Part ID": 0,
-        "Order ID": 0
-      },
-      {
-        "Task": "Part-4",
-        "Start": 231,
-        "Finish": 235,
-        "Duration": 4,
-        "Resource": "包装台",
-        "Product": "樱桃木椅子",
-        "Part ID": 4,
-        "Order ID": 0
-      },
-      {
-        "Task": "Part-6",
-        "Start": 224,
-        "Finish": 236,
-        "Duration": 12,
-        "Resource": "五轴加工中心",
-        "Product": "樱桃木椅子",
-        "Part ID": 6,
-        "Order ID": 0
-      },
-      {
-        "Task": "Part-3008",
-        "Start": 217,
-        "Finish": 237,
-        "Duration": 20,
-        "Resource": "五轴加工中心",
-        "Product": "橡木办公桌",
-        "Part ID": 3008,
-        "Order ID": 3
-      },
-      {
-        "Task": "Part-8",
-        "Start": 231,
-        "Finish": 237,
-        "Duration": 6,
-        "Resource": "带锯机",
-        "Product": "樱桃木椅子",
-        "Part ID": 8,
-        "Order ID": 0
-      },
-      {
-        "Task": "Part-4002",
-        "Start": 238,
-        "Finish": 244,
-        "Duration": 6,
-        "Resource": "带锯机",
-        "Product": "樱桃木椅子",
-        "Part ID": 4002,
-        "Order ID": 4
-      },
-      {
-        "Task": "Part-6",
-        "Start": 237,
-        "Finish": 245,
-        "Duration": 8,
-        "Resource": "砂光机",
-        "Product": "樱桃木椅子",
-        "Part ID": 6,
-        "Order ID": 0
-      },
-      {
-        "Task": "Part-3007",
-        "Start": 231,
-        "Finish": 246,
-        "Duration": 15,
-        "Resource": "组装台",
-        "Product": "橡木办公桌",
-        "Part ID": 3007,
-        "Order ID": 3
-      },
-      {
-        "Task": "Part-0",
-        "Start": 237,
-        "Finish": 249,
-        "Duration": 12,
-        "Resource": "五轴加工中心",
-        "Product": "樱桃木椅子",
-        "Part ID": 0,
-        "Order ID": 0
-      },
-      {
-        "Task": "Part-8",
-        "Start": 238,
-        "Finish": 250,
-        "Duration": 12,
-        "Resource": "五轴加工中心",
-        "Product": "樱桃木椅子",
-        "Part ID": 8,
-        "Order ID": 0
-      },
-      {
-        "Task": "Part-2",
-        "Start": 245,
-        "Finish": 251,
-        "Duration": 6,
-        "Resource": "带锯机",
-        "Product": "樱桃木椅子",
-        "Part ID": 2,
-        "Order ID": 0
-      },
-      {
-        "Task": "Part-3007",
-        "Start": 247,
-        "Finish": 252,
-        "Duration": 5,
-        "Resource": "包装台",
-        "Product": "橡木办公桌",
-        "Part ID": 3007,
-        "Order ID": 3
-      },
-      {
-        "Task": "Part-3008",
-        "Start": 246,
-        "Finish": 256,
-        "Duration": 10,
-        "Resource": "砂光机",
-        "Product": "橡木办公桌",
-        "Part ID": 3008,
-        "Order ID": 3
-      },
-      {
-        "Task": "Part-6",
-        "Start": 246,
-        "Finish": 256,
-        "Duration": 10,
-        "Resource": "组装台",
-        "Product": "樱桃木椅子",
-        "Part ID": 6,
-        "Order ID": 0
-      },
-      {
-        "Task": "Part-4003",
-        "Start": 252,
-        "Finish": 258,
-        "Duration": 6,
-        "Resource": "带锯机",
-        "Product": "樱桃木椅子",
-        "Part ID": 4003,
-        "Order ID": 4
-      },
-      {
-        "Task": "Part-6",
-        "Start": 257,
-        "Finish": 261,
-        "Duration": 4,
-        "Resource": "包装台",
-        "Product": "樱桃木椅子",
-        "Part ID": 6,
-        "Order ID": 0
-      },
-      {
-        "Task": "Part-4002",
-        "Start": 250,
-        "Finish": 262,
-        "Duration": 12,
-        "Resource": "五轴加工中心",
-        "Product": "樱桃木椅子",
-        "Part ID": 4002,
-        "Order ID": 4
-      },
-      {
-        "Task": "Part-2",
-        "Start": 252,
-        "Finish": 264,
-        "Duration": 12,
-        "Resource": "五轴加工中心",
-        "Product": "樱桃木椅子",
-        "Part ID": 2,
-        "Order ID": 0
-      },
-      {
-        "Task": "Part-0",
-        "Start": 257,
-        "Finish": 265,
-        "Duration": 8,
-        "Resource": "砂光机",
-        "Product": "樱桃木椅子",
-        "Part ID": 0,
-        "Order ID": 0
-      },
-      {
-        "Task": "Part-4004",
-        "Start": 259,
-        "Finish": 265,
-        "Duration": 6,
-        "Resource": "带锯机",
-        "Product": "樱桃木椅子",
-        "Part ID": 4004,
-        "Order ID": 4
-      },
-      {
-        "Task": "Part-3008",
-        "Start": 257,
-        "Finish": 272,
-        "Duration": 15,
-        "Resource": "组装台",
-        "Product": "橡木办公桌",
-        "Part ID": 3008,
-        "Order ID": 3
-      },
-      {
-        "Task": "Part-5",
-        "Start": 266,
-        "Finish": 272,
-        "Duration": 6,
-        "Resource": "带锯机",
-        "Product": "樱桃木椅子",
-        "Part ID": 5,
-        "Order ID": 0
-      },
-      {
-        "Task": "Part-2",
-        "Start": 266,
-        "Finish": 274,
-        "Duration": 8,
-        "Resource": "砂光机",
-        "Product": "樱桃木椅子",
-        "Part ID": 2,
-        "Order ID": 0
-      },
-      {
-        "Task": "Part-4003",
-        "Start": 263,
-        "Finish": 275,
-        "Duration": 12,
-        "Resource": "五轴加工中心",
-        "Product": "樱桃木椅子",
-        "Part ID": 4003,
-        "Order ID": 4
-      },
-      {
-        "Task": "Part-0",
-        "Start": 266,
-        "Finish": 276,
-        "Duration": 10,
-        "Resource": "组装台",
-        "Product": "樱桃木椅子",
-        "Part ID": 0,
-        "Order ID": 0
-      },
-      {
-        "Task": "Part-4004",
-        "Start": 266,
-        "Finish": 278,
-        "Duration": 12,
-        "Resource": "五轴加工中心",
-        "Product": "樱桃木椅子",
-        "Part ID": 4004,
-        "Order ID": 4
-      },
-      {
-        "Task": "Part-3008",
-        "Start": 273,
-        "Finish": 278,
-        "Duration": 5,
-        "Resource": "包装台",
-        "Product": "橡木办公桌",
-        "Part ID": 3008,
-        "Order ID": 3
-      },
-      {
-        "Task": "Part-4005",
-        "Start": 273,
-        "Finish": 279,
-        "Duration": 6,
-        "Resource": "带锯机",
-        "Product": "樱桃木椅子",
-        "Part ID": 4005,
-        "Order ID": 4
-      },
-      {
-        "Task": "Part-0",
-        "Start": 277,
-        "Finish": 281,
-        "Duration": 4,
-        "Resource": "包装台",
-        "Product": "樱桃木椅子",
-        "Part ID": 0,
-        "Order ID": 0
-      },
-      {
-        "Task": "Part-8",
-        "Start": 275,
-        "Finish": 283,
-        "Duration": 8,
-        "Resource": "砂光机",
-        "Product": "樱桃木椅子",
-        "Part ID": 8,
-        "Order ID": 0
-      },
-      {
-        "Task": "Part-2",
-        "Start": 275,
-        "Finish": 285,
-        "Duration": 10,
-        "Resource": "组装台",
-        "Product": "樱桃木椅子",
-        "Part ID": 2,
-        "Order ID": 0
-      },
-      {
-        "Task": "Part-7",
-        "Start": 280,
-        "Finish": 286,
-        "Duration": 6,
-        "Resource": "带锯机",
-        "Product": "樱桃木椅子",
-        "Part ID": 7,
-        "Order ID": 0
-      },
-      {
-        "Task": "Part-5",
-        "Start": 276,
-        "Finish": 288,
-        "Duration": 12,
-        "Resource": "五轴加工中心",
-        "Product": "樱桃木椅子",
-        "Part ID": 5,
-        "Order ID": 0
-      },
-      {
-        "Task": "Part-2",
-        "Start": 286,
-        "Finish": 290,
-        "Duration": 4,
-        "Resource": "包装台",
-        "Product": "樱桃木椅子",
-        "Part ID": 2,
-        "Order ID": 0
-      },
-      {
-        "Task": "Part-4005",
-        "Start": 280,
-        "Finish": 292,
-        "Duration": 12,
-        "Resource": "五轴加工中心",
-        "Product": "樱桃木椅子",
-        "Part ID": 4005,
-        "Order ID": 4
-      },
-      {
-        "Task": "Part-4002",
-        "Start": 284,
-        "Finish": 292,
-        "Duration": 8,
-        "Resource": "砂光机",
-        "Product": "樱桃木椅子",
-        "Part ID": 4002,
-        "Order ID": 4
-      },
-      {
-        "Task": "Part-8",
-        "Start": 284,
-        "Finish": 294,
-        "Duration": 10,
-        "Resource": "组装台",
-        "Product": "樱桃木椅子",
-        "Part ID": 8,
-        "Order ID": 0
-      },
-      {
-        "Task": "Part-5000",
-        "Start": 287,
-        "Finish": 297,
-        "Duration": 10,
-        "Resource": "带锯机",
-        "Product": "松木床架",
-        "Part ID": 5000,
-        "Order ID": 5
-      },
-      {
-        "Task": "Part-8",
-        "Start": 295,
-        "Finish": 299,
-        "Duration": 4,
-        "Resource": "包装台",
-        "Product": "樱桃木椅子",
-        "Part ID": 8,
-        "Order ID": 0
-      },
-      {
-        "Task": "Part-7",
-        "Start": 289,
-        "Finish": 301,
-        "Duration": 12,
-        "Resource": "五轴加工中心",
-        "Product": "樱桃木椅子",
-        "Part ID": 7,
-        "Order ID": 0
-      },
-      {
-        "Task": "Part-5",
-        "Start": 293,
-        "Finish": 301,
-        "Duration": 8,
-        "Resource": "砂光机",
-        "Product": "樱桃木椅子",
-        "Part ID": 5,
-        "Order ID": 0
-      },
-      {
-        "Task": "Part-4002",
-        "Start": 293,
-        "Finish": 303,
-        "Duration": 10,
-        "Resource": "组装台",
-        "Product": "樱桃木椅子",
-        "Part ID": 4002,
-        "Order ID": 4
-      },
-      {
-        "Task": "Part-4006",
-        "Start": 298,
-        "Finish": 304,
-        "Duration": 6,
-        "Resource": "带锯机",
-        "Product": "樱桃木椅子",
-        "Part ID": 4006,
-        "Order ID": 4
-      },
-      {
-        "Task": "Part-4002",
-        "Start": 304,
-        "Finish": 308,
-        "Duration": 4,
-        "Resource": "包装台",
-        "Product": "樱桃木椅子",
-        "Part ID": 4002,
-        "Order ID": 4
-      },
-      {
-        "Task": "Part-5",
-        "Start": 302,
-        "Finish": 312,
-        "Duration": 10,
-        "Resource": "组装台",
-        "Product": "樱桃木椅子",
-        "Part ID": 5,
-        "Order ID": 0
-      },
-      {
-        "Task": "Part-5000",
-        "Start": 302,
-        "Finish": 314,
-        "Duration": 12,
-        "Resource": "砂光机",
-        "Product": "松木床架",
-        "Part ID": 5000,
-        "Order ID": 5
-      },
-      {
-        "Task": "Part-5001",
-        "Start": 305,
-        "Finish": 315,
-        "Duration": 10,
-        "Resource": "带锯机",
-        "Product": "松木床架",
-        "Part ID": 5001,
-        "Order ID": 5
-      },
-      {
-        "Task": "Part-4006",
-        "Start": 305,
-        "Finish": 317,
-        "Duration": 12,
-        "Resource": "五轴加工中心",
-        "Product": "樱桃木椅子",
-        "Part ID": 4006,
-        "Order ID": 4
-      },
-      {
-        "Task": "Part-5",
-        "Start": 313,
-        "Finish": 317,
-        "Duration": 4,
-        "Resource": "包装台",
-        "Product": "樱桃木椅子",
-        "Part ID": 5,
-        "Order ID": 0
-      },
-      {
-        "Task": "Part-7",
-        "Start": 315,
-        "Finish": 323,
-        "Duration": 8,
-        "Resource": "砂光机",
-        "Product": "樱桃木椅子",
-        "Part ID": 7,
-        "Order ID": 0
-      },
-      {
-        "Task": "Part-5002",
-        "Start": 316,
-        "Finish": 326,
-        "Duration": 10,
-        "Resource": "带锯机",
-        "Product": "松木床架",
-        "Part ID": 5002,
-        "Order ID": 5
-      },
-      {
-        "Task": "Part-5000",
-        "Start": 315,
-        "Finish": 330,
-        "Duration": 15,
-        "Resource": "组装台",
-        "Product": "松木床架",
-        "Part ID": 5000,
-        "Order ID": 5
-      },
-      {
-        "Task": "Part-7",
-        "Start": 324,
-        "Finish": 334,
-        "Duration": 10,
-        "Resource": "组装台",
-        "Product": "樱桃木椅子",
-        "Part ID": 7,
-        "Order ID": 0
-      },
-      {
-        "Task": "Part-5001",
-        "Start": 324,
-        "Finish": 336,
-        "Duration": 12,
-        "Resource": "砂光机",
-        "Product": "松木床架",
-        "Part ID": 5001,
-        "Order ID": 5
-      },
-      {
-        "Task": "Part-5003",
-        "Start": 327,
-        "Finish": 337,
-        "Duration": 10,
-        "Resource": "带锯机",
-        "Product": "松木床架",
-        "Part ID": 5003,
-        "Order ID": 5
-      },
-      {
-        "Task": "Part-5000",
-        "Start": 331,
-        "Finish": 337,
-        "Duration": 6,
-        "Resource": "包装台",
-        "Product": "松木床架",
-        "Part ID": 5000,
-        "Order ID": 5
-      },
-      {
-        "Task": "Part-7",
-        "Start": 335,
-        "Finish": 339,
-        "Duration": 4,
-        "Resource": "包装台",
-        "Product": "樱桃木椅子",
-        "Part ID": 7,
-        "Order ID": 0
-      },
-      {
-        "Task": "Part-5004",
-        "Start": 338,
-        "Finish": 348,
-        "Duration": 10,
-        "Resource": "带锯机",
-        "Product": "松木床架",
-        "Part ID": 5004,
-        "Order ID": 5
-      },
-      {
-        "Task": "Part-5002",
-        "Start": 337,
-        "Finish": 349,
-        "Duration": 12,
-        "Resource": "砂光机",
-        "Product": "松木床架",
-        "Part ID": 5002,
-        "Order ID": 5
-      },
-      {
-        "Task": "Part-5001",
-        "Start": 337,
-        "Finish": 352,
-        "Duration": 15,
-        "Resource": "组装台",
-        "Product": "松木床架",
-        "Part ID": 5001,
-        "Order ID": 5
-      },
-      {
-        "Task": "Part-5005",
-        "Start": 349,
-        "Finish": 359,
-        "Duration": 10,
-        "Resource": "带锯机",
-        "Product": "松木床架",
-        "Part ID": 5005,
-        "Order ID": 5
-      },
-      {
-        "Task": "Part-5001",
-        "Start": 353,
-        "Finish": 359,
-        "Duration": 6,
-        "Resource": "包装台",
-        "Product": "松木床架",
-        "Part ID": 5001,
-        "Order ID": 5
-      },
-      {
-        "Task": "Part-5003",
-        "Start": 350,
-        "Finish": 362,
-        "Duration": 12,
-        "Resource": "砂光机",
-        "Product": "松木床架",
-        "Part ID": 5003,
-        "Order ID": 5
-      },
-      {
-        "Task": "Part-5002",
-        "Start": 350,
-        "Finish": 365,
-        "Duration": 15,
-        "Resource": "组装台",
-        "Product": "松木床架",
-        "Part ID": 5002,
-        "Order ID": 5
-      },
-      {
-        "Task": "Part-4009",
-        "Start": 360,
-        "Finish": 366,
-        "Duration": 6,
-        "Resource": "带锯机",
-        "Product": "樱桃木椅子",
-        "Part ID": 4009,
-        "Order ID": 4
-      },
-      {
-        "Task": "Part-5002",
-        "Start": 366,
+        "Start": 357,
         "Finish": 372,
-        "Duration": 6,
-        "Resource": "包装台",
-        "Product": "松木床架",
-        "Part ID": 5002,
-        "Order ID": 5
+        "Duration": 15,
+        "Resource": "组装台",
+        "Product": "橡木办公桌",
+        "Part ID": 3002,
+        "Order ID": 3
       },
       {
-        "Task": "Part-5004",
-        "Start": 363,
-        "Finish": 375,
-        "Duration": 12,
-        "Resource": "砂光机",
-        "Product": "松木床架",
-        "Part ID": 5004,
-        "Order ID": 5
-      },
-      {
-        "Task": "Part-5006",
-        "Start": 367,
-        "Finish": 377,
-        "Duration": 10,
-        "Resource": "带锯机",
-        "Product": "松木床架",
-        "Part ID": 5006,
-        "Order ID": 5
-      },
-      {
-        "Task": "Part-5003",
-        "Start": 363,
+        "Task": "Part-7000",
+        "Start": 368,
         "Finish": 378,
-        "Duration": 15,
-        "Resource": "组装台",
-        "Product": "松木床架",
-        "Part ID": 5003,
-        "Order ID": 5
-      },
-      {
-        "Task": "Part-4009",
-        "Start": 367,
-        "Finish": 379,
-        "Duration": 12,
-        "Resource": "五轴加工中心",
-        "Product": "樱桃木椅子",
-        "Part ID": 4009,
-        "Order ID": 4
-      },
-      {
-        "Task": "Part-4007",
-        "Start": 378,
-        "Finish": 384,
-        "Duration": 6,
-        "Resource": "带锯机",
-        "Product": "樱桃木椅子",
-        "Part ID": 4007,
-        "Order ID": 4
-      },
-      {
-        "Task": "Part-5003",
-        "Start": 379,
-        "Finish": 385,
-        "Duration": 6,
-        "Resource": "包装台",
-        "Product": "松木床架",
-        "Part ID": 5003,
-        "Order ID": 5
-      },
-      {
-        "Task": "Part-5005",
-        "Start": 376,
-        "Finish": 388,
-        "Duration": 12,
-        "Resource": "砂光机",
-        "Product": "松木床架",
-        "Part ID": 5005,
-        "Order ID": 5
-      },
-      {
-        "Task": "Part-5004",
-        "Start": 376,
-        "Finish": 391,
-        "Duration": 15,
-        "Resource": "组装台",
-        "Product": "松木床架",
-        "Part ID": 5004,
-        "Order ID": 5
-      },
-      {
-        "Task": "Part-4008",
-        "Start": 385,
-        "Finish": 391,
-        "Duration": 6,
-        "Resource": "带锯机",
-        "Product": "樱桃木椅子",
-        "Part ID": 4008,
-        "Order ID": 4
-      },
-      {
-        "Task": "Part-4007",
-        "Start": 385,
-        "Finish": 397,
-        "Duration": 12,
-        "Resource": "五轴加工中心",
-        "Product": "樱桃木椅子",
-        "Part ID": 4007,
-        "Order ID": 4
-      },
-      {
-        "Task": "Part-5004",
-        "Start": 392,
-        "Finish": 398,
-        "Duration": 6,
-        "Resource": "包装台",
-        "Product": "松木床架",
-        "Part ID": 5004,
-        "Order ID": 5
-      },
-      {
-        "Task": "Part-5006",
-        "Start": 389,
-        "Finish": 401,
-        "Duration": 12,
-        "Resource": "砂光机",
-        "Product": "松木床架",
-        "Part ID": 5006,
-        "Order ID": 5
-      },
-      {
-        "Task": "Part-5005",
-        "Start": 389,
-        "Finish": 404,
-        "Duration": 15,
-        "Resource": "组装台",
-        "Product": "松木床架",
-        "Part ID": 5005,
-        "Order ID": 5
-      },
-      {
-        "Task": "Part-4008",
-        "Start": 392,
-        "Finish": 404,
-        "Duration": 12,
-        "Resource": "五轴加工中心",
-        "Product": "樱桃木椅子",
-        "Part ID": 4008,
-        "Order ID": 4
-      },
-      {
-        "Task": "Part-6000",
-        "Start": 392,
-        "Finish": 410,
-        "Duration": 18,
-        "Resource": "带锯机",
-        "Product": "橡木办公桌",
-        "Part ID": 6000,
-        "Order ID": 6
-      },
-      {
-        "Task": "Part-4003",
-        "Start": 402,
-        "Finish": 410,
-        "Duration": 8,
-        "Resource": "砂光机",
-        "Product": "樱桃木椅子",
-        "Part ID": 4003,
-        "Order ID": 4
-      },
-      {
-        "Task": "Part-5005",
-        "Start": 405,
-        "Finish": 411,
-        "Duration": 6,
-        "Resource": "包装台",
-        "Product": "松木床架",
-        "Part ID": 5005,
-        "Order ID": 5
-      },
-      {
-        "Task": "Part-5006",
-        "Start": 402,
-        "Finish": 417,
-        "Duration": 15,
-        "Resource": "组装台",
-        "Product": "松木床架",
-        "Part ID": 5006,
-        "Order ID": 5
-      },
-      {
-        "Task": "Part-4004",
-        "Start": 411,
-        "Finish": 419,
-        "Duration": 8,
-        "Resource": "砂光机",
-        "Product": "樱桃木椅子",
-        "Part ID": 4004,
-        "Order ID": 4
-      },
-      {
-        "Task": "Part-4003",
-        "Start": 411,
-        "Finish": 421,
         "Duration": 10,
-        "Resource": "组装台",
-        "Product": "樱桃木椅子",
-        "Part ID": 4003,
-        "Order ID": 4
-      },
-      {
-        "Task": "Part-5006",
-        "Start": 418,
-        "Finish": 424,
-        "Duration": 6,
-        "Resource": "包装台",
-        "Product": "松木床架",
-        "Part ID": 5006,
-        "Order ID": 5
-      },
-      {
-        "Task": "Part-4003",
-        "Start": 422,
-        "Finish": 426,
-        "Duration": 4,
-        "Resource": "包装台",
-        "Product": "樱桃木椅子",
-        "Part ID": 4003,
-        "Order ID": 4
-      },
-      {
-        "Task": "Part-4005",
-        "Start": 420,
-        "Finish": 428,
-        "Duration": 8,
         "Resource": "砂光机",
-        "Product": "樱桃木椅子",
-        "Part ID": 4005,
-        "Order ID": 4
+        "Product": "橡木办公桌",
+        "Part ID": 7000,
+        "Order ID": 7
       },
       {
-        "Task": "Part-6001",
-        "Start": 411,
-        "Finish": 429,
+        "Task": "Part-3002",
+        "Start": 373,
+        "Finish": 378,
+        "Duration": 5,
+        "Resource": "包装台",
+        "Product": "橡木办公桌",
+        "Part ID": 3002,
+        "Order ID": 3
+      },
+      {
+        "Task": "Part-7002",
+        "Start": 361,
+        "Finish": 379,
         "Duration": 18,
         "Resource": "带锯机",
         "Product": "橡木办公桌",
-        "Part ID": 6001,
-        "Order ID": 6
+        "Part ID": 7002,
+        "Order ID": 7
       },
       {
-        "Task": "Part-4004",
+        "Task": "Part-7001",
+        "Start": 361,
+        "Finish": 381,
+        "Duration": 20,
+        "Resource": "五轴加工中心",
+        "Product": "橡木办公桌",
+        "Part ID": 7001,
+        "Order ID": 7
+      },
+      {
+        "Task": "Part-3003",
+        "Start": 368,
+        "Finish": 383,
+        "Duration": 15,
+        "Resource": "组装台",
+        "Product": "橡木办公桌",
+        "Part ID": 3003,
+        "Order ID": 3
+      },
+      {
+        "Task": "Part-3003",
+        "Start": 384,
+        "Finish": 389,
+        "Duration": 5,
+        "Resource": "包装台",
+        "Product": "橡木办公桌",
+        "Part ID": 3003,
+        "Order ID": 3
+      },
+      {
+        "Task": "Part-7001",
+        "Start": 382,
+        "Finish": 392,
+        "Duration": 10,
+        "Resource": "砂光机",
+        "Product": "橡木办公桌",
+        "Part ID": 7001,
+        "Order ID": 7
+      },
+      {
+        "Task": "Part-7000",
+        "Start": 379,
+        "Finish": 394,
+        "Duration": 15,
+        "Resource": "组装台",
+        "Product": "橡木办公桌",
+        "Part ID": 7000,
+        "Order ID": 7
+      },
+      {
+        "Task": "Part-7003",
+        "Start": 380,
+        "Finish": 398,
+        "Duration": 18,
+        "Resource": "带锯机",
+        "Product": "橡木办公桌",
+        "Part ID": 7003,
+        "Order ID": 7
+      },
+      {
+        "Task": "Part-7002",
+        "Start": 380,
+        "Finish": 400,
+        "Duration": 20,
+        "Resource": "五轴加工中心",
+        "Product": "橡木办公桌",
+        "Part ID": 7002,
+        "Order ID": 7
+      },
+      {
+        "Task": "Part-7000",
+        "Start": 395,
+        "Finish": 400,
+        "Duration": 5,
+        "Resource": "包装台",
+        "Product": "橡木办公桌",
+        "Part ID": 7000,
+        "Order ID": 7
+      },
+      {
+        "Task": "Part-7001",
+        "Start": 393,
+        "Finish": 408,
+        "Duration": 15,
+        "Resource": "组装台",
+        "Product": "橡木办公桌",
+        "Part ID": 7001,
+        "Order ID": 7
+      },
+      {
+        "Task": "Part-7002",
+        "Start": 401,
+        "Finish": 411,
+        "Duration": 10,
+        "Resource": "砂光机",
+        "Product": "橡木办公桌",
+        "Part ID": 7002,
+        "Order ID": 7
+      },
+      {
+        "Task": "Part-7001",
+        "Start": 409,
+        "Finish": 414,
+        "Duration": 5,
+        "Resource": "包装台",
+        "Product": "橡木办公桌",
+        "Part ID": 7001,
+        "Order ID": 7
+      },
+      {
+        "Task": "Part-7004",
+        "Start": 399,
+        "Finish": 417,
+        "Duration": 18,
+        "Resource": "带锯机",
+        "Product": "橡木办公桌",
+        "Part ID": 7004,
+        "Order ID": 7
+      },
+      {
+        "Task": "Part-7003",
+        "Start": 399,
+        "Finish": 419,
+        "Duration": 20,
+        "Resource": "五轴加工中心",
+        "Product": "橡木办公桌",
+        "Part ID": 7003,
+        "Order ID": 7
+      },
+      {
+        "Task": "Part-1000",
+        "Start": 418,
+        "Finish": 426,
+        "Duration": 8,
+        "Resource": "带锯机",
+        "Product": "黑胡桃木餐桌",
+        "Part ID": 1000,
+        "Order ID": 1
+      },
+      {
+        "Task": "Part-7002",
+        "Start": 412,
+        "Finish": 427,
+        "Duration": 15,
+        "Resource": "组装台",
+        "Product": "橡木办公桌",
+        "Part ID": 7002,
+        "Order ID": 7
+      },
+      {
+        "Task": "Part-7003",
         "Start": 420,
         "Finish": 430,
         "Duration": 10,
-        "Resource": "组装台",
-        "Product": "樱桃木椅子",
-        "Part ID": 4004,
-        "Order ID": 4
-      },
-      {
-        "Task": "Part-6000",
-        "Start": 411,
-        "Finish": 431,
-        "Duration": 20,
-        "Resource": "五轴加工中心",
+        "Resource": "砂光机",
         "Product": "橡木办公桌",
-        "Part ID": 6000,
-        "Order ID": 6
+        "Part ID": 7003,
+        "Order ID": 7
       },
       {
-        "Task": "Part-4004",
-        "Start": 431,
+        "Task": "Part-7002",
+        "Start": 428,
+        "Finish": 433,
+        "Duration": 5,
+        "Resource": "包装台",
+        "Product": "橡木办公桌",
+        "Part ID": 7002,
+        "Order ID": 7
+      },
+      {
+        "Task": "Part-1001",
+        "Start": 427,
         "Finish": 435,
-        "Duration": 4,
-        "Resource": "包装台",
-        "Product": "樱桃木椅子",
-        "Part ID": 4004,
-        "Order ID": 4
-      },
-      {
-        "Task": "Part-4006",
-        "Start": 429,
-        "Finish": 437,
         "Duration": 8,
-        "Resource": "砂光机",
-        "Product": "樱桃木椅子",
-        "Part ID": 4006,
-        "Order ID": 4
+        "Resource": "带锯机",
+        "Product": "黑胡桃木餐桌",
+        "Part ID": 1001,
+        "Order ID": 1
       },
       {
-        "Task": "Part-4005",
-        "Start": 429,
-        "Finish": 439,
-        "Duration": 10,
-        "Resource": "组装台",
-        "Product": "樱桃木椅子",
-        "Part ID": 4005,
-        "Order ID": 4
+        "Task": "Part-7004",
+        "Start": 418,
+        "Finish": 438,
+        "Duration": 20,
+        "Resource": "五轴加工中心",
+        "Product": "橡木办公桌",
+        "Part ID": 7004,
+        "Order ID": 7
       },
       {
-        "Task": "Part-4005",
-        "Start": 440,
+        "Task": "Part-1002",
+        "Start": 436,
         "Finish": 444,
-        "Duration": 4,
-        "Resource": "包装台",
-        "Product": "樱桃木椅子",
-        "Part ID": 4005,
-        "Order ID": 4
-      },
-      {
-        "Task": "Part-6002",
-        "Start": 430,
-        "Finish": 448,
-        "Duration": 18,
+        "Duration": 8,
         "Resource": "带锯机",
-        "Product": "橡木办公桌",
-        "Part ID": 6002,
-        "Order ID": 6
+        "Product": "黑胡桃木餐桌",
+        "Part ID": 1002,
+        "Order ID": 1
       },
       {
-        "Task": "Part-6000",
-        "Start": 438,
-        "Finish": 448,
+        "Task": "Part-7003",
+        "Start": 431,
+        "Finish": 446,
+        "Duration": 15,
+        "Resource": "组装台",
+        "Product": "橡木办公桌",
+        "Part ID": 7003,
+        "Order ID": 7
+      },
+      {
+        "Task": "Part-1000",
+        "Start": 427,
+        "Finish": 447,
+        "Duration": 20,
+        "Resource": "五轴加工中心",
+        "Product": "黑胡桃木餐桌",
+        "Part ID": 1000,
+        "Order ID": 1
+      },
+      {
+        "Task": "Part-7004",
+        "Start": 439,
+        "Finish": 449,
         "Duration": 10,
         "Resource": "砂光机",
         "Product": "橡木办公桌",
-        "Part ID": 6000,
-        "Order ID": 6
+        "Part ID": 7004,
+        "Order ID": 7
       },
       {
-        "Task": "Part-4006",
-        "Start": 438,
-        "Finish": 448,
-        "Duration": 10,
-        "Resource": "组装台",
-        "Product": "樱桃木椅子",
-        "Part ID": 4006,
-        "Order ID": 4
-      },
-      {
-        "Task": "Part-6001",
-        "Start": 430,
-        "Finish": 450,
-        "Duration": 20,
-        "Resource": "五轴加工中心",
+        "Task": "Part-7003",
+        "Start": 447,
+        "Finish": 452,
+        "Duration": 5,
+        "Resource": "包装台",
         "Product": "橡木办公桌",
-        "Part ID": 6001,
-        "Order ID": 6
+        "Part ID": 7003,
+        "Order ID": 7
       },
       {
-        "Task": "Part-4006",
-        "Start": 449,
+        "Task": "Part-1003",
+        "Start": 445,
         "Finish": 453,
-        "Duration": 4,
-        "Resource": "包装台",
-        "Product": "樱桃木椅子",
-        "Part ID": 4006,
-        "Order ID": 4
-      },
-      {
-        "Task": "Part-4007",
-        "Start": 449,
-        "Finish": 457,
         "Duration": 8,
-        "Resource": "砂光机",
-        "Product": "樱桃木椅子",
-        "Part ID": 4007,
-        "Order ID": 4
+        "Resource": "带锯机",
+        "Product": "黑胡桃木餐桌",
+        "Part ID": 1003,
+        "Order ID": 1
       },
       {
-        "Task": "Part-6000",
-        "Start": 449,
-        "Finish": 464,
+        "Task": "Part-1001",
+        "Start": 439,
+        "Finish": 459,
+        "Duration": 20,
+        "Resource": "五轴加工中心",
+        "Product": "黑胡桃木餐桌",
+        "Part ID": 1001,
+        "Order ID": 1
+      },
+      {
+        "Task": "Part-1000",
+        "Start": 450,
+        "Finish": 460,
+        "Duration": 10,
+        "Resource": "砂光机",
+        "Product": "黑胡桃木餐桌",
+        "Part ID": 1000,
+        "Order ID": 1
+      },
+      {
+        "Task": "Part-1004",
+        "Start": 454,
+        "Finish": 462,
+        "Duration": 8,
+        "Resource": "带锯机",
+        "Product": "黑胡桃木餐桌",
+        "Part ID": 1004,
+        "Order ID": 1
+      },
+      {
+        "Task": "Part-7004",
+        "Start": 450,
+        "Finish": 465,
         "Duration": 15,
         "Resource": "组装台",
         "Product": "橡木办公桌",
-        "Part ID": 6000,
-        "Order ID": 6
+        "Part ID": 7004,
+        "Order ID": 7
       },
       {
-        "Task": "Part-4008",
-        "Start": 458,
-        "Finish": 466,
-        "Duration": 8,
-        "Resource": "砂光机",
-        "Product": "樱桃木椅子",
-        "Part ID": 4008,
-        "Order ID": 4
-      },
-      {
-        "Task": "Part-6003",
-        "Start": 449,
-        "Finish": 467,
-        "Duration": 18,
-        "Resource": "带锯机",
-        "Product": "橡木办公桌",
-        "Part ID": 6003,
-        "Order ID": 6
-      },
-      {
-        "Task": "Part-4007",
-        "Start": 458,
+        "Task": "Part-1002",
+        "Start": 448,
         "Finish": 468,
-        "Duration": 10,
-        "Resource": "组装台",
-        "Product": "樱桃木椅子",
-        "Part ID": 4007,
-        "Order ID": 4
-      },
-      {
-        "Task": "Part-6002",
-        "Start": 449,
-        "Finish": 469,
         "Duration": 20,
         "Resource": "五轴加工中心",
-        "Product": "橡木办公桌",
-        "Part ID": 6002,
-        "Order ID": 6
+        "Product": "黑胡桃木餐桌",
+        "Part ID": 1002,
+        "Order ID": 1
       },
       {
-        "Task": "Part-6000",
-        "Start": 465,
-        "Finish": 470,
-        "Duration": 5,
-        "Resource": "包装台",
-        "Product": "橡木办公桌",
-        "Part ID": 6000,
-        "Order ID": 6
+        "Task": "Part-1001",
+        "Start": 461,
+        "Finish": 471,
+        "Duration": 10,
+        "Resource": "砂光机",
+        "Product": "黑胡桃木餐桌",
+        "Part ID": 1001,
+        "Order ID": 1
       },
       {
-        "Task": "Part-4007",
-        "Start": 469,
-        "Finish": 473,
-        "Duration": 4,
-        "Resource": "包装台",
-        "Product": "樱桃木椅子",
-        "Part ID": 4007,
-        "Order ID": 4
-      },
-      {
-        "Task": "Part-4009",
-        "Start": 467,
-        "Finish": 475,
+        "Task": "Part-1005",
+        "Start": 463,
+        "Finish": 471,
         "Duration": 8,
-        "Resource": "砂光机",
-        "Product": "樱桃木椅子",
-        "Part ID": 4009,
-        "Order ID": 4
+        "Resource": "带锯机",
+        "Product": "黑胡桃木餐桌",
+        "Part ID": 1005,
+        "Order ID": 1
       },
       {
-        "Task": "Part-4008",
-        "Start": 467,
-        "Finish": 477,
-        "Duration": 10,
+        "Task": "Part-7004",
+        "Start": 466,
+        "Finish": 471,
+        "Duration": 5,
+        "Resource": "包装台",
+        "Product": "橡木办公桌",
+        "Part ID": 7004,
+        "Order ID": 7
+      },
+      {
+        "Task": "Part-1000",
+        "Start": 461,
+        "Finish": 476,
+        "Duration": 15,
         "Resource": "组装台",
-        "Product": "樱桃木椅子",
-        "Part ID": 4008,
-        "Order ID": 4
+        "Product": "黑胡桃木餐桌",
+        "Part ID": 1000,
+        "Order ID": 1
       },
       {
-        "Task": "Part-4008",
-        "Start": 478,
+        "Task": "Part-1003",
+        "Start": 460,
+        "Finish": 480,
+        "Duration": 20,
+        "Resource": "五轴加工中心",
+        "Product": "黑胡桃木餐桌",
+        "Part ID": 1003,
+        "Order ID": 1
+      },
+      {
+        "Task": "Part-1006",
+        "Start": 472,
+        "Finish": 480,
+        "Duration": 8,
+        "Resource": "带锯机",
+        "Product": "黑胡桃木餐桌",
+        "Part ID": 1006,
+        "Order ID": 1
+      },
+      {
+        "Task": "Part-1002",
+        "Start": 472,
         "Finish": 482,
-        "Duration": 4,
-        "Resource": "包装台",
-        "Product": "樱桃木椅子",
-        "Part ID": 4008,
-        "Order ID": 4
-      },
-      {
-        "Task": "Part-6004",
-        "Start": 468,
-        "Finish": 486,
-        "Duration": 18,
-        "Resource": "带锯机",
-        "Product": "橡木办公桌",
-        "Part ID": 6004,
-        "Order ID": 6
-      },
-      {
-        "Task": "Part-6001",
-        "Start": 476,
-        "Finish": 486,
         "Duration": 10,
         "Resource": "砂光机",
-        "Product": "橡木办公桌",
-        "Part ID": 6001,
-        "Order ID": 6
+        "Product": "黑胡桃木餐桌",
+        "Part ID": 1002,
+        "Order ID": 1
       },
       {
-        "Task": "Part-4009",
-        "Start": 476,
-        "Finish": 486,
-        "Duration": 10,
-        "Resource": "组装台",
-        "Product": "樱桃木椅子",
-        "Part ID": 4009,
-        "Order ID": 4
-      },
-      {
-        "Task": "Part-6003",
-        "Start": 468,
-        "Finish": 488,
-        "Duration": 20,
-        "Resource": "五轴加工中心",
-        "Product": "橡木办公桌",
-        "Part ID": 6003,
-        "Order ID": 6
-      },
-      {
-        "Task": "Part-4009",
-        "Start": 487,
-        "Finish": 491,
-        "Duration": 4,
+        "Task": "Part-1000",
+        "Start": 477,
+        "Finish": 482,
+        "Duration": 5,
         "Resource": "包装台",
-        "Product": "樱桃木椅子",
-        "Part ID": 4009,
-        "Order ID": 4
+        "Product": "黑胡桃木餐桌",
+        "Part ID": 1000,
+        "Order ID": 1
       },
       {
-        "Task": "Part-6002",
-        "Start": 487,
-        "Finish": 497,
-        "Duration": 10,
-        "Resource": "砂光机",
-        "Product": "橡木办公桌",
-        "Part ID": 6002,
-        "Order ID": 6
-      },
-      {
-        "Task": "Part-6001",
-        "Start": 487,
-        "Finish": 502,
+        "Task": "Part-1001",
+        "Start": 472,
+        "Finish": 487,
         "Duration": 15,
         "Resource": "组装台",
-        "Product": "橡木办公桌",
-        "Part ID": 6001,
-        "Order ID": 6
+        "Product": "黑胡桃木餐桌",
+        "Part ID": 1001,
+        "Order ID": 1
       },
       {
-        "Task": "Part-6005",
-        "Start": 487,
-        "Finish": 505,
-        "Duration": 18,
+        "Task": "Part-1004",
+        "Start": 469,
+        "Finish": 489,
+        "Duration": 20,
+        "Resource": "五轴加工中心",
+        "Product": "黑胡桃木餐桌",
+        "Part ID": 1004,
+        "Order ID": 1
+      },
+      {
+        "Task": "Part-1007",
+        "Start": 481,
+        "Finish": 489,
+        "Duration": 8,
         "Resource": "带锯机",
-        "Product": "橡木办公桌",
-        "Part ID": 6005,
-        "Order ID": 6
+        "Product": "黑胡桃木餐桌",
+        "Part ID": 1007,
+        "Order ID": 1
       },
       {
-        "Task": "Part-6004",
-        "Start": 487,
+        "Task": "Part-1003",
+        "Start": 483,
+        "Finish": 493,
+        "Duration": 10,
+        "Resource": "砂光机",
+        "Product": "黑胡桃木餐桌",
+        "Part ID": 1003,
+        "Order ID": 1
+      },
+      {
+        "Task": "Part-1001",
+        "Start": 488,
+        "Finish": 493,
+        "Duration": 5,
+        "Resource": "包装台",
+        "Product": "黑胡桃木餐桌",
+        "Part ID": 1001,
+        "Order ID": 1
+      },
+      {
+        "Task": "Part-1002",
+        "Start": 483,
+        "Finish": 498,
+        "Duration": 15,
+        "Resource": "组装台",
+        "Product": "黑胡桃木餐桌",
+        "Part ID": 1002,
+        "Order ID": 1
+      },
+      {
+        "Task": "Part-1008",
+        "Start": 490,
+        "Finish": 498,
+        "Duration": 8,
+        "Resource": "带锯机",
+        "Product": "黑胡桃木餐桌",
+        "Part ID": 1008,
+        "Order ID": 1
+      },
+      {
+        "Task": "Part-1006",
+        "Start": 481,
+        "Finish": 501,
+        "Duration": 20,
+        "Resource": "五轴加工中心",
+        "Product": "黑胡桃木餐桌",
+        "Part ID": 1006,
+        "Order ID": 1
+      },
+      {
+        "Task": "Part-1004",
+        "Start": 494,
+        "Finish": 504,
+        "Duration": 10,
+        "Resource": "砂光机",
+        "Product": "黑胡桃木餐桌",
+        "Part ID": 1004,
+        "Order ID": 1
+      },
+      {
+        "Task": "Part-1002",
+        "Start": 499,
+        "Finish": 504,
+        "Duration": 5,
+        "Resource": "包装台",
+        "Product": "黑胡桃木餐桌",
+        "Part ID": 1002,
+        "Order ID": 1
+      },
+      {
+        "Task": "Part-1009",
+        "Start": 499,
         "Finish": 507,
-        "Duration": 20,
-        "Resource": "五轴加工中心",
-        "Product": "橡木办公桌",
-        "Part ID": 6004,
-        "Order ID": 6
-      },
-      {
-        "Task": "Part-6003",
-        "Start": 498,
-        "Finish": 508,
-        "Duration": 10,
-        "Resource": "砂光机",
-        "Product": "橡木办公桌",
-        "Part ID": 6003,
-        "Order ID": 6
-      },
-      {
-        "Task": "Part-6001",
-        "Start": 503,
-        "Finish": 508,
-        "Duration": 5,
-        "Resource": "包装台",
-        "Product": "橡木办公桌",
-        "Part ID": 6001,
-        "Order ID": 6
-      },
-      {
-        "Task": "Part-6002",
-        "Start": 498,
-        "Finish": 513,
-        "Duration": 15,
-        "Resource": "组装台",
-        "Product": "橡木办公桌",
-        "Part ID": 6002,
-        "Order ID": 6
-      },
-      {
-        "Task": "Part-6004",
-        "Start": 509,
-        "Finish": 519,
-        "Duration": 10,
-        "Resource": "砂光机",
-        "Product": "橡木办公桌",
-        "Part ID": 6004,
-        "Order ID": 6
-      },
-      {
-        "Task": "Part-6002",
-        "Start": 514,
-        "Finish": 519,
-        "Duration": 5,
-        "Resource": "包装台",
-        "Product": "橡木办公桌",
-        "Part ID": 6002,
-        "Order ID": 6
-      },
-      {
-        "Task": "Part-6006",
-        "Start": 506,
-        "Finish": 524,
-        "Duration": 18,
+        "Duration": 8,
         "Resource": "带锯机",
-        "Product": "橡木办公桌",
-        "Part ID": 6006,
-        "Order ID": 6
+        "Product": "黑胡桃木餐桌",
+        "Part ID": 1009,
+        "Order ID": 1
       },
       {
-        "Task": "Part-6003",
-        "Start": 509,
-        "Finish": 524,
+        "Task": "Part-1003",
+        "Start": 494,
+        "Finish": 509,
         "Duration": 15,
         "Resource": "组装台",
-        "Product": "橡木办公桌",
-        "Part ID": 6003,
-        "Order ID": 6
+        "Product": "黑胡桃木餐桌",
+        "Part ID": 1003,
+        "Order ID": 1
       },
       {
-        "Task": "Part-6005",
-        "Start": 506,
-        "Finish": 526,
+        "Task": "Part-1007",
+        "Start": 490,
+        "Finish": 510,
         "Duration": 20,
         "Resource": "五轴加工中心",
-        "Product": "橡木办公桌",
-        "Part ID": 6005,
-        "Order ID": 6
+        "Product": "黑胡桃木餐桌",
+        "Part ID": 1007,
+        "Order ID": 1
       },
       {
-        "Task": "Part-6003",
-        "Start": 525,
-        "Finish": 530,
+        "Task": "Part-1006",
+        "Start": 505,
+        "Finish": 515,
+        "Duration": 10,
+        "Resource": "砂光机",
+        "Product": "黑胡桃木餐桌",
+        "Part ID": 1006,
+        "Order ID": 1
+      },
+      {
+        "Task": "Part-1003",
+        "Start": 510,
+        "Finish": 515,
         "Duration": 5,
         "Resource": "包装台",
-        "Product": "橡木办公桌",
-        "Part ID": 6003,
-        "Order ID": 6
+        "Product": "黑胡桃木餐桌",
+        "Part ID": 1003,
+        "Order ID": 1
       },
       {
-        "Task": "Part-6004",
-        "Start": 520,
-        "Finish": 535,
+        "Task": "Part-1010",
+        "Start": 508,
+        "Finish": 516,
+        "Duration": 8,
+        "Resource": "带锯机",
+        "Product": "黑胡桃木餐桌",
+        "Part ID": 1010,
+        "Order ID": 1
+      },
+      {
+        "Task": "Part-1004",
+        "Start": 505,
+        "Finish": 520,
         "Duration": 15,
         "Resource": "组装台",
-        "Product": "橡木办公桌",
-        "Part ID": 6004,
-        "Order ID": 6
+        "Product": "黑胡桃木餐桌",
+        "Part ID": 1004,
+        "Order ID": 1
       },
       {
-        "Task": "Part-6005",
+        "Task": "Part-1008",
+        "Start": 502,
+        "Finish": 522,
+        "Duration": 20,
+        "Resource": "五轴加工中心",
+        "Product": "黑胡桃木餐桌",
+        "Part ID": 1008,
+        "Order ID": 1
+      },
+      {
+        "Task": "Part-4000",
+        "Start": 517,
+        "Finish": 523,
+        "Duration": 6,
+        "Resource": "带锯机",
+        "Product": "樱桃木椅子",
+        "Part ID": 4000,
+        "Order ID": 4
+      },
+      {
+        "Task": "Part-1007",
+        "Start": 516,
+        "Finish": 526,
+        "Duration": 10,
+        "Resource": "砂光机",
+        "Product": "黑胡桃木餐桌",
+        "Part ID": 1007,
+        "Order ID": 1
+      },
+      {
+        "Task": "Part-1004",
+        "Start": 521,
+        "Finish": 526,
+        "Duration": 5,
+        "Resource": "包装台",
+        "Product": "黑胡桃木餐桌",
+        "Part ID": 1004,
+        "Order ID": 1
+      },
+      {
+        "Task": "Part-4001",
+        "Start": 524,
+        "Finish": 530,
+        "Duration": 6,
+        "Resource": "带锯机",
+        "Product": "樱桃木椅子",
+        "Part ID": 4001,
+        "Order ID": 4
+      },
+      {
+        "Task": "Part-1009",
+        "Start": 511,
+        "Finish": 531,
+        "Duration": 20,
+        "Resource": "五轴加工中心",
+        "Product": "黑胡桃木餐桌",
+        "Part ID": 1009,
+        "Order ID": 1
+      },
+      {
+        "Task": "Part-1006",
+        "Start": 516,
+        "Finish": 531,
+        "Duration": 15,
+        "Resource": "组装台",
+        "Product": "黑胡桃木餐桌",
+        "Part ID": 1006,
+        "Order ID": 1
+      },
+      {
+        "Task": "Part-1008",
         "Start": 527,
         "Finish": 537,
         "Duration": 10,
         "Resource": "砂光机",
-        "Product": "橡木办公桌",
-        "Part ID": 6005,
-        "Order ID": 6
+        "Product": "黑胡桃木餐桌",
+        "Part ID": 1008,
+        "Order ID": 1
       },
       {
-        "Task": "Part-6004",
-        "Start": 536,
-        "Finish": 541,
+        "Task": "Part-4002",
+        "Start": 531,
+        "Finish": 537,
+        "Duration": 6,
+        "Resource": "带锯机",
+        "Product": "樱桃木椅子",
+        "Part ID": 4002,
+        "Order ID": 4
+      },
+      {
+        "Task": "Part-1006",
+        "Start": 532,
+        "Finish": 537,
         "Duration": 5,
         "Resource": "包装台",
-        "Product": "橡木办公桌",
-        "Part ID": 6004,
-        "Order ID": 6
+        "Product": "黑胡桃木餐桌",
+        "Part ID": 1006,
+        "Order ID": 1
       },
       {
-        "Task": "Part-6007",
-        "Start": 525,
+        "Task": "Part-1007",
+        "Start": 527,
+        "Finish": 542,
+        "Duration": 15,
+        "Resource": "组装台",
+        "Product": "黑胡桃木餐桌",
+        "Part ID": 1007,
+        "Order ID": 1
+      },
+      {
+        "Task": "Part-1010",
+        "Start": 523,
         "Finish": 543,
-        "Duration": 18,
-        "Resource": "带锯机",
-        "Product": "橡木办公桌",
-        "Part ID": 6007,
-        "Order ID": 6
-      },
-      {
-        "Task": "Part-6006",
-        "Start": 525,
-        "Finish": 545,
         "Duration": 20,
         "Resource": "五轴加工中心",
-        "Product": "橡木办公桌",
-        "Part ID": 6006,
-        "Order ID": 6
+        "Product": "黑胡桃木餐桌",
+        "Part ID": 1010,
+        "Order ID": 1
       },
       {
-        "Task": "Part-6005",
+        "Task": "Part-4003",
+        "Start": 538,
+        "Finish": 544,
+        "Duration": 6,
+        "Resource": "带锯机",
+        "Product": "樱桃木椅子",
+        "Part ID": 4003,
+        "Order ID": 4
+      },
+      {
+        "Task": "Part-1009",
+        "Start": 538,
+        "Finish": 548,
+        "Duration": 10,
+        "Resource": "砂光机",
+        "Product": "黑胡桃木餐桌",
+        "Part ID": 1009,
+        "Order ID": 1
+      },
+      {
+        "Task": "Part-1007",
+        "Start": 543,
+        "Finish": 548,
+        "Duration": 5,
+        "Resource": "包装台",
+        "Product": "黑胡桃木餐桌",
+        "Part ID": 1007,
+        "Order ID": 1
+      },
+      {
+        "Task": "Part-4004",
+        "Start": 545,
+        "Finish": 551,
+        "Duration": 6,
+        "Resource": "带锯机",
+        "Product": "樱桃木椅子",
+        "Part ID": 4004,
+        "Order ID": 4
+      },
+      {
+        "Task": "Part-1005",
+        "Start": 532,
+        "Finish": 552,
+        "Duration": 20,
+        "Resource": "五轴加工中心",
+        "Product": "黑胡桃木餐桌",
+        "Part ID": 1005,
+        "Order ID": 1
+      },
+      {
+        "Task": "Part-1008",
         "Start": 538,
         "Finish": 553,
         "Duration": 15,
         "Resource": "组装台",
-        "Product": "橡木办公桌",
-        "Part ID": 6005,
-        "Order ID": 6
+        "Product": "黑胡桃木餐桌",
+        "Part ID": 1008,
+        "Order ID": 1
       },
       {
-        "Task": "Part-2000",
+        "Task": "Part-4000",
         "Start": 544,
         "Finish": 556,
         "Duration": 12,
-        "Resource": "带锯机",
-        "Product": "橡木书柜",
-        "Part ID": 2000,
-        "Order ID": 2
+        "Resource": "五轴加工中心",
+        "Product": "樱桃木椅子",
+        "Part ID": 4000,
+        "Order ID": 4
       },
       {
-        "Task": "Part-6006",
-        "Start": 546,
-        "Finish": 556,
+        "Task": "Part-4005",
+        "Start": 552,
+        "Finish": 558,
+        "Duration": 6,
+        "Resource": "带锯机",
+        "Product": "樱桃木椅子",
+        "Part ID": 4005,
+        "Order ID": 4
+      },
+      {
+        "Task": "Part-1010",
+        "Start": 549,
+        "Finish": 559,
         "Duration": 10,
         "Resource": "砂光机",
-        "Product": "橡木办公桌",
-        "Part ID": 6006,
-        "Order ID": 6
+        "Product": "黑胡桃木餐桌",
+        "Part ID": 1010,
+        "Order ID": 1
       },
       {
-        "Task": "Part-6005",
+        "Task": "Part-1008",
         "Start": 554,
         "Finish": 559,
         "Duration": 5,
         "Resource": "包装台",
-        "Product": "橡木办公桌",
-        "Part ID": 6005,
-        "Order ID": 6
+        "Product": "黑胡桃木餐桌",
+        "Part ID": 1008,
+        "Order ID": 1
       },
       {
-        "Task": "Part-6007",
-        "Start": 544,
+        "Task": "Part-1009",
+        "Start": 549,
         "Finish": 564,
-        "Duration": 20,
-        "Resource": "五轴加工中心",
-        "Product": "橡木办公桌",
-        "Part ID": 6007,
-        "Order ID": 6
+        "Duration": 15,
+        "Resource": "组装台",
+        "Product": "黑胡桃木餐桌",
+        "Part ID": 1009,
+        "Order ID": 1
       },
       {
-        "Task": "Part-2001",
+        "Task": "Part-4001",
+        "Start": 553,
+        "Finish": 565,
+        "Duration": 12,
+        "Resource": "五轴加工中心",
+        "Product": "樱桃木椅子",
+        "Part ID": 4001,
+        "Order ID": 4
+      },
+      {
+        "Task": "Part-4006",
+        "Start": 559,
+        "Finish": 565,
+        "Duration": 6,
+        "Resource": "带锯机",
+        "Product": "樱桃木椅子",
+        "Part ID": 4006,
+        "Order ID": 4
+      },
+      {
+        "Task": "Part-4002",
         "Start": 557,
         "Finish": 569,
         "Duration": 12,
-        "Resource": "带锯机",
-        "Product": "橡木书柜",
-        "Part ID": 2001,
-        "Order ID": 2
+        "Resource": "五轴加工中心",
+        "Product": "樱桃木椅子",
+        "Part ID": 4002,
+        "Order ID": 4
       },
       {
-        "Task": "Part-6006",
-        "Start": 557,
-        "Finish": 572,
-        "Duration": 15,
-        "Resource": "组装台",
-        "Product": "橡木办公桌",
-        "Part ID": 6006,
-        "Order ID": 6
-      },
-      {
-        "Task": "Part-6007",
-        "Start": 565,
-        "Finish": 575,
+        "Task": "Part-1005",
+        "Start": 560,
+        "Finish": 570,
         "Duration": 10,
         "Resource": "砂光机",
-        "Product": "橡木办公桌",
-        "Part ID": 6007,
-        "Order ID": 6
+        "Product": "黑胡桃木餐桌",
+        "Part ID": 1005,
+        "Order ID": 1
       },
       {
-        "Task": "Part-6006",
-        "Start": 573,
+        "Task": "Part-1009",
+        "Start": 565,
+        "Finish": 570,
+        "Duration": 5,
+        "Resource": "包装台",
+        "Product": "黑胡桃木餐桌",
+        "Part ID": 1009,
+        "Order ID": 1
+      },
+      {
+        "Task": "Part-4007",
+        "Start": 566,
+        "Finish": 572,
+        "Duration": 6,
+        "Resource": "带锯机",
+        "Product": "樱桃木椅子",
+        "Part ID": 4007,
+        "Order ID": 4
+      },
+      {
+        "Task": "Part-1010",
+        "Start": 560,
+        "Finish": 575,
+        "Duration": 15,
+        "Resource": "组装台",
+        "Product": "黑胡桃木餐桌",
+        "Part ID": 1010,
+        "Order ID": 1
+      },
+      {
+        "Task": "Part-4003",
+        "Start": 566,
         "Finish": 578,
-        "Duration": 5,
-        "Resource": "包装台",
-        "Product": "橡木办公桌",
-        "Part ID": 6006,
-        "Order ID": 6
-      },
-      {
-        "Task": "Part-2000",
-        "Start": 557,
-        "Finish": 582,
-        "Duration": 25,
-        "Resource": "五轴加工中心",
-        "Product": "橡木书柜",
-        "Part ID": 2000,
-        "Order ID": 2
-      },
-      {
-        "Task": "Part-2002",
-        "Start": 570,
-        "Finish": 582,
         "Duration": 12,
-        "Resource": "带锯机",
-        "Product": "橡木书柜",
-        "Part ID": 2002,
-        "Order ID": 2
+        "Resource": "五轴加工中心",
+        "Product": "樱桃木椅子",
+        "Part ID": 4003,
+        "Order ID": 4
       },
       {
-        "Task": "Part-6007",
+        "Task": "Part-4000",
+        "Start": 571,
+        "Finish": 579,
+        "Duration": 8,
+        "Resource": "砂光机",
+        "Product": "樱桃木椅子",
+        "Part ID": 4000,
+        "Order ID": 4
+      },
+      {
+        "Task": "Part-4009",
+        "Start": 573,
+        "Finish": 579,
+        "Duration": 6,
+        "Resource": "带锯机",
+        "Product": "樱桃木椅子",
+        "Part ID": 4009,
+        "Order ID": 4
+      },
+      {
+        "Task": "Part-1010",
         "Start": 576,
-        "Finish": 591,
-        "Duration": 15,
-        "Resource": "组装台",
-        "Product": "橡木办公桌",
-        "Part ID": 6007,
-        "Order ID": 6
-      },
-      {
-        "Task": "Part-2001",
-        "Start": 570,
-        "Finish": 595,
-        "Duration": 25,
-        "Resource": "五轴加工中心",
-        "Product": "橡木书柜",
-        "Part ID": 2001,
-        "Order ID": 2
-      },
-      {
-        "Task": "Part-2003",
-        "Start": 583,
-        "Finish": 595,
-        "Duration": 12,
-        "Resource": "带锯机",
-        "Product": "橡木书柜",
-        "Part ID": 2003,
-        "Order ID": 2
-      },
-      {
-        "Task": "Part-6007",
-        "Start": 592,
-        "Finish": 597,
+        "Finish": 581,
         "Duration": 5,
         "Resource": "包装台",
-        "Product": "橡木办公桌",
-        "Part ID": 6007,
-        "Order ID": 6
+        "Product": "黑胡桃木餐桌",
+        "Part ID": 1010,
+        "Order ID": 1
       },
       {
-        "Task": "Part-2000",
-        "Start": 583,
-        "Finish": 598,
-        "Duration": 15,
-        "Resource": "砂光机",
-        "Product": "橡木书柜",
-        "Part ID": 2000,
-        "Order ID": 2
-      },
-      {
-        "Task": "Part-2002",
-        "Start": 583,
-        "Finish": 608,
-        "Duration": 25,
-        "Resource": "五轴加工中心",
-        "Product": "橡木书柜",
-        "Part ID": 2002,
-        "Order ID": 2
-      },
-      {
-        "Task": "Part-2004",
-        "Start": 596,
-        "Finish": 608,
+        "Task": "Part-4004",
+        "Start": 570,
+        "Finish": 582,
         "Duration": 12,
-        "Resource": "带锯机",
-        "Product": "橡木书柜",
-        "Part ID": 2004,
-        "Order ID": 2
+        "Resource": "五轴加工中心",
+        "Product": "樱桃木椅子",
+        "Part ID": 4004,
+        "Order ID": 4
       },
       {
-        "Task": "Part-2001",
-        "Start": 599,
-        "Finish": 614,
+        "Task": "Part-1005",
+        "Start": 571,
+        "Finish": 586,
         "Duration": 15,
-        "Resource": "砂光机",
-        "Product": "橡木书柜",
-        "Part ID": 2001,
-        "Order ID": 2
-      },
-      {
-        "Task": "Part-2000",
-        "Start": 599,
-        "Finish": 619,
-        "Duration": 20,
         "Resource": "组装台",
-        "Product": "橡木书柜",
-        "Part ID": 2000,
-        "Order ID": 2
+        "Product": "黑胡桃木餐桌",
+        "Part ID": 1005,
+        "Order ID": 1
       },
       {
-        "Task": "Part-2003",
-        "Start": 596,
-        "Finish": 621,
-        "Duration": 25,
-        "Resource": "五轴加工中心",
-        "Product": "橡木书柜",
-        "Part ID": 2003,
-        "Order ID": 2
-      },
-      {
-        "Task": "Part-2005",
-        "Start": 609,
-        "Finish": 621,
-        "Duration": 12,
+        "Task": "Part-4008",
+        "Start": 580,
+        "Finish": 586,
+        "Duration": 6,
         "Resource": "带锯机",
-        "Product": "橡木书柜",
-        "Part ID": 2005,
-        "Order ID": 2
+        "Product": "樱桃木椅子",
+        "Part ID": 4008,
+        "Order ID": 4
       },
       {
-        "Task": "Part-2000",
-        "Start": 620,
-        "Finish": 628,
+        "Task": "Part-4001",
+        "Start": 580,
+        "Finish": 588,
         "Duration": 8,
-        "Resource": "包装台",
-        "Product": "橡木书柜",
-        "Part ID": 2000,
-        "Order ID": 2
-      },
-      {
-        "Task": "Part-2002",
-        "Start": 615,
-        "Finish": 630,
-        "Duration": 15,
         "Resource": "砂光机",
-        "Product": "橡木书柜",
-        "Part ID": 2002,
-        "Order ID": 2
+        "Product": "樱桃木椅子",
+        "Part ID": 4001,
+        "Order ID": 4
       },
       {
-        "Task": "Part-2004",
-        "Start": 609,
-        "Finish": 634,
-        "Duration": 25,
-        "Resource": "五轴加工中心",
-        "Product": "橡木书柜",
-        "Part ID": 2004,
-        "Order ID": 2
+        "Task": "Part-4000",
+        "Start": 580,
+        "Finish": 590,
+        "Duration": 10,
+        "Resource": "组装台",
+        "Product": "樱桃木椅子",
+        "Part ID": 4000,
+        "Order ID": 4
       },
       {
-        "Task": "Part-2006",
-        "Start": 622,
-        "Finish": 634,
+        "Task": "Part-4005",
+        "Start": 579,
+        "Finish": 591,
         "Duration": 12,
-        "Resource": "带锯机",
-        "Product": "橡木书柜",
-        "Part ID": 2006,
-        "Order ID": 2
+        "Resource": "五轴加工中心",
+        "Product": "樱桃木椅子",
+        "Part ID": 4005,
+        "Order ID": 4
       },
       {
-        "Task": "Part-2001",
-        "Start": 615,
+        "Task": "Part-1005",
+        "Start": 587,
+        "Finish": 592,
+        "Duration": 5,
+        "Resource": "包装台",
+        "Product": "黑胡桃木餐桌",
+        "Part ID": 1005,
+        "Order ID": 1
+      },
+      {
+        "Task": "Part-4006",
+        "Start": 583,
+        "Finish": 595,
+        "Duration": 12,
+        "Resource": "五轴加工中心",
+        "Product": "樱桃木椅子",
+        "Part ID": 4006,
+        "Order ID": 4
+      },
+      {
+        "Task": "Part-4000",
+        "Start": 591,
+        "Finish": 595,
+        "Duration": 4,
+        "Resource": "包装台",
+        "Product": "樱桃木椅子",
+        "Part ID": 4000,
+        "Order ID": 4
+      },
+      {
+        "Task": "Part-4002",
+        "Start": 589,
+        "Finish": 597,
+        "Duration": 8,
+        "Resource": "砂光机",
+        "Product": "樱桃木椅子",
+        "Part ID": 4002,
+        "Order ID": 4
+      },
+      {
+        "Task": "Part-4001",
+        "Start": 589,
+        "Finish": 599,
+        "Duration": 10,
+        "Resource": "组装台",
+        "Product": "樱桃木椅子",
+        "Part ID": 4001,
+        "Order ID": 4
+      },
+      {
+        "Task": "Part-4007",
+        "Start": 592,
+        "Finish": 604,
+        "Duration": 12,
+        "Resource": "五轴加工中心",
+        "Product": "樱桃木椅子",
+        "Part ID": 4007,
+        "Order ID": 4
+      },
+      {
+        "Task": "Part-4001",
+        "Start": 600,
+        "Finish": 604,
+        "Duration": 4,
+        "Resource": "包装台",
+        "Product": "樱桃木椅子",
+        "Part ID": 4001,
+        "Order ID": 4
+      },
+      {
+        "Task": "Part-4003",
+        "Start": 598,
+        "Finish": 606,
+        "Duration": 8,
+        "Resource": "砂光机",
+        "Product": "樱桃木椅子",
+        "Part ID": 4003,
+        "Order ID": 4
+      },
+      {
+        "Task": "Part-4008",
+        "Start": 596,
+        "Finish": 608,
+        "Duration": 12,
+        "Resource": "五轴加工中心",
+        "Product": "樱桃木椅子",
+        "Part ID": 4008,
+        "Order ID": 4
+      },
+      {
+        "Task": "Part-4002",
+        "Start": 598,
+        "Finish": 608,
+        "Duration": 10,
+        "Resource": "组装台",
+        "Product": "樱桃木椅子",
+        "Part ID": 4002,
+        "Order ID": 4
+      },
+      {
+        "Task": "Part-4002",
+        "Start": 609,
+        "Finish": 613,
+        "Duration": 4,
+        "Resource": "包装台",
+        "Product": "樱桃木椅子",
+        "Part ID": 4002,
+        "Order ID": 4
+      },
+      {
+        "Task": "Part-4004",
+        "Start": 607,
+        "Finish": 615,
+        "Duration": 8,
+        "Resource": "砂光机",
+        "Product": "樱桃木椅子",
+        "Part ID": 4004,
+        "Order ID": 4
+      },
+      {
+        "Task": "Part-4009",
+        "Start": 605,
+        "Finish": 617,
+        "Duration": 12,
+        "Resource": "五轴加工中心",
+        "Product": "樱桃木椅子",
+        "Part ID": 4009,
+        "Order ID": 4
+      },
+      {
+        "Task": "Part-4003",
+        "Start": 607,
+        "Finish": 617,
+        "Duration": 10,
+        "Resource": "组装台",
+        "Product": "樱桃木椅子",
+        "Part ID": 4003,
+        "Order ID": 4
+      },
+      {
+        "Task": "Part-4003",
+        "Start": 618,
+        "Finish": 622,
+        "Duration": 4,
+        "Resource": "包装台",
+        "Product": "樱桃木椅子",
+        "Part ID": 4003,
+        "Order ID": 4
+      },
+      {
+        "Task": "Part-4005",
+        "Start": 616,
+        "Finish": 624,
+        "Duration": 8,
+        "Resource": "砂光机",
+        "Product": "樱桃木椅子",
+        "Part ID": 4005,
+        "Order ID": 4
+      },
+      {
+        "Task": "Part-4004",
+        "Start": 616,
+        "Finish": 626,
+        "Duration": 10,
+        "Resource": "组装台",
+        "Product": "樱桃木椅子",
+        "Part ID": 4004,
+        "Order ID": 4
+      },
+      {
+        "Task": "Part-4004",
+        "Start": 627,
+        "Finish": 631,
+        "Duration": 4,
+        "Resource": "包装台",
+        "Product": "樱桃木椅子",
+        "Part ID": 4004,
+        "Order ID": 4
+      },
+      {
+        "Task": "Part-4006",
+        "Start": 625,
+        "Finish": 633,
+        "Duration": 8,
+        "Resource": "砂光机",
+        "Product": "樱桃木椅子",
+        "Part ID": 4006,
+        "Order ID": 4
+      },
+      {
+        "Task": "Part-4005",
+        "Start": 625,
         "Finish": 635,
-        "Duration": 20,
+        "Duration": 10,
         "Resource": "组装台",
-        "Product": "橡木书柜",
-        "Part ID": 2001,
-        "Order ID": 2
+        "Product": "樱桃木椅子",
+        "Part ID": 4005,
+        "Order ID": 4
       },
       {
-        "Task": "Part-2001",
+        "Task": "Part-4005",
         "Start": 636,
-        "Finish": 644,
-        "Duration": 8,
+        "Finish": 640,
+        "Duration": 4,
         "Resource": "包装台",
-        "Product": "橡木书柜",
-        "Part ID": 2001,
-        "Order ID": 2
+        "Product": "樱桃木椅子",
+        "Part ID": 4005,
+        "Order ID": 4
       },
       {
-        "Task": "Part-2003",
-        "Start": 631,
-        "Finish": 646,
-        "Duration": 15,
+        "Task": "Part-4007",
+        "Start": 634,
+        "Finish": 642,
+        "Duration": 8,
         "Resource": "砂光机",
-        "Product": "橡木书柜",
-        "Part ID": 2003,
-        "Order ID": 2
+        "Product": "樱桃木椅子",
+        "Part ID": 4007,
+        "Order ID": 4
       },
       {
-        "Task": "Part-2005",
-        "Start": 622,
-        "Finish": 647,
-        "Duration": 25,
-        "Resource": "五轴加工中心",
-        "Product": "橡木书柜",
-        "Part ID": 2005,
-        "Order ID": 2
-      },
-      {
-        "Task": "Part-2007",
-        "Start": 635,
-        "Finish": 647,
-        "Duration": 12,
-        "Resource": "带锯机",
-        "Product": "橡木书柜",
-        "Part ID": 2007,
-        "Order ID": 2
-      },
-      {
-        "Task": "Part-2002",
-        "Start": 631,
-        "Finish": 651,
-        "Duration": 20,
+        "Task": "Part-4006",
+        "Start": 634,
+        "Finish": 644,
+        "Duration": 10,
         "Resource": "组装台",
-        "Product": "橡木书柜",
-        "Part ID": 2002,
-        "Order ID": 2
+        "Product": "樱桃木椅子",
+        "Part ID": 4006,
+        "Order ID": 4
       },
       {
-        "Task": "Part-2006",
-        "Start": 635,
-        "Finish": 660,
-        "Duration": 25,
-        "Resource": "五轴加工中心",
-        "Product": "橡木书柜",
-        "Part ID": 2006,
-        "Order ID": 2
+        "Task": "Part-4006",
+        "Start": 645,
+        "Finish": 649,
+        "Duration": 4,
+        "Resource": "包装台",
+        "Product": "樱桃木椅子",
+        "Part ID": 4006,
+        "Order ID": 4
       },
       {
-        "Task": "Part-2002",
+        "Task": "Part-4008",
+        "Start": 643,
+        "Finish": 651,
+        "Duration": 8,
+        "Resource": "砂光机",
+        "Product": "樱桃木椅子",
+        "Part ID": 4008,
+        "Order ID": 4
+      },
+      {
+        "Task": "Part-4007",
+        "Start": 643,
+        "Finish": 653,
+        "Duration": 10,
+        "Resource": "组装台",
+        "Product": "樱桃木椅子",
+        "Part ID": 4007,
+        "Order ID": 4
+      },
+      {
+        "Task": "Part-4007",
+        "Start": 654,
+        "Finish": 658,
+        "Duration": 4,
+        "Resource": "包装台",
+        "Product": "樱桃木椅子",
+        "Part ID": 4007,
+        "Order ID": 4
+      },
+      {
+        "Task": "Part-4009",
         "Start": 652,
         "Finish": 660,
         "Duration": 8,
-        "Resource": "包装台",
-        "Product": "橡木书柜",
-        "Part ID": 2002,
-        "Order ID": 2
+        "Resource": "砂光机",
+        "Product": "樱桃木椅子",
+        "Part ID": 4009,
+        "Order ID": 4
       },
       {
-        "Task": "Part-2004",
-        "Start": 647,
+        "Task": "Part-4008",
+        "Start": 652,
         "Finish": 662,
-        "Duration": 15,
-        "Resource": "砂光机",
-        "Product": "橡木书柜",
-        "Part ID": 2004,
-        "Order ID": 2
+        "Duration": 10,
+        "Resource": "组装台",
+        "Product": "樱桃木椅子",
+        "Part ID": 4008,
+        "Order ID": 4
       },
       {
-        "Task": "Part-7000",
-        "Start": 648,
-        "Finish": 666,
-        "Duration": 18,
-        "Resource": "带锯机",
-        "Product": "橡木办公桌",
-        "Part ID": 7000,
-        "Order ID": 7
-      },
-      {
-        "Task": "Part-2003",
-        "Start": 647,
+        "Task": "Part-4008",
+        "Start": 663,
         "Finish": 667,
-        "Duration": 20,
+        "Duration": 4,
+        "Resource": "包装台",
+        "Product": "樱桃木椅子",
+        "Part ID": 4008,
+        "Order ID": 4
+      },
+      {
+        "Task": "Part-4009",
+        "Start": 661,
+        "Finish": 671,
+        "Duration": 10,
         "Resource": "组装台",
-        "Product": "橡木书柜",
-        "Part ID": 2003,
-        "Order ID": 2
+        "Product": "樱桃木椅子",
+        "Part ID": 4009,
+        "Order ID": 4
       },
       {
-        "Task": "Part-2007",
-        "Start": 648,
-        "Finish": 673,
-        "Duration": 25,
-        "Resource": "五轴加工中心",
-        "Product": "橡木书柜",
-        "Part ID": 2007,
-        "Order ID": 2
-      },
-      {
-        "Task": "Part-2003",
-        "Start": 668,
+        "Task": "Part-4009",
+        "Start": 672,
         "Finish": 676,
-        "Duration": 8,
+        "Duration": 4,
         "Resource": "包装台",
-        "Product": "橡木书柜",
-        "Part ID": 2003,
-        "Order ID": 2
-      },
-      {
-        "Task": "Part-2005",
-        "Start": 663,
-        "Finish": 678,
-        "Duration": 15,
-        "Resource": "砂光机",
-        "Product": "橡木书柜",
-        "Part ID": 2005,
-        "Order ID": 2
-      },
-      {
-        "Task": "Part-2004",
-        "Start": 663,
-        "Finish": 683,
-        "Duration": 20,
-        "Resource": "组装台",
-        "Product": "橡木书柜",
-        "Part ID": 2004,
-        "Order ID": 2
-      },
-      {
-        "Task": "Part-7001",
-        "Start": 667,
-        "Finish": 685,
-        "Duration": 18,
-        "Resource": "带锯机",
-        "Product": "橡木办公桌",
-        "Part ID": 7001,
-        "Order ID": 7
-      },
-      {
-        "Task": "Part-7000",
-        "Start": 667,
-        "Finish": 687,
-        "Duration": 20,
-        "Resource": "五轴加工中心",
-        "Product": "橡木办公桌",
-        "Part ID": 7000,
-        "Order ID": 7
-      },
-      {
-        "Task": "Part-2004",
-        "Start": 684,
-        "Finish": 692,
-        "Duration": 8,
-        "Resource": "包装台",
-        "Product": "橡木书柜",
-        "Part ID": 2004,
-        "Order ID": 2
-      },
-      {
-        "Task": "Part-2006",
-        "Start": 679,
-        "Finish": 694,
-        "Duration": 15,
-        "Resource": "砂光机",
-        "Product": "橡木书柜",
-        "Part ID": 2006,
-        "Order ID": 2
-      },
-      {
-        "Task": "Part-2005",
-        "Start": 679,
-        "Finish": 699,
-        "Duration": 20,
-        "Resource": "组装台",
-        "Product": "橡木书柜",
-        "Part ID": 2005,
-        "Order ID": 2
-      },
-      {
-        "Task": "Part-7002",
-        "Start": 686,
-        "Finish": 704,
-        "Duration": 18,
-        "Resource": "带锯机",
-        "Product": "橡木办公桌",
-        "Part ID": 7002,
-        "Order ID": 7
-      },
-      {
-        "Task": "Part-7001",
-        "Start": 686,
-        "Finish": 706,
-        "Duration": 20,
-        "Resource": "五轴加工中心",
-        "Product": "橡木办公桌",
-        "Part ID": 7001,
-        "Order ID": 7
-      },
-      {
-        "Task": "Part-2005",
-        "Start": 700,
-        "Finish": 708,
-        "Duration": 8,
-        "Resource": "包装台",
-        "Product": "橡木书柜",
-        "Part ID": 2005,
-        "Order ID": 2
-      },
-      {
-        "Task": "Part-2007",
-        "Start": 695,
-        "Finish": 710,
-        "Duration": 15,
-        "Resource": "砂光机",
-        "Product": "橡木书柜",
-        "Part ID": 2007,
-        "Order ID": 2
-      },
-      {
-        "Task": "Part-2006",
-        "Start": 695,
-        "Finish": 715,
-        "Duration": 20,
-        "Resource": "组装台",
-        "Product": "橡木书柜",
-        "Part ID": 2006,
-        "Order ID": 2
-      },
-      {
-        "Task": "Part-7000",
-        "Start": 711,
-        "Finish": 721,
-        "Duration": 10,
-        "Resource": "砂光机",
-        "Product": "橡木办公桌",
-        "Part ID": 7000,
-        "Order ID": 7
-      },
-      {
-        "Task": "Part-7003",
-        "Start": 705,
-        "Finish": 723,
-        "Duration": 18,
-        "Resource": "带锯机",
-        "Product": "橡木办公桌",
-        "Part ID": 7003,
-        "Order ID": 7
-      },
-      {
-        "Task": "Part-2006",
-        "Start": 716,
-        "Finish": 724,
-        "Duration": 8,
-        "Resource": "包装台",
-        "Product": "橡木书柜",
-        "Part ID": 2006,
-        "Order ID": 2
-      },
-      {
-        "Task": "Part-7002",
-        "Start": 705,
-        "Finish": 725,
-        "Duration": 20,
-        "Resource": "五轴加工中心",
-        "Product": "橡木办公桌",
-        "Part ID": 7002,
-        "Order ID": 7
-      },
-      {
-        "Task": "Part-2007",
-        "Start": 711,
-        "Finish": 731,
-        "Duration": 20,
-        "Resource": "组装台",
-        "Product": "橡木书柜",
-        "Part ID": 2007,
-        "Order ID": 2
-      },
-      {
-        "Task": "Part-7001",
-        "Start": 722,
-        "Finish": 732,
-        "Duration": 10,
-        "Resource": "砂光机",
-        "Product": "橡木办公桌",
-        "Part ID": 7001,
-        "Order ID": 7
-      },
-      {
-        "Task": "Part-7000",
-        "Start": 722,
-        "Finish": 737,
-        "Duration": 15,
-        "Resource": "组装台",
-        "Product": "橡木办公桌",
-        "Part ID": 7000,
-        "Order ID": 7
-      },
-      {
-        "Task": "Part-2007",
-        "Start": 732,
-        "Finish": 740,
-        "Duration": 8,
-        "Resource": "包装台",
-        "Product": "橡木书柜",
-        "Part ID": 2007,
-        "Order ID": 2
-      },
-      {
-        "Task": "Part-7004",
-        "Start": 724,
-        "Finish": 742,
-        "Duration": 18,
-        "Resource": "带锯机",
-        "Product": "橡木办公桌",
-        "Part ID": 7004,
-        "Order ID": 7
-      },
-      {
-        "Task": "Part-7002",
-        "Start": 733,
-        "Finish": 743,
-        "Duration": 10,
-        "Resource": "砂光机",
-        "Product": "橡木办公桌",
-        "Part ID": 7002,
-        "Order ID": 7
-      },
-      {
-        "Task": "Part-7000",
-        "Start": 738,
-        "Finish": 743,
-        "Duration": 5,
-        "Resource": "包装台",
-        "Product": "橡木办公桌",
-        "Part ID": 7000,
-        "Order ID": 7
-      },
-      {
-        "Task": "Part-7003",
-        "Start": 724,
-        "Finish": 744,
-        "Duration": 20,
-        "Resource": "五轴加工中心",
-        "Product": "橡木办公桌",
-        "Part ID": 7003,
-        "Order ID": 7
-      },
-      {
-        "Task": "Part-7001",
-        "Start": 733,
-        "Finish": 748,
-        "Duration": 15,
-        "Resource": "组装台",
-        "Product": "橡木办公桌",
-        "Part ID": 7001,
-        "Order ID": 7
-      },
-      {
-        "Task": "Part-7001",
-        "Start": 749,
-        "Finish": 754,
-        "Duration": 5,
-        "Resource": "包装台",
-        "Product": "橡木办公桌",
-        "Part ID": 7001,
-        "Order ID": 7
-      },
-      {
-        "Task": "Part-7003",
-        "Start": 745,
-        "Finish": 755,
-        "Duration": 10,
-        "Resource": "砂光机",
-        "Product": "橡木办公桌",
-        "Part ID": 7003,
-        "Order ID": 7
-      },
-      {
-        "Task": "Part-7002",
-        "Start": 744,
-        "Finish": 759,
-        "Duration": 15,
-        "Resource": "组装台",
-        "Product": "橡木办公桌",
-        "Part ID": 7002,
-        "Order ID": 7
-      },
-      {
-        "Task": "Part-7005",
-        "Start": 743,
-        "Finish": 761,
-        "Duration": 18,
-        "Resource": "带锯机",
-        "Product": "橡木办公桌",
-        "Part ID": 7005,
-        "Order ID": 7
-      },
-      {
-        "Task": "Part-7004",
-        "Start": 743,
-        "Finish": 763,
-        "Duration": 20,
-        "Resource": "五轴加工中心",
-        "Product": "橡木办公桌",
-        "Part ID": 7004,
-        "Order ID": 7
-      },
-      {
-        "Task": "Part-7002",
-        "Start": 760,
-        "Finish": 765,
-        "Duration": 5,
-        "Resource": "包装台",
-        "Product": "橡木办公桌",
-        "Part ID": 7002,
-        "Order ID": 7
-      },
-      {
-        "Task": "Part-7003",
-        "Start": 756,
-        "Finish": 771,
-        "Duration": 15,
-        "Resource": "组装台",
-        "Product": "橡木办公桌",
-        "Part ID": 7003,
-        "Order ID": 7
-      },
-      {
-        "Task": "Part-7004",
-        "Start": 764,
-        "Finish": 774,
-        "Duration": 10,
-        "Resource": "砂光机",
-        "Product": "橡木办公桌",
-        "Part ID": 7004,
-        "Order ID": 7
-      },
-      {
-        "Task": "Part-7003",
-        "Start": 772,
-        "Finish": 777,
-        "Duration": 5,
-        "Resource": "包装台",
-        "Product": "橡木办公桌",
-        "Part ID": 7003,
-        "Order ID": 7
-      },
-      {
-        "Task": "Part-7006",
-        "Start": 762,
-        "Finish": 780,
-        "Duration": 18,
-        "Resource": "带锯机",
-        "Product": "橡木办公桌",
-        "Part ID": 7006,
-        "Order ID": 7
-      },
-      {
-        "Task": "Part-7005",
-        "Start": 762,
-        "Finish": 782,
-        "Duration": 20,
-        "Resource": "五轴加工中心",
-        "Product": "橡木办公桌",
-        "Part ID": 7005,
-        "Order ID": 7
-      },
-      {
-        "Task": "Part-7004",
-        "Start": 775,
-        "Finish": 790,
-        "Duration": 15,
-        "Resource": "组装台",
-        "Product": "橡木办公桌",
-        "Part ID": 7004,
-        "Order ID": 7
-      },
-      {
-        "Task": "Part-7005",
-        "Start": 783,
-        "Finish": 793,
-        "Duration": 10,
-        "Resource": "砂光机",
-        "Product": "橡木办公桌",
-        "Part ID": 7005,
-        "Order ID": 7
-      },
-      {
-        "Task": "Part-7004",
-        "Start": 791,
-        "Finish": 796,
-        "Duration": 5,
-        "Resource": "包装台",
-        "Product": "橡木办公桌",
-        "Part ID": 7004,
-        "Order ID": 7
-      },
-      {
-        "Task": "Part-7007",
-        "Start": 781,
-        "Finish": 799,
-        "Duration": 18,
-        "Resource": "带锯机",
-        "Product": "橡木办公桌",
-        "Part ID": 7007,
-        "Order ID": 7
-      },
-      {
-        "Task": "Part-7006",
-        "Start": 781,
-        "Finish": 801,
-        "Duration": 20,
-        "Resource": "五轴加工中心",
-        "Product": "橡木办公桌",
-        "Part ID": 7006,
-        "Order ID": 7
-      },
-      {
-        "Task": "Part-7005",
-        "Start": 794,
-        "Finish": 809,
-        "Duration": 15,
-        "Resource": "组装台",
-        "Product": "橡木办公桌",
-        "Part ID": 7005,
-        "Order ID": 7
-      },
-      {
-        "Task": "Part-7006",
-        "Start": 802,
-        "Finish": 812,
-        "Duration": 10,
-        "Resource": "砂光机",
-        "Product": "橡木办公桌",
-        "Part ID": 7006,
-        "Order ID": 7
-      },
-      {
-        "Task": "Part-7005",
-        "Start": 810,
-        "Finish": 815,
-        "Duration": 5,
-        "Resource": "包装台",
-        "Product": "橡木办公桌",
-        "Part ID": 7005,
-        "Order ID": 7
-      },
-      {
-        "Task": "Part-7008",
-        "Start": 800,
-        "Finish": 818,
-        "Duration": 18,
-        "Resource": "带锯机",
-        "Product": "橡木办公桌",
-        "Part ID": 7008,
-        "Order ID": 7
-      },
-      {
-        "Task": "Part-7007",
-        "Start": 800,
-        "Finish": 820,
-        "Duration": 20,
-        "Resource": "五轴加工中心",
-        "Product": "橡木办公桌",
-        "Part ID": 7007,
-        "Order ID": 7
-      },
-      {
-        "Task": "Part-7006",
-        "Start": 813,
-        "Finish": 828,
-        "Duration": 15,
-        "Resource": "组装台",
-        "Product": "橡木办公桌",
-        "Part ID": 7006,
-        "Order ID": 7
-      },
-      {
-        "Task": "Part-7007",
-        "Start": 821,
-        "Finish": 831,
-        "Duration": 10,
-        "Resource": "砂光机",
-        "Product": "橡木办公桌",
-        "Part ID": 7007,
-        "Order ID": 7
-      },
-      {
-        "Task": "Part-7006",
-        "Start": 829,
-        "Finish": 834,
-        "Duration": 5,
-        "Resource": "包装台",
-        "Product": "橡木办公桌",
-        "Part ID": 7006,
-        "Order ID": 7
-      },
-      {
-        "Task": "Part-7009",
-        "Start": 819,
-        "Finish": 837,
-        "Duration": 18,
-        "Resource": "带锯机",
-        "Product": "橡木办公桌",
-        "Part ID": 7009,
-        "Order ID": 7
-      },
-      {
-        "Task": "Part-7008",
-        "Start": 819,
-        "Finish": 839,
-        "Duration": 20,
-        "Resource": "五轴加工中心",
-        "Product": "橡木办公桌",
-        "Part ID": 7008,
-        "Order ID": 7
-      },
-      {
-        "Task": "Part-1005",
-        "Start": 838,
-        "Finish": 846,
-        "Duration": 8,
-        "Resource": "带锯机",
-        "Product": "黑胡桃木餐桌",
-        "Part ID": 1005,
-        "Order ID": 1
-      },
-      {
-        "Task": "Part-7007",
-        "Start": 832,
-        "Finish": 847,
-        "Duration": 15,
-        "Resource": "组装台",
-        "Product": "橡木办公桌",
-        "Part ID": 7007,
-        "Order ID": 7
-      },
-      {
-        "Task": "Part-7008",
-        "Start": 840,
-        "Finish": 850,
-        "Duration": 10,
-        "Resource": "砂光机",
-        "Product": "橡木办公桌",
-        "Part ID": 7008,
-        "Order ID": 7
-      },
-      {
-        "Task": "Part-7007",
-        "Start": 848,
-        "Finish": 853,
-        "Duration": 5,
-        "Resource": "包装台",
-        "Product": "橡木办公桌",
-        "Part ID": 7007,
-        "Order ID": 7
-      },
-      {
-        "Task": "Part-1000",
-        "Start": 847,
-        "Finish": 855,
-        "Duration": 8,
-        "Resource": "带锯机",
-        "Product": "黑胡桃木餐桌",
-        "Part ID": 1000,
-        "Order ID": 1
-      },
-      {
-        "Task": "Part-7009",
-        "Start": 838,
-        "Finish": 858,
-        "Duration": 20,
-        "Resource": "五轴加工中心",
-        "Product": "橡木办公桌",
-        "Part ID": 7009,
-        "Order ID": 7
-      },
-      {
-        "Task": "Part-1001",
-        "Start": 856,
-        "Finish": 864,
-        "Duration": 8,
-        "Resource": "带锯机",
-        "Product": "黑胡桃木餐桌",
-        "Part ID": 1001,
-        "Order ID": 1
-      },
-      {
-        "Task": "Part-7008",
-        "Start": 851,
-        "Finish": 866,
-        "Duration": 15,
-        "Resource": "组装台",
-        "Product": "橡木办公桌",
-        "Part ID": 7008,
-        "Order ID": 7
-      },
-      {
-        "Task": "Part-1005",
-        "Start": 847,
-        "Finish": 867,
-        "Duration": 20,
-        "Resource": "五轴加工中心",
-        "Product": "黑胡桃木餐桌",
-        "Part ID": 1005,
-        "Order ID": 1
-      },
-      {
-        "Task": "Part-7009",
-        "Start": 859,
-        "Finish": 869,
-        "Duration": 10,
-        "Resource": "砂光机",
-        "Product": "橡木办公桌",
-        "Part ID": 7009,
-        "Order ID": 7
-      },
-      {
-        "Task": "Part-7008",
-        "Start": 867,
-        "Finish": 872,
-        "Duration": 5,
-        "Resource": "包装台",
-        "Product": "橡木办公桌",
-        "Part ID": 7008,
-        "Order ID": 7
-      },
-      {
-        "Task": "Part-1002",
-        "Start": 865,
-        "Finish": 873,
-        "Duration": 8,
-        "Resource": "带锯机",
-        "Product": "黑胡桃木餐桌",
-        "Part ID": 1002,
-        "Order ID": 1
-      },
-      {
-        "Task": "Part-1000",
-        "Start": 859,
-        "Finish": 879,
-        "Duration": 20,
-        "Resource": "五轴加工中心",
-        "Product": "黑胡桃木餐桌",
-        "Part ID": 1000,
-        "Order ID": 1
-      },
-      {
-        "Task": "Part-1005",
-        "Start": 870,
-        "Finish": 880,
-        "Duration": 10,
-        "Resource": "砂光机",
-        "Product": "黑胡桃木餐桌",
-        "Part ID": 1005,
-        "Order ID": 1
-      },
-      {
-        "Task": "Part-1003",
-        "Start": 874,
-        "Finish": 882,
-        "Duration": 8,
-        "Resource": "带锯机",
-        "Product": "黑胡桃木餐桌",
-        "Part ID": 1003,
-        "Order ID": 1
-      },
-      {
-        "Task": "Part-7009",
-        "Start": 870,
-        "Finish": 885,
-        "Duration": 15,
-        "Resource": "组装台",
-        "Product": "橡木办公桌",
-        "Part ID": 7009,
-        "Order ID": 7
-      },
-      {
-        "Task": "Part-1001",
-        "Start": 868,
-        "Finish": 888,
-        "Duration": 20,
-        "Resource": "五轴加工中心",
-        "Product": "黑胡桃木餐桌",
-        "Part ID": 1001,
-        "Order ID": 1
-      },
-      {
-        "Task": "Part-1000",
-        "Start": 881,
-        "Finish": 891,
-        "Duration": 10,
-        "Resource": "砂光机",
-        "Product": "黑胡桃木餐桌",
-        "Part ID": 1000,
-        "Order ID": 1
-      },
-      {
-        "Task": "Part-1004",
-        "Start": 883,
-        "Finish": 891,
-        "Duration": 8,
-        "Resource": "带锯机",
-        "Product": "黑胡桃木餐桌",
-        "Part ID": 1004,
-        "Order ID": 1
-      },
-      {
-        "Task": "Part-7009",
-        "Start": 886,
-        "Finish": 891,
-        "Duration": 5,
-        "Resource": "包装台",
-        "Product": "橡木办公桌",
-        "Part ID": 7009,
-        "Order ID": 7
-      },
-      {
-        "Task": "Part-1005",
-        "Start": 881,
-        "Finish": 896,
-        "Duration": 15,
-        "Resource": "组装台",
-        "Product": "黑胡桃木餐桌",
-        "Part ID": 1005,
-        "Order ID": 1
-      },
-      {
-        "Task": "Part-1002",
-        "Start": 880,
-        "Finish": 900,
-        "Duration": 20,
-        "Resource": "五轴加工中心",
-        "Product": "黑胡桃木餐桌",
-        "Part ID": 1002,
-        "Order ID": 1
-      },
-      {
-        "Task": "Part-1006",
-        "Start": 892,
-        "Finish": 900,
-        "Duration": 8,
-        "Resource": "带锯机",
-        "Product": "黑胡桃木餐桌",
-        "Part ID": 1006,
-        "Order ID": 1
-      },
-      {
-        "Task": "Part-1001",
-        "Start": 892,
-        "Finish": 902,
-        "Duration": 10,
-        "Resource": "砂光机",
-        "Product": "黑胡桃木餐桌",
-        "Part ID": 1001,
-        "Order ID": 1
-      },
-      {
-        "Task": "Part-1005",
-        "Start": 897,
-        "Finish": 902,
-        "Duration": 5,
-        "Resource": "包装台",
-        "Product": "黑胡桃木餐桌",
-        "Part ID": 1005,
-        "Order ID": 1
-      },
-      {
-        "Task": "Part-1000",
-        "Start": 892,
-        "Finish": 907,
-        "Duration": 15,
-        "Resource": "组装台",
-        "Product": "黑胡桃木餐桌",
-        "Part ID": 1000,
-        "Order ID": 1
-      },
-      {
-        "Task": "Part-1003",
-        "Start": 889,
-        "Finish": 909,
-        "Duration": 20,
-        "Resource": "五轴加工中心",
-        "Product": "黑胡桃木餐桌",
-        "Part ID": 1003,
-        "Order ID": 1
-      },
-      {
-        "Task": "Part-1007",
-        "Start": 901,
-        "Finish": 909,
-        "Duration": 8,
-        "Resource": "带锯机",
-        "Product": "黑胡桃木餐桌",
-        "Part ID": 1007,
-        "Order ID": 1
-      },
-      {
-        "Task": "Part-1002",
-        "Start": 903,
-        "Finish": 913,
-        "Duration": 10,
-        "Resource": "砂光机",
-        "Product": "黑胡桃木餐桌",
-        "Part ID": 1002,
-        "Order ID": 1
-      },
-      {
-        "Task": "Part-1000",
-        "Start": 908,
-        "Finish": 913,
-        "Duration": 5,
-        "Resource": "包装台",
-        "Product": "黑胡桃木餐桌",
-        "Part ID": 1000,
-        "Order ID": 1
-      },
-      {
-        "Task": "Part-1001",
-        "Start": 903,
-        "Finish": 918,
-        "Duration": 15,
-        "Resource": "组装台",
-        "Product": "黑胡桃木餐桌",
-        "Part ID": 1001,
-        "Order ID": 1
-      },
-      {
-        "Task": "Part-1008",
-        "Start": 910,
-        "Finish": 918,
-        "Duration": 8,
-        "Resource": "带锯机",
-        "Product": "黑胡桃木餐桌",
-        "Part ID": 1008,
-        "Order ID": 1
-      },
-      {
-        "Task": "Part-1004",
-        "Start": 901,
-        "Finish": 921,
-        "Duration": 20,
-        "Resource": "五轴加工中心",
-        "Product": "黑胡桃木餐桌",
-        "Part ID": 1004,
-        "Order ID": 1
-      },
-      {
-        "Task": "Part-1003",
-        "Start": 914,
-        "Finish": 924,
-        "Duration": 10,
-        "Resource": "砂光机",
-        "Product": "黑胡桃木餐桌",
-        "Part ID": 1003,
-        "Order ID": 1
-      },
-      {
-        "Task": "Part-1001",
-        "Start": 919,
-        "Finish": 924,
-        "Duration": 5,
-        "Resource": "包装台",
-        "Product": "黑胡桃木餐桌",
-        "Part ID": 1001,
-        "Order ID": 1
-      },
-      {
-        "Task": "Part-1009",
-        "Start": 919,
-        "Finish": 927,
-        "Duration": 8,
-        "Resource": "带锯机",
-        "Product": "黑胡桃木餐桌",
-        "Part ID": 1009,
-        "Order ID": 1
-      },
-      {
-        "Task": "Part-1002",
-        "Start": 914,
-        "Finish": 929,
-        "Duration": 15,
-        "Resource": "组装台",
-        "Product": "黑胡桃木餐桌",
-        "Part ID": 1002,
-        "Order ID": 1
-      },
-      {
-        "Task": "Part-1004",
-        "Start": 925,
-        "Finish": 935,
-        "Duration": 10,
-        "Resource": "砂光机",
-        "Product": "黑胡桃木餐桌",
-        "Part ID": 1004,
-        "Order ID": 1
-      },
-      {
-        "Task": "Part-1002",
-        "Start": 930,
-        "Finish": 935,
-        "Duration": 5,
-        "Resource": "包装台",
-        "Product": "黑胡桃木餐桌",
-        "Part ID": 1002,
-        "Order ID": 1
-      },
-      {
-        "Task": "Part-1008",
-        "Start": 919,
-        "Finish": 939,
-        "Duration": 20,
-        "Resource": "五轴加工中心",
-        "Product": "黑胡桃木餐桌",
-        "Part ID": 1008,
-        "Order ID": 1
-      },
-      {
-        "Task": "Part-1003",
-        "Start": 925,
-        "Finish": 940,
-        "Duration": 15,
-        "Resource": "组装台",
-        "Product": "黑胡桃木餐桌",
-        "Part ID": 1003,
-        "Order ID": 1
-      },
-      {
-        "Task": "Part-1003",
-        "Start": 941,
-        "Finish": 946,
-        "Duration": 5,
-        "Resource": "包装台",
-        "Product": "黑胡桃木餐桌",
-        "Part ID": 1003,
-        "Order ID": 1
-      },
-      {
-        "Task": "Part-1009",
-        "Start": 928,
-        "Finish": 948,
-        "Duration": 20,
-        "Resource": "五轴加工中心",
-        "Product": "黑胡桃木餐桌",
-        "Part ID": 1009,
-        "Order ID": 1
-      },
-      {
-        "Task": "Part-1008",
-        "Start": 940,
-        "Finish": 950,
-        "Duration": 10,
-        "Resource": "砂光机",
-        "Product": "黑胡桃木餐桌",
-        "Part ID": 1008,
-        "Order ID": 1
-      },
-      {
-        "Task": "Part-1004",
-        "Start": 936,
-        "Finish": 951,
-        "Duration": 15,
-        "Resource": "组装台",
-        "Product": "黑胡桃木餐桌",
-        "Part ID": 1004,
-        "Order ID": 1
-      },
-      {
-        "Task": "Part-1004",
-        "Start": 952,
-        "Finish": 957,
-        "Duration": 5,
-        "Resource": "包装台",
-        "Product": "黑胡桃木餐桌",
-        "Part ID": 1004,
-        "Order ID": 1
-      },
-      {
-        "Task": "Part-1009",
-        "Start": 951,
-        "Finish": 961,
-        "Duration": 10,
-        "Resource": "砂光机",
-        "Product": "黑胡桃木餐桌",
-        "Part ID": 1009,
-        "Order ID": 1
-      },
-      {
-        "Task": "Part-1008",
-        "Start": 951,
-        "Finish": 966,
-        "Duration": 15,
-        "Resource": "组装台",
-        "Product": "黑胡桃木餐桌",
-        "Part ID": 1008,
-        "Order ID": 1
-      },
-      {
-        "Task": "Part-1006",
-        "Start": 949,
-        "Finish": 969,
-        "Duration": 20,
-        "Resource": "五轴加工中心",
-        "Product": "黑胡桃木餐桌",
-        "Part ID": 1006,
-        "Order ID": 1
-      },
-      {
-        "Task": "Part-1007",
-        "Start": 952,
-        "Finish": 972,
-        "Duration": 20,
-        "Resource": "五轴加工中心",
-        "Product": "黑胡桃木餐桌",
-        "Part ID": 1007,
-        "Order ID": 1
-      },
-      {
-        "Task": "Part-1008",
-        "Start": 967,
-        "Finish": 972,
-        "Duration": 5,
-        "Resource": "包装台",
-        "Product": "黑胡桃木餐桌",
-        "Part ID": 1008,
-        "Order ID": 1
-      },
-      {
-        "Task": "Part-1009",
-        "Start": 962,
-        "Finish": 977,
-        "Duration": 15,
-        "Resource": "组装台",
-        "Product": "黑胡桃木餐桌",
-        "Part ID": 1009,
-        "Order ID": 1
-      },
-      {
-        "Task": "Part-1006",
-        "Start": 970,
-        "Finish": 980,
-        "Duration": 10,
-        "Resource": "砂光机",
-        "Product": "黑胡桃木餐桌",
-        "Part ID": 1006,
-        "Order ID": 1
-      },
-      {
-        "Task": "Part-1009",
-        "Start": 978,
-        "Finish": 983,
-        "Duration": 5,
-        "Resource": "包装台",
-        "Product": "黑胡桃木餐桌",
-        "Part ID": 1009,
-        "Order ID": 1
-      },
-      {
-        "Task": "Part-1007",
-        "Start": 981,
-        "Finish": 991,
-        "Duration": 10,
-        "Resource": "砂光机",
-        "Product": "黑胡桃木餐桌",
-        "Part ID": 1007,
-        "Order ID": 1
-      },
-      {
-        "Task": "Part-1006",
-        "Start": 981,
-        "Finish": 996,
-        "Duration": 15,
-        "Resource": "组装台",
-        "Product": "黑胡桃木餐桌",
-        "Part ID": 1006,
-        "Order ID": 1
+        "Product": "樱桃木椅子",
+        "Part ID": 4009,
+        "Order ID": 4
       }
     ],
-    "score": 0.6089323943661972,
-    "total_reward": 3881.537685150731
+    "score": 0.593518611521418,
+    "total_reward": 2127.7987554386755
   },
-  "timestamp": "2025-11-19 21:41:59"
+  "timestamp": "2025-11-27 22:31:15"
 }

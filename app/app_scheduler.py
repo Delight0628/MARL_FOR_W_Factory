@@ -744,6 +744,27 @@ def run_scheduling(actor_model, orders_config, custom_products=None, max_steps=1
                         head_probs_list = [np.squeeze(h.numpy()) for h in action_probs_tensor]
                     else:
                         head_probs_list = [np.squeeze(action_probs_tensor.numpy()[0])]
+                    
+                    # 11-26 修复：应用动作掩码 (与 evaluation.py 保持一致)
+                    # 解决离线评估0完成问题：若无掩码，策略容易选到被收紧的IDLE
+                    if info and agent in info and 'action_mask' in info[agent]:
+                        action_mask = info[agent]['action_mask']
+                        masked_head_probs_list = []
+                        for probs in head_probs_list:
+                            # 复制一份以避免修改原数组
+                            current_probs = probs.copy()
+                            
+                            # 确保掩码长度匹配
+                            if len(action_mask) == len(current_probs):
+                                masked_probs = current_probs * action_mask
+                                # 检查是否全零（所有动作都被掩码屏蔽）
+                                if np.sum(masked_probs) > 1e-10:
+                                    current_probs = masked_probs
+                                # else: 若全被屏蔽，回退到原始概率（避免全零导致的错误）
+                            
+                            masked_head_probs_list.append(current_probs)
+                        head_probs_list = masked_head_probs_list
+
                     sp = env.action_space(agent)
                     if isinstance(sp, gym.spaces.MultiDiscrete):
                         k = len(sp.nvec)
