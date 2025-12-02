@@ -285,7 +285,24 @@ def save_app_state():
                 'stats': st.session_state.get('last_stats', None),
                 'gantt_history': st.session_state.get('last_gantt_history', None),
                 'score': st.session_state.get('last_score', None),
-                'total_reward': st.session_state.get('last_total_reward', None)
+                'total_reward': st.session_state.get('last_total_reward', None),
+                'heuristic_results': st.session_state.get('heuristic_results', None)
+            },
+            # 订单配置界面 UI 参数（用于刷新后还原随机订单生成区的设置）
+            'ui_config': {
+                'config_method': st.session_state.get('config_method_key', 'random'),
+                'num_orders': st.session_state.get('num_orders', 5),
+                'min_quantity': st.session_state.get('qty_min', 3),
+                'max_quantity': st.session_state.get('qty_max', 10),
+                'min_due': st.session_state.get('due_min', 200),
+                'max_due': st.session_state.get('due_max', 700),
+                'min_arrival': st.session_state.get('arrival_min', 0),
+                'max_arrival': st.session_state.get('arrival_max', 50),
+                # 动态环境配置开关
+                'enable_failure': st.session_state.get('enable_failure', False),
+                'enable_emergency': st.session_state.get('enable_emergency', False),
+                # 是否启用启发式算法对比
+                'compare_heuristics': st.session_state.get('compare_heuristics', True),
             },
             'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         }
@@ -592,7 +609,7 @@ def find_available_models():
     
     return models
 
-def run_heuristic_scheduling(heuristic_name, orders_config, custom_products=None, max_steps=1500, progress_bar=None, status_text=None):
+def run_heuristic_scheduling(heuristic_name, orders_config, custom_products=None, max_steps=1500, progress_bar=None, status_text=None, enable_failure=False, enable_emergency=False):
     """
     运行启发式算法调度仿真
     
@@ -611,7 +628,8 @@ def run_heuristic_scheduling(heuristic_name, orders_config, custom_products=None
     try:
         config = {
             'custom_orders': orders_config,
-            'equipment_failure_enabled': False,
+            'equipment_failure_enabled': enable_failure,
+            'emergency_orders_enabled': enable_emergency,
             'stage_name': f'{heuristic_name}启发式调度'
         }
         
@@ -783,7 +801,7 @@ def run_heuristic_scheduling(heuristic_name, orders_config, custom_products=None
         if original_routes is not None:
             w_factory_config.PRODUCT_ROUTES = original_routes
 
-def run_scheduling(actor_model, orders_config, custom_products=None, max_steps=1500, progress_bar=None, status_text=None):
+def run_scheduling(actor_model, orders_config, custom_products=None, max_steps=1500, progress_bar=None, status_text=None, enable_failure=False, enable_emergency=False):
     """运行调度仿真"""
     # 如果有自定义产品，临时添加到PRODUCT_ROUTES
     from environments import w_factory_config
@@ -794,10 +812,11 @@ def run_scheduling(actor_model, orders_config, custom_products=None, max_steps=1
         w_factory_config.PRODUCT_ROUTES.update(custom_products)
     
     try:
-        # 10-27-16-30 统一：环境端兼容 'disable_failures'，但为避免误解，这里明确使用 equipment_failure_enabled=False
+        # 10-27-16-30 统一：环境端兼容 'disable_failures'，但为避免误解，这里明确使用 equipment_failure_enabled
         config = {
             'custom_orders': orders_config,
-            'equipment_failure_enabled': False,
+            'equipment_failure_enabled': enable_failure,
+            'emergency_orders_enabled': enable_emergency,
             'stage_name': '用户自定义调度'
         }
         
@@ -1086,6 +1105,56 @@ def main():
             st.session_state['model_path'] = saved_state.get('model_path', '')
             st.session_state['model_loaded'] = saved_state.get('model_loaded', False)
             
+            # 恢复订单配置界面的 UI 设置（随机订单生成参数等）
+            ui_config = saved_state.get('ui_config', {})
+            if ui_config:
+                st.session_state['config_method_key'] = ui_config.get('config_method', 'random')
+                # 注意：这里只在 session_state 中不存在时才设置，避免与控件的 key 参数冲突
+                if 'num_orders' not in st.session_state:
+                    st.session_state['num_orders'] = ui_config.get('num_orders', 5)
+                if 'qty_min' not in st.session_state:
+                    st.session_state['qty_min'] = ui_config.get('min_quantity', 3)
+                if 'qty_max' not in st.session_state:
+                    st.session_state['qty_max'] = ui_config.get('max_quantity', 10)
+                if 'due_min' not in st.session_state:
+                    st.session_state['due_min'] = ui_config.get('min_due', 200)
+                if 'due_max' not in st.session_state:
+                    st.session_state['due_max'] = ui_config.get('max_due', 700)
+                if 'arrival_min' not in st.session_state:
+                    st.session_state['arrival_min'] = ui_config.get('min_arrival', 0)
+                if 'arrival_max' not in st.session_state:
+                    st.session_state['arrival_max'] = ui_config.get('max_arrival', 50)
+                # 恢复动态环境配置开关
+                if 'enable_failure' not in st.session_state:
+                    st.session_state['enable_failure'] = ui_config.get('enable_failure', False)
+                if 'enable_emergency' not in st.session_state:
+                    st.session_state['enable_emergency'] = ui_config.get('enable_emergency', False)
+                # 恢复启发式算法对比选项
+                if 'compare_heuristics' not in st.session_state:
+                    st.session_state['compare_heuristics'] = ui_config.get('compare_heuristics', True)
+            else:
+                # 如果没有保存的 ui_config，初始化默认值
+                if 'num_orders' not in st.session_state:
+                    st.session_state['num_orders'] = 5
+                if 'qty_min' not in st.session_state:
+                    st.session_state['qty_min'] = 3
+                if 'qty_max' not in st.session_state:
+                    st.session_state['qty_max'] = 10
+                if 'due_min' not in st.session_state:
+                    st.session_state['due_min'] = 200
+                if 'due_max' not in st.session_state:
+                    st.session_state['due_max'] = 700
+                if 'arrival_min' not in st.session_state:
+                    st.session_state['arrival_min'] = 0
+                if 'arrival_max' not in st.session_state:
+                    st.session_state['arrival_max'] = 50
+                if 'enable_failure' not in st.session_state:
+                    st.session_state['enable_failure'] = False
+                if 'enable_emergency' not in st.session_state:
+                    st.session_state['enable_emergency'] = False
+                if 'compare_heuristics' not in st.session_state:
+                    st.session_state['compare_heuristics'] = True
+            
             # 恢复仿真结果
             last_sim = saved_state.get('last_simulation', {})
             if last_sim.get('stats'):
@@ -1093,6 +1162,10 @@ def main():
                 st.session_state['last_gantt_history'] = last_sim.get('gantt_history')
                 st.session_state['last_score'] = last_sim.get('score')
                 st.session_state['last_total_reward'] = last_sim.get('total_reward')
+                
+                # 恢复启发式算法对比结果
+                if last_sim.get('heuristic_results'):
+                    st.session_state['heuristic_results'] = last_sim.get('heuristic_results')
                 
                 # 同时设置到当前结果变量中，以便显示
                 st.session_state['final_stats'] = last_sim.get('stats')
@@ -1123,9 +1196,17 @@ def main():
     )
     
     actor_model = None
-    
+
+    # 为不同的加载方式设置统一的行标题，让控件处于同一视觉行
+    if model_input_method == get_text("from_history", lang):
+        model_row_label = get_text("select_model", lang)
+    else:
+        model_row_label = get_text("model_path_input", lang)
+
+    st.write(model_row_label)
+
     col1, col2 = st.columns([3, 1])
-    
+
     with col1:
         if model_input_method == get_text("from_history", lang):
             available_models = find_available_models()
@@ -1147,10 +1228,11 @@ def main():
                             break
                 
                 selected_model = st.selectbox(
-                    get_text("select_model", lang),
+                    "",
                     options=model_options,
                     index=default_index,
-                    help=get_text("model_help", lang)
+                    help=get_text("model_help", lang),
+                    label_visibility="collapsed"
                 )
                 
                 selected_model_info = next(m for m in available_models if m["name"] == selected_model)
@@ -1159,14 +1241,13 @@ def main():
                 st.caption(f"{get_text('model_path', lang)}{model_path}")
         else:
             model_path = st.text_input(
-                get_text("model_path_input", lang),
+                "",
                 value="mappo/ppo_models/",
-                help=get_text("model_path_help", lang)
+                help=get_text("model_path_help", lang),
+                label_visibility="collapsed"
             )
     
     with col2:
-        st.write("")  # 空行对齐
-        st.write("")  # 空行对齐
         # 加载模型按钮
         if st.button(get_text("load_model", lang), type="primary", use_container_width=True):
             if model_path:
@@ -1268,12 +1349,23 @@ def main():
     st.header(get_text("order_config", lang))
     
     # 提供两种配置方式
+    saved_method_key = st.session_state.get('config_method_key', 'random')
+    method_options = [get_text("random_orders", lang), get_text("custom_orders", lang)]
+    default_index = 1 if saved_method_key == 'custom' else 0
+
     config_method = st.radio(
         get_text("choose_config_method", lang),
-        [get_text("random_orders", lang), get_text("custom_orders", lang)],
+        method_options,
         horizontal=True,
-        label_visibility="collapsed"
+        label_visibility="collapsed",
+        index=default_index
     )
+
+    # 将当前选择映射回内部 key 以便持久化
+    if config_method == get_text("custom_orders", lang):
+        st.session_state['config_method_key'] = 'custom'
+    else:
+        st.session_state['config_method_key'] = 'random'
     
     if config_method == get_text("custom_orders", lang):
         # 初始化订单列表
@@ -1350,8 +1442,29 @@ def main():
     else:  # 随机生成订单
         st.subheader(get_text("random_order_gen", lang))
         
-        # 订单数量
-        num_orders = st.slider(get_text("order_count", lang), min_value=3, max_value=10, value=5)
+        # 确保所有 UI 参数在 session_state 中有默认值
+        if 'num_orders' not in st.session_state:
+            st.session_state['num_orders'] = 5
+        if 'qty_min' not in st.session_state:
+            st.session_state['qty_min'] = 3
+        if 'qty_max' not in st.session_state:
+            st.session_state['qty_max'] = 10
+        if 'due_min' not in st.session_state:
+            st.session_state['due_min'] = 200
+        if 'due_max' not in st.session_state:
+            st.session_state['due_max'] = 700
+        if 'arrival_min' not in st.session_state:
+            st.session_state['arrival_min'] = 0
+        if 'arrival_max' not in st.session_state:
+            st.session_state['arrival_max'] = 50
+        
+        # 订单数量 - 只使用 key，不设置 value
+        num_orders = st.slider(
+            get_text("order_count", lang),
+            min_value=3,
+            max_value=10,
+            key="num_orders"
+        )
         
         col1, col2, col3 = st.columns(3)
         
@@ -1359,25 +1472,25 @@ def main():
             st.write(get_text("product_quantity_range", lang))
             subcol1, subcol2 = st.columns(2)
             with subcol1:
-                min_quantity = st.number_input(get_text("from", lang), min_value=1, max_value=50, value=3, key="qty_min")
+                min_quantity = st.number_input(get_text("from", lang), min_value=1, max_value=50, key="qty_min")
             with subcol2:
-                max_quantity = st.number_input(get_text("to", lang), min_value=1, max_value=50, value=10, key="qty_max")
+                max_quantity = st.number_input(get_text("to", lang), min_value=1, max_value=50, key="qty_max")
         
         with col2:
             st.write(get_text("due_date_range", lang))
             subcol1, subcol2 = st.columns(2)
             with subcol1:
-                min_due = st.number_input(get_text("from", lang), min_value=100, max_value=2000, value=200, step=10, key="due_min")
+                min_due = st.number_input(get_text("from", lang), min_value=100, max_value=2000, step=10, key="due_min")
             with subcol2:
-                max_due = st.number_input(get_text("to", lang), min_value=100, max_value=2000, value=700, step=10, key="due_max")
+                max_due = st.number_input(get_text("to", lang), min_value=100, max_value=2000, step=10, key="due_max")
         
         with col3:
             st.write(get_text("arrival_time_range", lang))
             subcol1, subcol2 = st.columns(2)
             with subcol1:
-                min_arrival = st.number_input(get_text("from", lang), min_value=0, max_value=500, value=0, step=10, key="arrival_min")
+                min_arrival = st.number_input(get_text("from", lang), min_value=0, max_value=500, step=10, key="arrival_min")
             with subcol2:
-                max_arrival = st.number_input(get_text("to", lang), min_value=0, max_value=500, value=50, step=10, key="arrival_max")
+                max_arrival = st.number_input(get_text("to", lang), min_value=0, max_value=500, step=10, key="arrival_max")
         
         if st.button(get_text("generate_random", lang), type="primary"):
             # 🔧 支持自定义产品：合并系统产品和自定义产品
@@ -1512,10 +1625,28 @@ def main():
         compare_heuristics = st.checkbox(
             get_text("compare_heuristics_checkbox", lang),
             value=st.session_state.get('compare_heuristics', True),
-            help=get_text("compare_heuristics_help", lang)
+            help=get_text("compare_heuristics_help", lang),
+            key="compare_heuristics"
         )
-        st.session_state['compare_heuristics'] = compare_heuristics
         
+        # 12-02 新增：动态环境配置
+        st.subheader("动态环境配置")
+        col_d1, col_d2 = st.columns(2)
+        with col_d1:
+            enable_failure = st.checkbox(
+                "启用设备故障模拟", 
+                value=st.session_state.get('enable_failure', False), 
+                help="模拟设备随机停机故障",
+                key="enable_failure"
+            )
+        with col_d2:
+            enable_emergency = st.checkbox(
+                "启用紧急插单模拟", 
+                value=st.session_state.get('enable_emergency', False), 
+                help="模拟运行过程中随机插入紧急订单",
+                key="enable_emergency"
+            )
+
         st.write("")  # 空行
         
         if st.button(get_text("start_simulation", lang), type="primary", use_container_width=True):
@@ -1533,7 +1664,9 @@ def main():
                 final_stats, gantt_history, score, total_reward = run_scheduling(
                     actor_model, orders, custom_products, 
                     progress_bar=progress_bar, 
-                    status_text=status_text
+                    status_text=status_text,
+                    enable_failure=enable_failure,
+                    enable_emergency=enable_emergency
                 )
                 
                 # 保存MARL结果
@@ -1555,7 +1688,9 @@ def main():
                         h_stats, h_history, h_score = run_heuristic_scheduling(
                             heuristic, orders, custom_products,
                             progress_bar=progress_bar,
-                            status_text=status_text
+                            status_text=status_text,
+                            enable_failure=enable_failure,
+                            enable_emergency=enable_emergency
                         )
                         
                         heuristic_results[heuristic] = {
@@ -1578,11 +1713,12 @@ def main():
                     heuristic_results=heuristic_results
                 )
 
-                # 同时保存到持久化变量
+                # 同时保存到持久化变量（包括启发式算法对比结果）
                 st.session_state['last_stats'] = final_stats
                 st.session_state['last_gantt_history'] = gantt_history
                 st.session_state['last_score'] = score
                 st.session_state['last_total_reward'] = total_reward
+                # heuristic_results 已经在上面保存到 session_state 了
                 
                 save_app_state()  # 💾 保存状态
                 progress_bar.empty()

@@ -571,9 +571,9 @@ TEXTS = {
         "en": "⚠️ Please load model first"
     },
     "config_orders_first": {
-        "zh-CN": "⚠️ 请先配置订单",
-        "zh-TW": "⚠️ 請先配置訂單",
-        "en": "⚠️ Please configure orders first"
+        "zh-CN": "⚠️ 请先配置生产订单",
+        "zh-TW": "⚠️ 請先配置生產訂單",
+        "en": "⚠️ Please configure orders of production first"
     },
     "simulation_complete": {
         "zh-CN": "✅ 调度仿真完成！",
