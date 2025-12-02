@@ -297,6 +297,86 @@ def save_app_state():
         # 静默失败，不显示错误
         return False
 
+def _extract_model_tag_from_path(model_path: str) -> str:
+    import re
+    if not model_path:
+        return "unknown"
+    base_name = os.path.basename(model_path)
+    name, _ = os.path.splitext(base_name)
+    match = re.match(r"^(\d{4}_\d{4})", name)
+    if match:
+        return match.group(1)
+    parent = os.path.basename(os.path.dirname(model_path))
+    match = re.match(r"^(\d{4}_\d{4})", parent)
+    if match:
+        return match.group(1)
+    return name
+
+def save_schedule_result(model_path: str, orders: list, final_stats: dict, score: float, gantt_history: list = None, heuristic_results: dict = None) -> None:
+    try:
+        total_parts = sum(order.get("quantity", 0) for order in (orders or []))
+        model_tag = _extract_model_tag_from_path(model_path)
+        folder_name = f"{model_tag}+{total_parts}+{score:.3f}"
+        
+        # 创建独立的子文件夹
+        save_dir = os.path.join(app_dir, "result", folder_name)
+        os.makedirs(save_dir, exist_ok=True)
+
+        # 处理启发式对比数据
+        comparison_data = {}
+        if heuristic_results:
+            for name, res in heuristic_results.items():
+                h_stats = res.get('stats', {})
+                h_score = res.get('score', 0)
+                comparison_data[name] = {
+                    "score": h_score,
+                    "makespan": h_stats.get('makespan', 0),
+                    "total_parts": h_stats.get('total_parts', 0),
+                    "mean_utilization": h_stats.get('mean_utilization', 0),
+                    "total_tardiness": h_stats.get('total_tardiness', 0)
+                }
+                
+                # 保存启发式算法的甘特图
+                h_history = res.get('history', [])
+                if h_history:
+                    try:
+                        h_fig = create_gantt_chart(h_history)
+                        if h_fig:
+                            h_fig.write_html(os.path.join(save_dir, f"gantt_{name}.html"))
+                    except Exception:
+                        pass
+
+        # 保存MARL的甘特图
+        if gantt_history:
+            try:
+                marl_fig = create_gantt_chart(gantt_history)
+                if marl_fig:
+                    marl_fig.write_html(os.path.join(save_dir, "gantt_MARL.html"))
+            except Exception:
+                pass
+
+        # 保存详细JSON数据
+        # 12-01 优化：从JSON中移除冗余的甘特图数据（已保存为HTML）
+        clean_stats = final_stats.copy() if final_stats else {}
+        if 'gantt_history' in clean_stats:
+            del clean_stats['gantt_history']
+            
+        payload = {
+            "model_path": model_path,
+            "model_tag": model_tag,
+            "total_parts": total_parts,
+            "score": float(score),
+            "final_stats": clean_stats,
+            "heuristic_comparison": comparison_data,
+            "saved_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        }
+
+        with open(os.path.join(save_dir, "result.json"), "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+            
+    except Exception:
+        pass
+
 def calculate_product_total_time(product: str, product_routes: dict) -> float:
     """计算产品总加工时间"""
     route = product_routes.get(product, [])
@@ -1464,6 +1544,7 @@ def main():
                 st.session_state['show_results'] = True
                 
                 # 如果需要对比启发式算法
+                heuristic_results = None
                 if compare_heuristics:
                     heuristic_results = {}
                     
@@ -1489,6 +1570,14 @@ def main():
                     if 'heuristic_results' in st.session_state:
                         del st.session_state['heuristic_results']
                 
+                # 保存完整调度结果（含甘特图和对比数据）
+                model_path = st.session_state.get('model_path', '')
+                save_schedule_result(
+                    model_path, orders, final_stats, score, 
+                    gantt_history=gantt_history,
+                    heuristic_results=heuristic_results
+                )
+
                 # 同时保存到持久化变量
                 st.session_state['last_stats'] = final_stats
                 st.session_state['last_gantt_history'] = gantt_history
