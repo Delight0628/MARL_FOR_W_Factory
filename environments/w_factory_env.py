@@ -140,6 +140,10 @@ class WFactorySim:
                 self._equipment_failure_enabled = False
         self._emergency_orders_enabled = self.config.get('emergency_orders_enabled', EMERGENCY_ORDERS["enabled"])
         
+        # 12-02 新增：读取设备故障和紧急插单的高级配置参数
+        self._equipment_failure_config = self.config.get('equipment_failure_config', {})
+        self._emergency_orders_config = self.config.get('emergency_orders_config', {})
+        
         # 仿真环境
         self.env = simpy.Environment()
         self.current_time = 0
@@ -374,27 +378,26 @@ class WFactorySim:
         first_station = part.get_current_station()
         if first_station:
             yield self.queues[first_station].put(part)
-    
 
-    
     def _equipment_process(self, station_name: str):
         """设备处理进程 - 处理设备故障等事件"""
         while True:
             # 10-23-18-00 修改：使用实例级别的配置而非全局配置
             # 这允许不同worker在同一进程中使用不同的故障配置
             if self._equipment_failure_enabled:
+                # 12-02 新增：支持自定义设备故障参数
+                mtbf_hours = self._equipment_failure_config.get('mtbf_hours', EQUIPMENT_FAILURE["mtbf_hours"])
+                mttr_minutes = self._equipment_failure_config.get('mttr_minutes', EQUIPMENT_FAILURE["mttr_minutes"])
+                failure_prob = self._equipment_failure_config.get('failure_probability', EQUIPMENT_FAILURE["failure_probability"])
+                
                 # 随机设备故障
-                failure_interval = np.random.exponential(
-                    EQUIPMENT_FAILURE["mtbf_hours"] * 60
-                )
+                failure_interval = np.random.exponential(mtbf_hours * 60)
                 yield self.env.timeout(failure_interval)
                 
-                if random.random() < EQUIPMENT_FAILURE["failure_probability"]:
+                if random.random() < failure_prob:
                     # 设备故障
                     self.equipment_status[station_name]['is_failed'] = True
-                    repair_time = np.random.exponential(
-                        EQUIPMENT_FAILURE["mttr_minutes"]
-                    )
+                    repair_time = np.random.exponential(mttr_minutes)
                     self.equipment_status[station_name]['failure_end_time'] = (
                         self.env.now + repair_time
                     )
@@ -403,7 +406,7 @@ class WFactorySim:
                     self.equipment_status[station_name]['is_failed'] = False
             else:
                 # 静态训练模式：设备不会故障，只需要等待仿真结束
-                yield self.env.timeout(SIMULATION_TIME)  # 等待仿真结束
+                yield self.env.timeout(SIMULATION_TIME)
 
     # 10-27-16-30 新增：紧急插单生成进程
     def _emergency_order_process(self):
@@ -414,8 +417,8 @@ class WFactorySim:
                 yield self.env.timeout(SIMULATION_TIME)
                 continue
 
-            # 10-27-16-30 依据每小时到达率生成指数分布的到达间隔（分钟）
-            arrival_rate_per_hour = float(EMERGENCY_ORDERS.get('arrival_rate', 0.0))
+            # 12-02 新增：支持自定义紧急插单参数
+            arrival_rate_per_hour = self._emergency_orders_config.get('arrival_rate', EMERGENCY_ORDERS.get('arrival_rate', 0.0))
             if arrival_rate_per_hour <= 0.0:
                 # 无到达，直接等待至仿真结束
                 yield self.env.timeout(SIMULATION_TIME)
@@ -429,13 +432,13 @@ class WFactorySim:
                 # 小批量插单，避免过度干扰基础流
                 quantity = max(1, int(np.random.choice([1, 2, 3], p=[0.5, 0.35, 0.15])))
                 base_priority = 2
-                priority_boost = int(EMERGENCY_ORDERS.get('priority_boost', 0))
+                priority_boost = int(self._emergency_orders_config.get('priority_boost', EMERGENCY_ORDERS.get('priority_boost', 0)))
                 priority = int(np.clip(base_priority + priority_boost, 1, 5))
 
                 # 交期：基于总加工时间的缩短比例
                 route = get_route_for_product(product)
                 per_item_time = sum(step['time'] for step in route)
-                due_reduction = float(EMERGENCY_ORDERS.get('due_date_reduction', 0.7))
+                due_reduction = float(self._emergency_orders_config.get('due_date_reduction', EMERGENCY_ORDERS.get('due_date_reduction', 0.7)))
                 # 至少留一段缓冲（30分钟）
                 due_date = self.env.now + max(30.0, per_item_time * quantity * due_reduction)
 

@@ -609,7 +609,7 @@ def find_available_models():
     
     return models
 
-def run_heuristic_scheduling(heuristic_name, orders_config, custom_products=None, max_steps=1500, progress_bar=None, status_text=None, enable_failure=False, enable_emergency=False):
+def run_heuristic_scheduling(heuristic_name, orders_config, custom_products=None, max_steps=1500, progress_bar=None, status_text=None, enable_failure=False, enable_emergency=False, failure_config=None, emergency_config=None):
     """
     运行启发式算法调度仿真
     
@@ -632,6 +632,17 @@ def run_heuristic_scheduling(heuristic_name, orders_config, custom_products=None
             'emergency_orders_enabled': enable_emergency,
             'stage_name': f'{heuristic_name}启发式调度'
         }
+        
+        # 12-02 新增：合并设备故障和紧急插单的高级配置参数
+        if enable_failure and failure_config:
+            config.update({
+                'equipment_failure_config': failure_config
+            })
+        
+        if enable_emergency and emergency_config:
+            config.update({
+                'emergency_orders_config': emergency_config
+            })
         
         if status_text:
             status_text.text(f"初始化{heuristic_name}算法...")
@@ -801,7 +812,7 @@ def run_heuristic_scheduling(heuristic_name, orders_config, custom_products=None
         if original_routes is not None:
             w_factory_config.PRODUCT_ROUTES = original_routes
 
-def run_scheduling(actor_model, orders_config, custom_products=None, max_steps=1500, progress_bar=None, status_text=None, enable_failure=False, enable_emergency=False):
+def run_scheduling(actor_model, orders_config, custom_products=None, max_steps=1500, progress_bar=None, status_text=None, enable_failure=False, enable_emergency=False, failure_config=None, emergency_config=None):
     """运行调度仿真"""
     # 如果有自定义产品，临时添加到PRODUCT_ROUTES
     from environments import w_factory_config
@@ -819,6 +830,17 @@ def run_scheduling(actor_model, orders_config, custom_products=None, max_steps=1
             'emergency_orders_enabled': enable_emergency,
             'stage_name': '用户自定义调度'
         }
+        
+        # 12-02 新增：合并设备故障和紧急插单的高级配置参数
+        if enable_failure and failure_config:
+            config.update({
+                'equipment_failure_config': failure_config
+            })
+        
+        if enable_emergency and emergency_config:
+            config.update({
+                'emergency_orders_config': emergency_config
+            })
         
         if status_text:
             status_text.text(get_text("initializing", get_language()))
@@ -1647,6 +1669,95 @@ def main():
                 key="enable_emergency"
             )
 
+        # 设备故障高级参数配置
+        failure_config = {}
+        if enable_failure:
+            with st.expander("⚙️ 设备故障模拟参数配置", expanded=False):
+                st.markdown("**调整设备故障的强度和频率**")
+                
+                fcol1, fcol2, fcol3 = st.columns(3)
+                with fcol1:
+                    mtbf_hours = st.number_input(
+                        "平均无故障时间 MTBF (小时)",
+                        min_value=1.0,
+                        max_value=100.0,
+                        value=st.session_state.get('mtbf_hours', 24.0),
+                        step=1.0,
+                        help="设备正常运行的平均时间间隔，越大故障越少",
+                        key="mtbf_hours"
+                    )
+                with fcol2:
+                    mttr_minutes = st.number_input(
+                        "平均修复时间 MTTR (分钟)",
+                        min_value=5.0,
+                        max_value=180.0,
+                        value=st.session_state.get('mttr_minutes', 30.0),
+                        step=5.0,
+                        help="设备故障后平均修复时间，越大影响越严重",
+                        key="mttr_minutes"
+                    )
+                with fcol3:
+                    failure_prob = st.number_input(
+                        "故障发生概率",
+                        min_value=0.001,
+                        max_value=0.5,
+                        value=st.session_state.get('failure_prob', 0.02),
+                        step=0.005,
+                        format="%.3f",
+                        help="每个时间窗口内发生故障的概率",
+                        key="failure_prob"
+                    )
+                
+                failure_config = {
+                    'mtbf_hours': mtbf_hours,
+                    'mttr_minutes': mttr_minutes,
+                    'failure_probability': failure_prob
+                }
+        
+        # 紧急插单高级参数配置
+        emergency_config = {}
+        if enable_emergency:
+            with st.expander("📦 紧急插单模拟参数配置", expanded=False):
+                st.markdown("**调整紧急订单的频率和紧急程度**")
+                
+                ecol1, ecol2, ecol3 = st.columns(3)
+                with ecol1:
+                    arrival_rate = st.number_input(
+                        "到达率 (单/小时)",
+                        min_value=0.01,
+                        max_value=2.0,
+                        value=st.session_state.get('arrival_rate', 0.1),
+                        step=0.05,
+                        help="每小时平均到达的紧急订单数量",
+                        key="arrival_rate"
+                    )
+                with ecol2:
+                    priority_boost = st.number_input(
+                        "优先级提升",
+                        min_value=0,
+                        max_value=3,
+                        value=st.session_state.get('priority_boost', 0),
+                        step=1,
+                        help="紧急订单的优先级额外提升值 (0-3)",
+                        key="priority_boost"
+                    )
+                with ecol3:
+                    due_reduction = st.slider(
+                        "交期缩短比例",
+                        min_value=0.3,
+                        max_value=0.95,
+                        value=st.session_state.get('due_reduction', 0.7),
+                        step=0.05,
+                        help="紧急订单的交期相对正常订单缩短的比例，越小越紧急",
+                        key="due_reduction"
+                    )
+                
+                emergency_config = {
+                    'arrival_rate': arrival_rate,
+                    'priority_boost': priority_boost,
+                    'due_date_reduction': due_reduction
+                }
+
         st.write("")  # 空行
         
         if st.button(get_text("start_simulation", lang), type="primary", use_container_width=True):
@@ -1666,7 +1777,9 @@ def main():
                     progress_bar=progress_bar, 
                     status_text=status_text,
                     enable_failure=enable_failure,
-                    enable_emergency=enable_emergency
+                    enable_emergency=enable_emergency,
+                    failure_config=failure_config,
+                    emergency_config=emergency_config
                 )
                 
                 # 保存MARL结果
@@ -1690,7 +1803,9 @@ def main():
                             progress_bar=progress_bar,
                             status_text=status_text,
                             enable_failure=enable_failure,
-                            enable_emergency=enable_emergency
+                            enable_emergency=enable_emergency,
+                            failure_config=failure_config,
+                            emergency_config=emergency_config
                         )
                         
                         heuristic_results[heuristic] = {
