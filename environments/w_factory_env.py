@@ -131,14 +131,14 @@ class WFactorySim:
         
         # 10-27-16-30 修复：统一兼容 'disable_failures' 配置键（应用/评估端常用），并读取动态事件开关
         # 允许在不同训练阶段启用/禁用设备故障和紧急插单
-        self._equipment_failure_enabled = self.config.get('equipment_failure_enabled', EQUIPMENT_FAILURE["enabled"])
+        self._equipment_failure_enabled = bool(self.config.get('equipment_failure_enabled', False))
         # 10-27-16-30 若传入 'disable_failures'=True，则强制关闭设备故障
         if 'disable_failures' in self.config:
             try:
                 self._equipment_failure_enabled = not bool(self.config.get('disable_failures'))
             except Exception:
                 self._equipment_failure_enabled = False
-        self._emergency_orders_enabled = self.config.get('emergency_orders_enabled', EMERGENCY_ORDERS["enabled"])
+        self._emergency_orders_enabled = bool(self.config.get('emergency_orders_enabled', False))
         
         # 12-02 新增：读取设备故障和紧急插单的高级配置参数
         self._equipment_failure_config = self.config.get('equipment_failure_config', {})
@@ -241,7 +241,7 @@ class WFactorySim:
         self._initialize_orders()
 
         # 10-27-16-30 新增：reset 后重新启动紧急插单进程
-        if self.config.get('emergency_orders_enabled', EMERGENCY_ORDERS["enabled"]):
+        if bool(self.config.get('emergency_orders_enabled', False)):
             self.env.process(self._emergency_order_process())
         
         # 完整重置stats字典
@@ -430,7 +430,20 @@ class WFactorySim:
             try:
                 product = random.choice(list(PRODUCT_ROUTES.keys()))
                 # 小批量插单，避免过度干扰基础流
-                quantity = max(1, int(np.random.choice([1, 2, 3], p=[0.5, 0.35, 0.15])))
+                base_qty = 0
+                for order_data in BASE_ORDERS:
+                    try:
+                        if order_data.get("product") == product:
+                            q = int(order_data.get("quantity", 0))
+                            if q > base_qty:
+                                base_qty = q
+                    except Exception:
+                        continue
+                if base_qty <= 0:
+                    base_qty = 3
+                max_fraction = 0.3
+                max_emerg_qty = max(1, int(np.ceil(base_qty * max_fraction)))
+                quantity = int(np.random.randint(1, max_emerg_qty + 1))
                 base_priority = 2
                 priority_boost = int(self._emergency_orders_config.get('priority_boost', EMERGENCY_ORDERS.get('priority_boost', 0)))
                 priority = int(np.clip(base_priority + priority_boost, 1, 5))

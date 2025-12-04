@@ -1679,18 +1679,18 @@ def main():
                 with fcol1:
                     mtbf_hours = st.number_input(
                         "平均无故障时间 MTBF (小时)",
-                        min_value=1.0,
-                        max_value=100.0,
+                        min_value=10.0,
+                        max_value=60.0,
                         value=st.session_state.get('mtbf_hours', 24.0),
-                        step=1.0,
+                        step=2.0,
                         help="设备正常运行的平均时间间隔，越大故障越少",
                         key="mtbf_hours"
                     )
                 with fcol2:
                     mttr_minutes = st.number_input(
                         "平均修复时间 MTTR (分钟)",
-                        min_value=5.0,
-                        max_value=180.0,
+                        min_value=10.0,
+                        max_value=120.0,
                         value=st.session_state.get('mttr_minutes', 30.0),
                         step=5.0,
                         help="设备故障后平均修复时间，越大影响越严重",
@@ -1699,11 +1699,11 @@ def main():
                 with fcol3:
                     failure_prob = st.number_input(
                         "故障发生概率",
-                        min_value=0.001,
-                        max_value=0.5,
+                        min_value=0.01,
+                        max_value=0.10,
                         value=st.session_state.get('failure_prob', 0.02),
-                        step=0.005,
-                        format="%.3f",
+                        step=0.01,
+                        format="%.2f",
                         help="每个时间窗口内发生故障的概率",
                         key="failure_prob"
                     )
@@ -1724,8 +1724,8 @@ def main():
                 with ecol1:
                     arrival_rate = st.number_input(
                         "到达率 (单/小时)",
-                        min_value=0.01,
-                        max_value=2.0,
+                        min_value=0.05,
+                        max_value=0.5,
                         value=st.session_state.get('arrival_rate', 0.1),
                         step=0.05,
                         help="每小时平均到达的紧急订单数量",
@@ -1744,8 +1744,8 @@ def main():
                 with ecol3:
                     due_reduction = st.slider(
                         "交期缩短比例",
-                        min_value=0.3,
-                        max_value=0.95,
+                        min_value=0.4,
+                        max_value=0.85,
                         value=st.session_state.get('due_reduction', 0.7),
                         step=0.05,
                         help="紧急订单的交期相对正常订单缩短的比例，越小越紧急",

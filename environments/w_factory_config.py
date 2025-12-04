@@ -114,6 +114,27 @@ TRAINING_FLOW_CONFIG = {
         "dynamic_events": {
             "equipment_failure_enabled": True,  # 启用设备故障模拟
             "emergency_orders_enabled": True,   # 启用紧急插单模拟
+        },
+        
+        # 动态事件参数随机化范围（用于阶段二训练）
+        "dynamic_event_ranges": {
+            "equipment_failure": {
+                # MTBF: 10-60 小时（App 范围: 1-100，训练覆盖核心区间）
+                "mtbf_hours": (10.0, 60.0),
+                # MTTR: 10-120 分钟（App 范围: 5-180，训练覆盖核心区间）
+                "mttr_minutes": (10.0, 120.0),
+                # 故障概率: 0.01-0.10（App 范围: 0.001-0.5，训练覆盖中低区间）
+                "failure_probability": (0.01, 0.10),
+            },
+            "emergency_orders": {
+                # 到达率: 0.05-0.5 单/小时（App 范围: 0.01-2.0，训练覆盖常用区间）
+                # 注：超过 0.5 属于极端压力测试，模型性能可能下降
+                "arrival_rate": (0.05, 0.5),
+                # 优先级提升: 0-3（覆盖 App 完整范围，包含默认值 0）
+                "priority_boost": (0, 3),
+                # 交期缩短: 0.4-0.85（App 范围: 0.3-0.95，训练覆盖中等紧急区间）
+                "due_date_reduction": (0.4, 0.85),
+            },
         }
     },
     
@@ -144,9 +165,8 @@ WORKSTATIONS = {
     "包装台": {"count": 2, "capacity": 1},        
 }
 
-# 设备故障参数
+# 设备故障参数（仅用于未传入 config 时的回退默认值）
 EQUIPMENT_FAILURE = {
-    "enabled": False,                   # 是否启用设备故障 - 静态训练阶段禁用
     "mtbf_hours": 24,                  # 平均故障间隔时间（小时）
     "mttr_minutes": 30,                # 平均修复时间（分钟）
     "failure_probability": 0.02,       # 每小时故障概率
@@ -210,9 +230,8 @@ _max_random_parts_count = TRAINING_FLOW_CONFIG["generalization_phase"]["random_o
                           TRAINING_FLOW_CONFIG["generalization_phase"]["random_orders_config"]["max_quantity_per_order"]
 QUEUE_CAPACITY = max(_base_parts_count, _max_random_parts_count) * 2
 
-# 紧急插单配置
+# 紧急插单配置（仅用于未传入 config 时的回退默认值）
 EMERGENCY_ORDERS = {
-    "enabled": False,                  # 该开关需要保留非训练场景需要默认值，app/交互演示、evaluation 的静态测试
     "arrival_rate": 0.1,               # 每小时紧急订单到达率
     "priority_boost": 0,               # 紧急订单优先级提升
     "due_date_reduction": 0.7,         # 交期缩短比例（0.7表示缩短30%）

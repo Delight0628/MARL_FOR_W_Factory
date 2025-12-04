@@ -496,11 +496,65 @@ class SimplePPOTrainer:
         # 10-23-20-00 确定动态事件配置（所有worker统一）
         episode_equipment_failure_enabled = False
         episode_emergency_orders_enabled = False
+        episode_equipment_failure_config: Dict[str, Any] = {}
+        episode_emergency_orders_config: Dict[str, Any] = {}
         if self.generalization_phase_active:
             # 阶段二：启用动态事件
             dynamic_events = TRAINING_FLOW_CONFIG["generalization_phase"].get("dynamic_events", {})
             episode_equipment_failure_enabled = dynamic_events.get("equipment_failure_enabled", False)
             episode_emergency_orders_enabled = dynamic_events.get("emergency_orders_enabled", False)
+
+            # 12-04 新增：从配置中采样本回合统一的动态事件参数
+            dynamic_ranges = TRAINING_FLOW_CONFIG["generalization_phase"].get("dynamic_event_ranges", {})
+
+            if episode_equipment_failure_enabled:
+                failure_ranges = dynamic_ranges.get("equipment_failure", {})
+                mtbf_min, mtbf_max = failure_ranges.get(
+                    "mtbf_hours",
+                    (EQUIPMENT_FAILURE["mtbf_hours"], EQUIPMENT_FAILURE["mtbf_hours"]),
+                )
+                mttr_min, mttr_max = failure_ranges.get(
+                    "mttr_minutes",
+                    (EQUIPMENT_FAILURE["mttr_minutes"], EQUIPMENT_FAILURE["mttr_minutes"]),
+                )
+                prob_min, prob_max = failure_ranges.get(
+                    "failure_probability",
+                    (EQUIPMENT_FAILURE["failure_probability"], EQUIPMENT_FAILURE["failure_probability"]),
+                )
+
+                episode_equipment_failure_config = {
+                    "mtbf_hours": float(np.random.uniform(mtbf_min, mtbf_max)),
+                    "mttr_minutes": float(np.random.uniform(mttr_min, mttr_max)),
+                    "failure_probability": float(np.random.uniform(prob_min, prob_max)),
+                }
+
+            if episode_emergency_orders_enabled:
+                emerg_ranges = dynamic_ranges.get("emergency_orders", {})
+                rate_min, rate_max = emerg_ranges.get(
+                    "arrival_rate",
+                    (EMERGENCY_ORDERS["arrival_rate"], EMERGENCY_ORDERS["arrival_rate"]),
+                )
+                boost_min, boost_max = emerg_ranges.get(
+                    "priority_boost",
+                    (EMERGENCY_ORDERS["priority_boost"], EMERGENCY_ORDERS["priority_boost"]),
+                )
+                due_min, due_max = emerg_ranges.get(
+                    "due_date_reduction",
+                    (EMERGENCY_ORDERS["due_date_reduction"], EMERGENCY_ORDERS["due_date_reduction"]),
+                )
+
+                arrival_rate = float(np.random.uniform(rate_min, rate_max))
+                # 优先级提升使用整数离散采样
+                low_boost = int(min(boost_min, boost_max))
+                high_boost = int(max(boost_min, boost_max))
+                priority_boost = int(np.random.randint(low_boost, high_boost + 1))
+                due_reduction = float(np.random.uniform(due_min, due_max))
+
+                episode_emergency_orders_config = {
+                    "arrival_rate": max(0.0, arrival_rate),
+                    "priority_boost": priority_boost,
+                    "due_date_reduction": float(np.clip(due_reduction, 0.0, 1.0)),
+                }
         
         # --- 1. 并行运行worker收集数据 ---
         try:
@@ -522,6 +576,10 @@ class SimplePPOTrainer:
                 worker_curriculum_config['randomize_env'] = (episode_tag != "BASE_ORDERS")
                 worker_curriculum_config['equipment_failure_enabled'] = episode_equipment_failure_enabled
                 worker_curriculum_config['emergency_orders_enabled'] = episode_emergency_orders_enabled
+                if episode_equipment_failure_enabled and episode_equipment_failure_config:
+                    worker_curriculum_config['equipment_failure_config'] = episode_equipment_failure_config
+                if episode_emergency_orders_enabled and episode_emergency_orders_config:
+                    worker_curriculum_config['emergency_orders_config'] = episode_emergency_orders_config
                 # 统一步长：与采集步数一致
                 worker_curriculum_config['MAX_SIM_STEPS'] = num_steps
                 
@@ -613,6 +671,8 @@ class SimplePPOTrainer:
                 'episode_tag': episode_tag,
                 'equipment_failure_enabled': episode_equipment_failure_enabled,
                 'emergency_orders_enabled': episode_emergency_orders_enabled,
+                'equipment_failure_config': episode_equipment_failure_config,
+                'emergency_orders_config': episode_emergency_orders_config,
             }
             
             avg_reward = total_reward / self.num_workers if self.num_workers > 0 else 0.0
@@ -673,6 +733,8 @@ class SimplePPOTrainer:
             'episode_tag': episode_tag,
             'equipment_failure_enabled': episode_equipment_failure_enabled,
             'emergency_orders_enabled': episode_emergency_orders_enabled,
+            'equipment_failure_config': episode_equipment_failure_config,
+            'emergency_orders_config': episode_emergency_orders_config,
         }
         avg_reward = total_reward / self.num_workers if self.num_workers > 0 else 0.0
         return avg_reward, batch
@@ -846,6 +908,11 @@ class SimplePPOTrainer:
             eval_config['emergency_orders_enabled'] = last_config['emergency_orders_enabled']
             # 保存订单标签供日志使用
             eval_config['episode_tag'] = last_config['episode_tag']
+            # 同步本回合使用的动态事件参数，确保评估环境与训练环境一致
+            if 'equipment_failure_config' in last_config and last_config['equipment_failure_config']:
+                eval_config['equipment_failure_config'] = last_config['equipment_failure_config']
+            if 'emergency_orders_config' in last_config and last_config['emergency_orders_config']:
+                eval_config['emergency_orders_config'] = last_config['emergency_orders_config']
         
         # 评估步长对齐环境超时
         eval_config['MAX_SIM_STEPS'] = self.max_steps_for_eval

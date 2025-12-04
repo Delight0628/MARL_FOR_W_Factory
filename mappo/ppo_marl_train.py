@@ -102,11 +102,12 @@ def main():
             print(f"    - {key}: {value}")
         
         cl_config = TRAINING_FLOW_CONFIG["foundation_phase"]["curriculum_learning"]
+        dynamic_events_cfg = TRAINING_FLOW_CONFIG["generalization_phase"].get("dynamic_events", {})
         
         print("  启用/禁用模块:")
         print(f"    - 课程学习: {'启用' if cl_config.get('enabled', False) else '禁用'}")
-        print(f"    - 设备故障: {'启用' if EQUIPMENT_FAILURE.get('enabled', False) else '禁用'}")
-        print(f"    - 紧急插单: {'启用' if EMERGENCY_ORDERS.get('enabled', False) else '禁用'}")
+        print(f"    - 设备故障: {'启用' if dynamic_events_cfg.get('equipment_failure_enabled', False) else '禁用'}")
+        print(f"    - 紧急插单: {'启用' if dynamic_events_cfg.get('emergency_orders_enabled', False) else '禁用'}")
         print("-" * 40)
         
         trainer = SimplePPOTrainer(
