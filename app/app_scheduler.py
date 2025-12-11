@@ -2006,6 +2006,255 @@ def main():
                 get_text("max_tardiness_json", lang): stats.get('max_tardiness', 0),
                 get_text("util_details_json", lang): {k: f"{v*100:.2f}%" for k, v in stats.get('equipment_utilization', {}).items()}
             })
+    
+    # ============ 模型性能对比模块 ============
+    st.divider()
+    st.header("🛠 " + get_text("model_comparison", lang))
+    
+    with st.expander(get_text("model_comparison_description", lang), expanded=False):
+        st.markdown(get_text("model_comparison_help", lang))
+        
+        # 检查是否满足对比条件
+        if not st.session_state.get('orders', []):
+            st.warning(get_text("config_orders_first_comparison", lang))
+        else:
+            st.info(f"📋 {get_text('current_orders_count', lang, len(st.session_state['orders']))}")
+            
+            # 显示当前动态环境配置
+            col1, col2 = st.columns(2)
+            with col1:
+                st.caption(f"⚙️ {get_text('equipment_failure', lang)}: {'✅ ' + get_text('enabled', lang) if st.session_state.get('enable_failure', False) else '❌ ' + get_text('disabled', lang)}")
+            with col2:
+                st.caption(f"📥 {get_text('emergency_orders', lang)}: {'✅ ' + get_text('enabled', lang) if st.session_state.get('enable_emergency', False) else '❌ ' + get_text('disabled', lang)}")
+            
+            st.divider()
+            
+            # 模型选择区域
+            st.subheader(get_text("select_models_to_compare", lang))
+            
+            available_models = find_available_models()
+            if not available_models:
+                st.warning(get_text("no_model_found", lang))
+            else:
+                # 使用下拉多选框选择模型
+                model_options = {m["name"]: m["path"] for m in available_models}
+                
+                # 初始化默认选择
+                default_selection = list(model_options.keys())[:min(3, len(model_options))]
+                
+                selected_model_names = st.multiselect(
+                    get_text("select_models", lang),
+                    options=list(model_options.keys()),
+                    default=default_selection,
+                    help=get_text("select_models_help", lang),
+                    key="model_comparison_multiselect"
+                )
+                
+                st.divider()
+                
+                if len(selected_model_names) < 2:
+                    st.warning(get_text("select_at_least_two_models", lang))
+                else:
+                    # 显示已选模型列表
+                    st.success(f"✅ {get_text('selected_models_count', lang, len(selected_model_names))}")
+                    
+                    # 清晰展示已选模型
+                    st.caption(get_text("selected_models_list", lang))
+                    for idx, model_name in enumerate(selected_model_names, 1):
+                        st.markdown(f"**{idx}.** `{model_name}`")
+                    
+                    # 对比配置选项
+                    st.subheader(get_text("comparison_parameters", lang))
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        max_steps_comparison = st.number_input(
+                            get_text("max_steps", lang),
+                            min_value=500,
+                            max_value=3000,
+                            value=1500,
+                            step=100,
+                            help=get_text("max_steps_comparison_help", lang),
+                            key="max_steps_comparison"
+                        )
+                    with col2:
+                        comparison_runs = st.number_input(
+                            get_text("comparison_runs", lang),
+                            min_value=1,
+                            max_value=5,
+                            value=1,
+                            help=get_text("comparison_runs_help", lang),
+                            key="comparison_runs"
+                        )
+                    
+                    # 开始对比按钮
+                    if st.button(get_text("start_comparison", lang), type="primary", use_container_width=True):
+                        # 初始化对比结果存储
+                        comparison_results = {}
+                        
+                        # 创建进度条
+                        total_runs = len(selected_model_names) * comparison_runs
+                        progress_bar = st.progress(0)
+                        status_text = st.empty()
+                        
+                        current_run = 0
+                        
+                        # 依次运行每个模型
+                        for model_name in selected_model_names:
+                            model_path = model_options[model_name]
+                            model_results = []
+                            
+                            for run_idx in range(comparison_runs):
+                                current_run += 1
+                                status_text.text(f"{get_text('running_model', lang, model_name, run_idx + 1, comparison_runs)}")
+                                progress_bar.progress(current_run / total_runs)
+                                
+                                # 加载模型
+                                actor_model, message = load_model(model_path)
+                                if actor_model is None:
+                                    st.error(f"{get_text('load_model_failed', lang, model_name)}: {message}")
+                                    continue
+                                
+                                # 运行调度
+                                try:
+                                    final_stats, gantt_history, score, total_reward = run_scheduling(
+                                        actor_model,
+                                        st.session_state['orders'],
+                                        st.session_state.get('custom_products'),
+                                        max_steps=max_steps_comparison,
+                                        enable_failure=st.session_state.get('enable_failure', False),
+                                        enable_emergency=st.session_state.get('enable_emergency', False),
+                                        progress_bar=None,  # 不显示子进度条
+                                        status_text=None
+                                    )
+                                    
+                                    model_results.append({
+                                        'stats': final_stats,
+                                        'score': score,
+                                        'total_reward': total_reward,
+                                        'gantt_history': gantt_history
+                                    })
+                                except Exception as e:
+                                    st.error(f"{get_text('scheduling_failed', lang, model_name)}: {str(e)}")
+                                    continue
+                            
+                            # 保存该模型的所有运行结果
+                            if model_results:
+                                comparison_results[model_name] = model_results
+                        
+                        progress_bar.empty()
+                        status_text.empty()
+                        
+                        # 保存对比结果到session_state
+                        if comparison_results:
+                            st.session_state['model_comparison_results'] = comparison_results
+                            st.success(get_text("comparison_completed", lang))
+                            st.rerun()
+                        else:
+                            st.error(get_text("comparison_failed", lang))
+            
+            # 显示对比结果
+            if 'model_comparison_results' in st.session_state and st.session_state['model_comparison_results']:
+                st.divider()
+                st.subheader(get_text("comparison_results", lang))
+                
+                results = st.session_state['model_comparison_results']
+                
+                # 准备对比数据
+                comparison_data = []
+                for model_name, runs in results.items():
+                    # 计算平均值
+                    avg_completion_rate = sum(r['stats']['total_parts'] for r in runs) / len(runs)
+                    avg_makespan = sum(r['stats']['makespan'] for r in runs) / len(runs)
+                    avg_utilization = sum(r['stats']['mean_utilization'] for r in runs) / len(runs)
+                    avg_tardiness = sum(r['stats']['total_tardiness'] for r in runs) / len(runs)
+                    avg_score = sum(r['score'] for r in runs) / len(runs)
+                    avg_reward = sum(r['total_reward'] for r in runs) / len(runs)
+                    
+                    # 计算目标完工件数
+                    total_parts_target = sum(order['quantity'] for order in st.session_state['orders'])
+                    completion_rate_pct = (avg_completion_rate / total_parts_target * 100) if total_parts_target > 0 else 0
+                    
+                    comparison_data.append({
+                        get_text("model_name", lang): model_name,
+                        get_text("completion_rate", lang): f"{completion_rate_pct:.1f}%",
+                        get_text("avg_makespan", lang): f"{avg_makespan:.1f}",
+                        get_text("avg_utilization", lang): f"{avg_utilization*100:.1f}%",
+                        get_text("avg_tardiness", lang): f"{avg_tardiness:.1f}",
+                        get_text("avg_score", lang): f"{avg_score:.3f}",
+                        get_text("avg_reward", lang): f"{avg_reward:.1f}",
+                        get_text("runs", lang): len(runs)
+                    })
+                
+                # 显示对比表格
+                comparison_df = pd.DataFrame(comparison_data)
+                st.dataframe(comparison_df, use_container_width=True, hide_index=True)
+                
+                # 显示雷达图对比
+                st.subheader(get_text("radar_chart_comparison", lang))
+                
+                # 准备雷达图数据（归一化到0-1）
+                metrics = ['completion_rate', 'utilization', 'score']
+                fig = go.Figure()
+                
+                for model_name, runs in results.items():
+                    avg_completion_rate = sum(r['stats']['total_parts'] for r in runs) / len(runs)
+                    avg_utilization = sum(r['stats']['mean_utilization'] for r in runs) / len(runs)
+                    avg_score = sum(r['score'] for r in runs) / len(runs)
+                    
+                    total_parts_target = sum(order['quantity'] for order in st.session_state['orders'])
+                    completion_rate_norm = (avg_completion_rate / total_parts_target) if total_parts_target > 0 else 0
+                    
+                    fig.add_trace(go.Scatterpolar(
+                        r=[completion_rate_norm, avg_utilization, avg_score],
+                        theta=[get_text("completion_rate", lang), get_text("utilization", lang), get_text("score", lang)],
+                        fill='toself',
+                        name=model_name
+                    ))
+                
+                fig.update_layout(
+                    polar=dict(radialaxis=dict(visible=True, range=[0, 1])),
+                    showlegend=True,
+                    title=get_text("model_performance_radar", lang)
+                )
+                
+                st.plotly_chart(fig, use_container_width=True)
+                
+                # 显示柱状图对比
+                st.subheader(get_text("bar_chart_comparison", lang))
+                
+                # 准备柱状图数据
+                fig_bar = go.Figure()
+                model_names = list(results.keys())
+                
+                # 完工率
+                completion_rates = []
+                for model_name in model_names:
+                    runs = results[model_name]
+                    avg_completion = sum(r['stats']['total_parts'] for r in runs) / len(runs)
+                    total_target = sum(order['quantity'] for order in st.session_state['orders'])
+                    completion_rates.append((avg_completion / total_target * 100) if total_target > 0 else 0)
+                
+                fig_bar.add_trace(go.Bar(
+                    name=get_text("completion_rate", lang),
+                    x=model_names,
+                    y=completion_rates,
+                    text=[f"{v:.1f}%" for v in completion_rates],
+                    textposition='auto'
+                ))
+                
+                fig_bar.update_layout(
+                    title=get_text("completion_rate_comparison", lang),
+                    xaxis_title=get_text("model_name", lang),
+                    yaxis_title=get_text("completion_rate", lang) + " (%)",
+                    showlegend=False
+                )
+                
+                st.plotly_chart(fig_bar, use_container_width=True)
+                
+                # 清除对比结果按钮
+                if st.button(get_text("clear_comparison_results", lang)):
+                    del st.session_state['model_comparison_results']
+                    st.rerun()
 
 if __name__ == "__main__":
     setup_page()

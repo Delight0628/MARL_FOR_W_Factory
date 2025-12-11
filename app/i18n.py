@@ -964,6 +964,270 @@ TEXTS = {
         "zh-TW": "{}: 無甘特圖數據",
         "en": "{}: No Gantt chart data"
     },
+    
+    # 模型性能对比模块
+    "model_comparison": {
+        "zh-CN": "模型性能对比",
+        "zh-TW": "模型性能對比",
+        "en": "Model Performance Comparison"
+    },
+    "model_comparison_description": {
+        "zh-CN": "对比多个模型在相同订单配置下的性能",
+        "zh-TW": "對比多個模型在相同訂單配置下的性能",
+        "en": "Compare multiple models' performance under the same order configuration"
+    },
+    "model_comparison_help": {
+        "zh-CN": """
+        **📊 模型性能对比功能**
+        
+        此功能用于在**完全相同**的订单配置和动态环境参数下，批量测试多个已训练模型的性能，支持控制变量实验。
+        
+        **使用步骤：**
+        1. 先在"订单配置"区域配置好订单列表
+        2. 设置好动态环境配置（设备故障、紧急插单）
+        3. 在下方选择要对比的模型（至少2个）
+        4. 设置对比参数（最大步数、运行次数）
+        5. 点击"开始对比"按钮
+        6. 查看对比结果（表格、雷达图、柱状图）
+        
+        **注意：** 运行次数越多，结果越稳定，但耗时也越长。
+        """,
+        "zh-TW": """
+        **📊 模型性能對比功能**
+        
+        此功能用於在**完全相同**的訂單配置和動態環境參數下，批量測試多個已訓練模型的性能，支持控制變量實驗。
+        
+        **使用步驟：**
+        1. 先在"訂單配置"區域配置好訂單列表
+        2. 設置好動態環境配置（設備故障、緊急插單）
+        3. 在下方選擇要對比的模型（至少2個）
+        4. 設置對比參數（最大步數、運行次數）
+        5. 點擊"開始對比"按鈕
+        6. 查看對比結果（表格、雷達圖、柱狀圖）
+        
+        **注意：** 運行次數越多，結果越穩定，但耗時也越長。
+        """,
+        "en": """
+        **📊 Model Performance Comparison**
+        
+        This feature allows batch testing of multiple trained models under **identical** order configurations and dynamic environment parameters, supporting controlled variable experiments.
+        
+        **Usage Steps:**
+        1. Configure order list in "Order Configuration" section
+        2. Set dynamic environment parameters (equipment failure, emergency orders)
+        3. Select models to compare (at least 2) below
+        4. Configure comparison parameters (max steps, runs)
+        5. Click "Start Comparison" button
+        6. View comparison results (table, radar chart, bar chart)
+        
+        **Note:** More runs lead to more stable results, but take longer time.
+        """
+    },
+    "config_orders_first_comparison": {
+        "zh-CN": "请先在上方配置订单后再使用模型对比功能",
+        "zh-TW": "請先在上方配置訂單後再使用模型對比功能",
+        "en": "Please configure orders first before using model comparison"
+    },
+    "current_orders_count": {
+        "zh-CN": "当前订单数：{} 个",
+        "zh-TW": "當前訂單數：{} 個",
+        "en": "Current Orders: {} items"
+    },
+    "enabled": {
+        "zh-CN": "已启用",
+        "zh-TW": "已啟用",
+        "en": "Enabled"
+    },
+    "disabled": {
+        "zh-CN": "未启用",
+        "zh-TW": "未啟用",
+        "en": "Disabled"
+    },
+    "equipment_failure": {
+        "zh-CN": "设备故障模拟",
+        "zh-TW": "設備故障模擬",
+        "en": "Equipment Failure Simulation"
+    },
+    "emergency_orders": {
+        "zh-CN": "紧急插单模拟",
+        "zh-TW": "緊急插單模擬",
+        "en": "Emergency Orders Simulation"
+    },
+    "select_models_to_compare": {
+        "zh-CN": "选择要对比的模型",
+        "zh-TW": "選擇要對比的模型",
+        "en": "Select Models to Compare"
+    },
+    "select_models": {
+        "zh-CN": "选择模型（可多选）",
+        "zh-TW": "選擇模型（可多選）",
+        "en": "Select Models (Multiple)"
+    },
+    "select_models_help": {
+        "zh-CN": "至少选择2个模型进行对比",
+        "zh-TW": "至少選擇2個模型進行對比",
+        "en": "Select at least 2 models to compare"
+    },
+    "select_at_least_two_models": {
+        "zh-CN": "请至少选择2个模型进行对比",
+        "zh-TW": "請至少選擇2個模型進行對比",
+        "en": "Please select at least 2 models to compare"
+    },
+    "selected_models_count": {
+        "zh-CN": "已选择 {} 个模型",
+        "zh-TW": "已選擇 {} 個模型",
+        "en": "{} models selected"
+    },
+    "max_steps": {
+        "zh-CN": "最大仿真步数",
+        "zh-TW": "最大仿真步數",
+        "en": "Max Simulation Steps"
+    },
+    "max_steps_help": {
+        "zh-CN": "每次仿真的最大步数，步数越多耗时越长",
+        "zh-TW": "每次仿真的最大步數，步數越多耗時越長",
+        "en": "Max steps per simulation, more steps take longer time"
+    },
+    "max_steps_comparison_help": {
+        "zh-CN": "仿真环境运行的最大步数上限。模型会持续决策直到任务完成或达到此上限。可根据订单复杂度调整：简单订单500-1000步，复杂订单1500-3000步",
+        "zh-TW": "仿真環境運行的最大步數上限。模型會持續決策直到任務完成或達到此上限。可根據訂單複雜度調整：簡單訂單500-1000步，複雜訂單1500-3000步",
+        "en": "Max step limit for simulation environment. Model will keep making decisions until tasks complete or this limit is reached. Adjust based on order complexity: 500-1000 for simple orders, 1500-3000 for complex orders"
+    },
+    "select_models_instruction": {
+        "zh-CN": "请勾选要对比的模型（建议2-5个）",
+        "zh-TW": "請勾選要對比的模型（建議2-5個）",
+        "en": "Check models to compare (2-5 recommended)"
+    },
+    "view_selected_models": {
+        "zh-CN": "查看已选择的模型",
+        "zh-TW": "查看已選擇的模型",
+        "en": "View Selected Models"
+    },
+    "selected_models_list": {
+        "zh-CN": "已选择的模型列表：",
+        "zh-TW": "已選擇的模型列表：",
+        "en": "Selected Models:"
+    },
+    "comparison_parameters": {
+        "zh-CN": "对比参数设置",
+        "zh-TW": "對比參數設置",
+        "en": "Comparison Parameters"
+    },
+    "comparison_runs": {
+        "zh-CN": "运行次数",
+        "zh-TW": "運行次數",
+        "en": "Number of Runs"
+    },
+    "comparison_runs_help": {
+        "zh-CN": "每个模型运行的次数，用于获得平均性能（1-5次）",
+        "zh-TW": "每個模型運行的次數，用於獲得平均性能（1-5次）",
+        "en": "Number of runs per model to get average performance (1-5 runs)"
+    },
+    "start_comparison": {
+        "zh-CN": "🚀 开始对比",
+        "zh-TW": "🚀 開始對比",
+        "en": "🚀 Start Comparison"
+    },
+    "running_model": {
+        "zh-CN": "正在运行模型 {} (第 {}/{} 次)...",
+        "zh-TW": "正在運行模型 {} (第 {}/{} 次)...",
+        "en": "Running model {} (Run {}/{})..."
+    },
+    "load_model_failed": {
+        "zh-CN": "加载模型 {} 失败",
+        "zh-TW": "加載模型 {} 失敗",
+        "en": "Failed to load model {}"
+    },
+    "scheduling_failed": {
+        "zh-CN": "模型 {} 调度失败",
+        "zh-TW": "模型 {} 調度失敗",
+        "en": "Model {} scheduling failed"
+    },
+    "comparison_completed": {
+        "zh-CN": "✅ 对比完成！结果如下：",
+        "zh-TW": "✅ 對比完成！結果如下：",
+        "en": "✅ Comparison completed! Results:"
+    },
+    "comparison_failed": {
+        "zh-CN": "❌ 对比失败，请检查模型和订单配置",
+        "zh-TW": "❌ 對比失敗，請檢查模型和訂單配置",
+        "en": "❌ Comparison failed, please check models and order configuration"
+    },
+    "comparison_results": {
+        "zh-CN": "📊 对比结果",
+        "zh-TW": "📊 對比結果",
+        "en": "📊 Comparison Results"
+    },
+    "model_name": {
+        "zh-CN": "模型名称",
+        "zh-TW": "模型名稱",
+        "en": "Model Name"
+    },
+    "avg_makespan": {
+        "zh-CN": "平均完工时间",
+        "zh-TW": "平均完工時間",
+        "en": "Avg Makespan"
+    },
+    "avg_utilization": {
+        "zh-CN": "平均利用率",
+        "zh-TW": "平均利用率",
+        "en": "Avg Utilization"
+    },
+    "avg_tardiness": {
+        "zh-CN": "平均延迟",
+        "zh-TW": "平均延遲",
+        "en": "Avg Tardiness"
+    },
+    "avg_score": {
+        "zh-CN": "平均评分",
+        "zh-TW": "平均評分",
+        "en": "Avg Score"
+    },
+    "avg_reward": {
+        "zh-CN": "平均奖励",
+        "zh-TW": "平均獎勵",
+        "en": "Avg Reward"
+    },
+    "runs": {
+        "zh-CN": "运行次数",
+        "zh-TW": "運行次數",
+        "en": "Runs"
+    },
+    "radar_chart_comparison": {
+        "zh-CN": "📊 雷达图对比",
+        "zh-TW": "📊 雷達圖對比",
+        "en": "📊 Radar Chart Comparison"
+    },
+    "utilization": {
+        "zh-CN": "利用率",
+        "zh-TW": "利用率",
+        "en": "Utilization"
+    },
+    "score": {
+        "zh-CN": "评分",
+        "zh-TW": "評分",
+        "en": "Score"
+    },
+    "model_performance_radar": {
+        "zh-CN": "模型性能雷达图对比",
+        "zh-TW": "模型性能雷達圖對比",
+        "en": "Model Performance Radar Chart"
+    },
+    "bar_chart_comparison": {
+        "zh-CN": "📊 完工率对比",
+        "zh-TW": "📊 完工率對比",
+        "en": "📊 Completion Rate Comparison"
+    },
+    "completion_rate_comparison": {
+        "zh-CN": "模型完工率对比",
+        "zh-TW": "模型完工率對比",
+        "en": "Model Completion Rate Comparison"
+    },
+    "clear_comparison_results": {
+        "zh-CN": "🗑️ 清除对比结果",
+        "zh-TW": "🗑️ 清除對比結果",
+        "en": "🗑️ Clear Comparison Results"
+    },
 }
 
 def get_text(key: str, lang: str = "zh-CN", *args) -> str:
