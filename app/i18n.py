@@ -49,6 +49,17 @@ TEXTS = {
         "zh-TW": "手動輸入路徑",
         "en": "Manual Input Path"
     },
+    # 本地模型上传（新）
+    "upload_local_model": {
+        "zh-CN": "加载本地模型",
+        "zh-TW": "加載本地模型",
+        "en": "Upload Local Model"
+    },
+    "upload_local_model_label": {
+        "zh-CN": "从本地上传已训练好的模型",
+        "zh-TW": "從本地上傳已訓練好的模型",
+        "en": "Upload a locally trained model"
+    },
     "select_model": {
         "zh-CN": "选择训练好的模型",
         "zh-TW": "選擇訓練好的模型",
@@ -74,6 +85,11 @@ TEXTS = {
         "zh-TW": "輸入.keras格式的Actor模型文件完整路徑",
         "en": "Enter the full path of Actor model file (.keras format)"
     },
+    "upload_local_model_help": {
+        "zh-CN": "上传本地保存的 Actor 模型文件（支持 .h5 / .keras）",
+        "zh-TW": "上傳本地保存的 Actor 模型文件（支援 .h5 / .keras）",
+        "en": "Upload a locally saved Actor model file (.h5 / .keras)"
+    },
     "load_model": {
         "zh-CN": "🔄 加载模型",
         "zh-TW": "🔄 加載模型",
@@ -83,6 +99,11 @@ TEXTS = {
         "zh-CN": "✅ 模型已加载：",
         "zh-TW": "✅ 模型已加載：",
         "en": "✅ Model Loaded: "
+    },
+    "uploaded_model_path": {
+        "zh-CN": "📂 已上传模型保存路径：",
+        "zh-TW": "📂 已上傳模型保存路徑：",
+        "en": "📂 Uploaded model saved at: "
     },
     "no_model_found": {
         "zh-CN": "未找到已训练的模型，请先训练模型或手动输入路径",

@@ -1,18 +1,15 @@
 # Web framework
-streamlit>=1.28.0
+streamlit==1.32.0
 
-# TensorFlow compatibility fix
-# protobuf 版本必须 <=3.20.3 才能与 TensorFlow 2.15.0 兼容
-protobuf==3.20.3
+# TensorFlow for deployment (Cloud 环境用来加载/推理模型)
+tensorflow==2.15.0
 
-# Core dependencies (install if not already installed)
-# tensorflow==2.10.0
-# numpy>=1.21.0,<2.0
-# pandas>=1.5.0
-# plotly>=5.0.0
-
-# Environment simulation dependencies
-# pettingzoo>=1.24.0
-# gymnasium>=0.29.0
-# simpy>=4.0.0
-
+# Core deps
+numpy>=1.21.0,<2.0
+pandas>=1.5.0
+plotly>=5.0.0
+pettingzoo>=1.24.0
+gymnasium>=0.29.0
+simpy>=4.0.0
+matplotlib>=3.6.0
+seaborn>=0.12.0

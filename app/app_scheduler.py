@@ -1213,7 +1213,7 @@ def main():
     # 模型加载方式选择
     model_input_method = st.radio(
         get_text("model_loading_method", lang),
-        [get_text("from_history", lang), get_text("manual_input", lang)],
+        [get_text("from_history", lang), get_text("upload_local_model", lang)],
         horizontal=True
     )
     
@@ -1223,7 +1223,7 @@ def main():
     if model_input_method == get_text("from_history", lang):
         model_row_label = get_text("select_model", lang)
     else:
-        model_row_label = get_text("model_path_input", lang)
+        model_row_label = get_text("upload_local_model_label", lang)
 
     st.write(model_row_label)
 
@@ -1262,12 +1262,33 @@ def main():
                 
                 st.caption(f"{get_text('model_path', lang)}{model_path}")
         else:
-            model_path = st.text_input(
+            # 本地模型上传：用户可以上传 .h5 / .keras 模型文件
+            uploaded_file = st.file_uploader(
                 "",
-                value="mappo/ppo_models/",
-                help=get_text("model_path_help", lang),
+                type=["h5", "keras"],
+                help=get_text("upload_local_model_help", lang),
                 label_visibility="collapsed"
             )
+
+            model_path = None
+            if uploaded_file is not None:
+                # 将上传文件保存到应用目录下的 uploaded_models 目录
+                upload_dir = os.path.join(app_dir, "uploaded_models")
+                os.makedirs(upload_dir, exist_ok=True)
+
+                # 使用原始文件名，前面加上时间戳避免覆盖
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                safe_name = uploaded_file.name.replace(" ", "_")
+                saved_path = os.path.join(upload_dir, f"{timestamp}_{safe_name}")
+
+                with open(saved_path, "wb") as f:
+                    f.write(uploaded_file.getbuffer())
+
+                model_path = saved_path
+                # 立即写入 session_state，便于后续状态保存与展示
+                st.session_state['model_path'] = model_path
+
+                st.caption(f"{get_text('uploaded_model_path', lang)}{model_path}")
     
     with col2:
         # 加载模型按钮

@@ -30,7 +30,18 @@
 # Documentation
 !README.md
 !rule.mdc
+!DEPLOY.md
+!DEPLOYMENT_CHECKLIST.md
 
 # Dependencies
 !requirements.txt
+!app/app_requirements.txt
+
+# Streamlit configuration
+!.streamlit/
+!.streamlit/config.toml
+!.streamlit/secrets.toml.example
+
+# Important: Ignore actual secrets
+.streamlit/secrets.toml
 
