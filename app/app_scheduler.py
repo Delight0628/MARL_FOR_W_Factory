@@ -11,6 +11,7 @@ import numpy as np
 import plotly.graph_objects as go
 from datetime import datetime
 import json
+import uuid
 from i18n import LANGUAGES, get_text
 import gymnasium as gym  # 10-25-14-30 引入以识别MultiDiscrete动作空间
 
@@ -238,9 +239,24 @@ def save_custom_products(products):
         st.error(get_text("save_failed", get_language(), str(e)))
         return False
 
+def get_session_id() -> str:
+    """获取当前会话的唯一ID（浏览器会话级别）。"""
+    if 'session_id' not in st.session_state:
+        # 使用 UUID4 生成随机会话ID
+        st.session_state['session_id'] = uuid.uuid4().hex
+    return st.session_state['session_id']
+
+
+def _get_state_file_path() -> str:
+    """根据会话ID生成独立的状态文件路径。"""
+    session_id = get_session_id()
+    # 为不同会话分别保存，如 app_state_<session_id>.json
+    return os.path.join(app_dir, f"app_state_{session_id}.json")
+
+
 def load_app_state():
-    """从文件加载应用状态（订单配置、模型路径、仿真结果等）"""
-    state_file = os.path.join(app_dir, "app_state.json")
+    """从会话专属文件加载应用状态（订单配置、模型路径、仿真结果等）。"""
+    state_file = _get_state_file_path()
     if os.path.exists(state_file):
         try:
             with open(state_file, 'r', encoding='utf-8') as f:
@@ -272,8 +288,8 @@ def clear_simulation_results():
         del st.session_state['heuristic_results']
 
 def save_app_state():
-    """保存应用状态到文件"""
-    state_file = os.path.join(app_dir, "app_state.json")
+    """保存应用状态到当前会话专属文件"""
+    state_file = _get_state_file_path()
     try:
         # 准备要保存的状态
         state_to_save = {
@@ -1262,18 +1278,52 @@ def main():
                 
                 st.caption(f"{get_text('model_path', lang)}{model_path}")
         else:
-            # 本地模型上传：用户可以上传 .h5 / .keras 模型文件
+            # 加载服务器已有模型或上传新模型
+            # 1) 先列出 uploaded_models 目录下已有模型，供快速选择
+            upload_dir = os.path.join(app_dir, "uploaded_models")
+            existing_models = []
+            if os.path.exists(upload_dir):
+                for fname in sorted(os.listdir(upload_dir), reverse=True):
+                    if fname.endswith(".h5") or fname.endswith(".keras"):
+                        existing_models.append({
+                            "name": fname,
+                            "path": os.path.join(upload_dir, fname),
+                        })
+
+            model_path = None
+
+            if existing_models:
+                existing_options = [m["name"] for m in existing_models]
+
+                # 默认优先选中当前 session_state 中的 model_path 对应的文件
+                default_existing_idx = 0
+                saved_model_path = st.session_state.get('model_path', '')
+                if saved_model_path:
+                    for idx, m in enumerate(existing_models):
+                        if m["path"] == saved_model_path:
+                            default_existing_idx = idx
+                            break
+
+                selected_existing = st.selectbox(
+                    get_text("select_model", lang),
+                    options=existing_options,
+                    index=default_existing_idx,
+                    help=get_text("upload_local_model_help", lang),
+                )
+
+                existing_info = next(m for m in existing_models if m["name"] == selected_existing)
+                model_path = existing_info["path"]
+                st.caption(f"{get_text('model_path', lang)}{model_path}")
+
+            # 2) 允许上传新模型文件
             uploaded_file = st.file_uploader(
-                "",
+                get_text("upload_local_model_label", lang),
                 type=["h5", "keras"],
                 help=get_text("upload_local_model_help", lang),
                 label_visibility="collapsed"
             )
 
-            model_path = None
             if uploaded_file is not None:
-                # 将上传文件保存到应用目录下的 uploaded_models 目录
-                upload_dir = os.path.join(app_dir, "uploaded_models")
                 os.makedirs(upload_dir, exist_ok=True)
 
                 # 使用原始文件名，前面加上时间戳避免覆盖

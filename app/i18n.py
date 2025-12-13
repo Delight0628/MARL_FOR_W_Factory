@@ -49,16 +49,16 @@ TEXTS = {
         "zh-TW": "手動輸入路徑",
         "en": "Manual Input Path"
     },
-    # 本地模型上传（新）
+    # 服务器已有模型 + 上传新模型（新）
     "upload_local_model": {
-        "zh-CN": "加载本地模型",
-        "zh-TW": "加載本地模型",
-        "en": "Upload Local Model"
+        "zh-CN": "加载服务器已有模型或上传新模型",
+        "zh-TW": "加載伺服器已有模型或上傳新模型",
+        "en": "Load server models or upload a new one"
     },
     "upload_local_model_label": {
-        "zh-CN": "从本地上传已训练好的模型",
-        "zh-TW": "從本地上傳已訓練好的模型",
-        "en": "Upload a locally trained model"
+        "zh-CN": "从服务器已有模型中选择，或上传新的已训练模型",
+        "zh-TW": "從伺服器已有模型中選擇，或上傳新的已訓練模型",
+        "en": "Select from server models or upload a new trained model"
     },
     "select_model": {
         "zh-CN": "选择训练好的模型",
@@ -86,9 +86,9 @@ TEXTS = {
         "en": "Enter the full path of Actor model file (.keras format)"
     },
     "upload_local_model_help": {
-        "zh-CN": "上传本地保存的 Actor 模型文件（支持 .h5 / .keras）",
-        "zh-TW": "上傳本地保存的 Actor 模型文件（支援 .h5 / .keras）",
-        "en": "Upload a locally saved Actor model file (.h5 / .keras)"
+        "zh-CN": "可从下方已有模型中直接选择，或上传本地保存的 Actor 模型文件（支持 .h5 / .keras）",
+        "zh-TW": "可從下方已有模型中直接選擇，或上傳本地保存的 Actor 模型文件（支援 .h5 / .keras）",
+        "en": "You can select an existing server model below, or upload a local Actor model file (.h5 / .keras)."
     },
     "load_model": {
         "zh-CN": "🔄 加载模型",
