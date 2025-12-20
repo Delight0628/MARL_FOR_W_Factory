@@ -45,3 +45,4 @@
 # Important: Ignore actual secrets
 .streamlit/secrets.toml
 
+!outline.md

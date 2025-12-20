@@ -345,7 +345,7 @@ def _extract_model_tag_from_path(model_path: str) -> str:
         return match.group(1)
     return name
 
-def save_schedule_result(model_path: str, orders: list, final_stats: dict, score: float, gantt_history: list = None, heuristic_results: dict = None) -> None:
+def save_schedule_result(model_path: str, orders: list, final_stats: dict, score: float, gantt_history: list = None, heuristic_results: dict = None, enable_failure: bool = False, enable_emergency: bool = False) -> None:
     try:
         total_parts = sum(order.get("quantity", 0) for order in (orders or []))
         model_tag = _extract_model_tag_from_path(model_path)
@@ -401,6 +401,27 @@ def save_schedule_result(model_path: str, orders: list, final_stats: dict, score
             "score": float(score),
             "final_stats": clean_stats,
             "heuristic_comparison": comparison_data,
+            # 新增：保存订单列表
+            "orders": orders if orders else [],
+            # 新增：保存动态环境配置（包含具体参数）
+            "dynamic_environment": {
+                "equipment_failure": {
+                    "enabled": enable_failure,
+                    "parameters": {
+                        "mtbf_hours": 24,                  # 平均故障间隔时间（小时）
+                        "mttr_minutes": 30,                # 平均修复时间（分钟）
+                        "failure_probability": 0.02        # 每小时故障概率
+                    } if enable_failure else None
+                },
+                "emergency_orders": {
+                    "enabled": enable_emergency,
+                    "parameters": {
+                        "arrival_rate": 0.1,               # 每小时紧急订单到达率
+                        "priority_boost": 0,               # 紧急订单优先级提升
+                        "due_date_reduction": 0.7          # 交期缩短比例（0.7表示缩短30%）
+                    } if enable_emergency else None
+                }
+            },
             "saved_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         }
 
@@ -408,6 +429,102 @@ def save_schedule_result(model_path: str, orders: list, final_stats: dict, score
             json.dump(payload, f, ensure_ascii=False, indent=2)
             
     except Exception:
+        pass
+
+def save_model_comparison_results(comparison_results: dict, model_names: list) -> None:
+    """保存模型对比结果到文件"""
+    try:
+        # 生成对比结果文件夹名
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        folder_name = f"comparison_{timestamp}_{len(model_names)}models"
+        
+        # 创建对比结果文件夹
+        save_dir = os.path.join(app_dir, "result", folder_name)
+        os.makedirs(save_dir, exist_ok=True)
+        
+        # 准备对比数据
+        comparison_data = {}
+        for model_name, runs in comparison_results.items():
+            # 计算平均值
+            avg_stats = {}
+            if runs:
+                avg_stats = {
+                    'avg_completion_rate': sum(r['stats']['total_parts'] for r in runs) / len(runs),
+                    'avg_makespan': sum(r['stats']['makespan'] for r in runs) / len(runs),
+                    'avg_utilization': sum(r['stats']['mean_utilization'] for r in runs) / len(runs),
+                    'avg_tardiness': sum(r['stats']['total_tardiness'] for r in runs) / len(runs),
+                    'avg_score': sum(r['score'] for r in runs) / len(runs),
+                    'avg_reward': sum(r['total_reward'] for r in runs) / len(runs),
+                    'runs_count': len(runs)
+                }
+            
+            comparison_data[model_name] = {
+                'average_stats': avg_stats,
+                'detailed_runs': runs  # 保存每次运行的详细结果
+            }
+        
+        # 构建保存的数据结构
+        payload = {
+            "comparison_type": "multi_model_performance",
+            "models_compared": model_names,
+            "comparison_results": comparison_data,
+            # 保存当前订单配置
+            "orders": st.session_state.get('orders', []),
+            # 保存动态环境配置（包含具体参数）
+            "dynamic_environment": {
+                "equipment_failure": {
+                    "enabled": st.session_state.get('enable_failure', False),
+                    "parameters": {
+                        "mtbf_hours": 24,                  # 平均故障间隔时间（小时）
+                        "mttr_minutes": 30,                # 平均修复时间（分钟）
+                        "failure_probability": 0.02        # 每小时故障概率
+                    } if st.session_state.get('enable_failure', False) else None
+                },
+                "emergency_orders": {
+                    "enabled": st.session_state.get('enable_emergency', False),
+                    "parameters": {
+                        "arrival_rate": 0.1,               # 每小时紧急订单到达率
+                        "priority_boost": 0,               # 紧急订单优先级提升
+                        "due_date_reduction": 0.7          # 交期缩短比例（0.7表示缩短30%）
+                    } if st.session_state.get('enable_emergency', False) else None
+                }
+            },
+            # 保存订单生成参数（如果是随机生成的）
+            "order_generation_config": {
+                "config_method": st.session_state.get('config_method_key', 'random'),
+                "num_orders": st.session_state.get('num_orders', 5),
+                "min_quantity": st.session_state.get('qty_min', 3),
+                "max_quantity": st.session_state.get('qty_max', 10),
+                "min_due": st.session_state.get('due_min', 200),
+                "max_due": st.session_state.get('due_max', 700),
+                "min_arrival": st.session_state.get('arrival_min', 0),
+                "max_arrival": st.session_state.get('arrival_max', 50),
+            },
+            "comparison_parameters": {
+                "max_steps": st.session_state.get('max_steps_comparison', 1500),
+                "runs_per_model": st.session_state.get('comparison_runs', 1)
+            },
+            "saved_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        }
+        
+        # 保存JSON文件
+        with open(os.path.join(save_dir, "comparison_result.json"), "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+        
+        # 保存对比结果的甘特图（如果有）
+        for model_name, runs in comparison_results.items():
+            for i, run_data in enumerate(runs):
+                if run_data.get('gantt_history'):
+                    try:
+                        fig = create_gantt_chart(run_data['gantt_history'])
+                        if fig:
+                            filename = f"gantt_{model_name.replace('/', '_')}_run{i+1}.html"
+                            fig.write_html(os.path.join(save_dir, filename))
+                    except Exception:
+                        pass
+        
+    except Exception as e:
+        # 静默失败，不影响主流程
         pass
 
 def calculate_product_total_time(product: str, product_routes: dict) -> float:
@@ -1896,7 +2013,9 @@ def main():
                 save_schedule_result(
                     model_path, orders, final_stats, score, 
                     gantt_history=gantt_history,
-                    heuristic_results=heuristic_results
+                    heuristic_results=heuristic_results,
+                    enable_failure=st.session_state.get('enable_failure', False),
+                    enable_emergency=st.session_state.get('enable_emergency', False)
                 )
 
                 # 同时保存到持久化变量（包括启发式算法对比结果）
@@ -2218,6 +2337,10 @@ def main():
                         # 保存对比结果到session_state
                         if comparison_results:
                             st.session_state['model_comparison_results'] = comparison_results
+                            
+                            # 保存模型对比结果到文件
+                            save_model_comparison_results(comparison_results, selected_model_names)
+                            
                             st.success(get_text("comparison_completed", lang))
                             st.rerun()
                         else:
