@@ -12,6 +12,7 @@ import plotly.graph_objects as go
 from datetime import datetime
 import json
 import uuid
+from typing import Dict
 from i18n import LANGUAGES, get_text
 import gymnasium as gym  # 10-25-14-30 引入以识别MultiDiscrete动作空间
 
@@ -345,7 +346,7 @@ def _extract_model_tag_from_path(model_path: str) -> str:
         return match.group(1)
     return name
 
-def save_schedule_result(model_path: str, orders: list, final_stats: dict, score: float, gantt_history: list = None, heuristic_results: dict = None, enable_failure: bool = False, enable_emergency: bool = False) -> None:
+def save_schedule_result(model_path: str, orders: list, final_stats: dict, score: float, gantt_history: list = None, heuristic_results: dict = None, enable_failure: bool = False, enable_emergency: bool = False, seeds_used: list = None) -> None:
     try:
         total_parts = sum(order.get("quantity", 0) for order in (orders or []))
         model_tag = _extract_model_tag_from_path(model_path)
@@ -394,6 +395,28 @@ def save_schedule_result(model_path: str, orders: list, final_stats: dict, score
         if 'gantt_history' in clean_stats:
             del clean_stats['gantt_history']
             
+        score_summary = {
+            "type": "single_simulation",
+            "items": []
+        }
+        score_summary["items"].append({
+            "name": "MARL",
+            "runs": 1,
+            "avg_score": float(score),
+            "seeds_used": (seeds_used if seeds_used is not None else [])
+        })
+        if heuristic_results:
+            for name, res in heuristic_results.items():
+                try:
+                    score_summary["items"].append({
+                        "name": str(name),
+                        "runs": 1,
+                        "avg_score": float(res.get('score', 0.0)),
+                        "seeds_used": (seeds_used if seeds_used is not None else [])
+                    })
+                except Exception:
+                    continue
+
         payload = {
             "model_path": model_path,
             "model_tag": model_tag,
@@ -422,6 +445,8 @@ def save_schedule_result(model_path: str, orders: list, final_stats: dict, score
                     } if enable_emergency else None
                 }
             },
+            "seeds_used": seeds_used if seeds_used is not None else [],
+            "score_summary": score_summary,
             "saved_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         }
 
@@ -431,7 +456,7 @@ def save_schedule_result(model_path: str, orders: list, final_stats: dict, score
     except Exception:
         pass
 
-def save_model_comparison_results(comparison_results: dict, model_names: list) -> None:
+def save_model_comparison_results(comparison_results: dict, model_names: list, seeds_used: list = None, heuristic_baselines: dict = None) -> None:
     """保存模型对比结果到文件"""
     try:
         # 生成对比结果文件夹名
@@ -442,7 +467,37 @@ def save_model_comparison_results(comparison_results: dict, model_names: list) -
         save_dir = os.path.join(app_dir, "result", folder_name)
         os.makedirs(save_dir, exist_ok=True)
         
-        # 准备对比数据
+        # 先保存甘特图HTML，并在JSON里仅保存文件名引用（不保存gantt_history本体）
+        gantt_file_map: Dict[str, Dict[int, str]] = {}
+        for model_name, runs in comparison_results.items():
+            gantt_file_map[model_name] = {}
+            for i, run_data in enumerate(runs):
+                if run_data.get('gantt_history'):
+                    try:
+                        fig = create_gantt_chart(run_data['gantt_history'])
+                        if fig:
+                            filename = f"gantt_{model_name.replace('/', '_')}_run{i+1}.html"
+                            fig.write_html(os.path.join(save_dir, filename))
+                            gantt_file_map[model_name][i] = filename
+                    except Exception:
+                        pass
+
+        heuristic_gantt_file_map: Dict[str, Dict[int, str]] = {}
+        if heuristic_baselines:
+            for heuristic_name, runs in heuristic_baselines.items():
+                heuristic_gantt_file_map[heuristic_name] = {}
+                for i, run_data in enumerate(runs or []):
+                    if run_data.get('gantt_history'):
+                        try:
+                            fig = create_gantt_chart(run_data['gantt_history'])
+                            if fig:
+                                filename = f"gantt_{heuristic_name}_run{i+1}.html"
+                                fig.write_html(os.path.join(save_dir, filename))
+                                heuristic_gantt_file_map[heuristic_name][i] = filename
+                        except Exception:
+                            pass
+
+        # 准备对比数据（清理gantt_history）
         comparison_data = {}
         for model_name, runs in comparison_results.items():
             # 计算平均值
@@ -454,20 +509,68 @@ def save_model_comparison_results(comparison_results: dict, model_names: list) -
                     'avg_utilization': sum(r['stats']['mean_utilization'] for r in runs) / len(runs),
                     'avg_tardiness': sum(r['stats']['total_tardiness'] for r in runs) / len(runs),
                     'avg_score': sum(r['score'] for r in runs) / len(runs),
-                    'avg_reward': sum(r['total_reward'] for r in runs) / len(runs),
+                    'avg_reward': sum(r.get('total_reward', 0.0) for r in runs) / len(runs),
                     'runs_count': len(runs)
                 }
-            
+
+            cleaned_runs = []
+            for i, r in enumerate(runs or []):
+                r2 = dict(r)
+                if 'gantt_history' in r2:
+                    del r2['gantt_history']
+                if model_name in gantt_file_map and i in gantt_file_map[model_name]:
+                    r2['gantt_html'] = gantt_file_map[model_name][i]
+                cleaned_runs.append(r2)
+
             comparison_data[model_name] = {
                 'average_stats': avg_stats,
-                'detailed_runs': runs  # 保存每次运行的详细结果
+                'detailed_runs': cleaned_runs
             }
+
+        cleaned_heuristic_baselines = {}
+        if heuristic_baselines:
+            for heuristic_name, runs in heuristic_baselines.items():
+                cleaned_runs = []
+                for i, r in enumerate(runs or []):
+                    r2 = dict(r)
+                    if 'gantt_history' in r2:
+                        del r2['gantt_history']
+                    if heuristic_name in heuristic_gantt_file_map and i in heuristic_gantt_file_map[heuristic_name]:
+                        r2['gantt_html'] = heuristic_gantt_file_map[heuristic_name][i]
+                    cleaned_runs.append(r2)
+                cleaned_heuristic_baselines[heuristic_name] = cleaned_runs
         
+        score_summary_items = []
+        for model_name, runs in (comparison_results or {}).items():
+            if runs:
+                try:
+                    score_summary_items.append({
+                        "name": str(model_name),
+                        "runs": len(runs),
+                        "avg_score": float(sum(r.get('score', 0.0) for r in runs) / len(runs)),
+                        "seeds_used": [int(r.get('seed')) for r in runs if r.get('seed') is not None]
+                    })
+                except Exception:
+                    pass
+        for h_name, runs in (heuristic_baselines or {}).items():
+            if runs:
+                try:
+                    score_summary_items.append({
+                        "name": str(h_name),
+                        "runs": len(runs),
+                        "avg_score": float(sum(r.get('score', 0.0) for r in runs) / len(runs)),
+                        "seeds_used": [int(r.get('seed')) for r in runs if r.get('seed') is not None]
+                    })
+                except Exception:
+                    pass
+
         # 构建保存的数据结构
         payload = {
             "comparison_type": "multi_model_performance",
             "models_compared": model_names,
+            "seeds_used": seeds_used if seeds_used is not None else [],
             "comparison_results": comparison_data,
+            "heuristic_baselines": cleaned_heuristic_baselines,
             # 保存当前订单配置
             "orders": st.session_state.get('orders', []),
             # 保存动态环境配置（包含具体参数）
@@ -504,6 +607,10 @@ def save_model_comparison_results(comparison_results: dict, model_names: list) -
                 "max_steps": st.session_state.get('max_steps_comparison', 1500),
                 "runs_per_model": st.session_state.get('comparison_runs', 1)
             },
+            "score_summary": {
+                "type": "multi_model_comparison",
+                "items": score_summary_items
+            },
             "saved_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         }
         
@@ -511,17 +618,7 @@ def save_model_comparison_results(comparison_results: dict, model_names: list) -
         with open(os.path.join(save_dir, "comparison_result.json"), "w", encoding="utf-8") as f:
             json.dump(payload, f, ensure_ascii=False, indent=2)
         
-        # 保存对比结果的甘特图（如果有）
-        for model_name, runs in comparison_results.items():
-            for i, run_data in enumerate(runs):
-                if run_data.get('gantt_history'):
-                    try:
-                        fig = create_gantt_chart(run_data['gantt_history'])
-                        if fig:
-                            filename = f"gantt_{model_name.replace('/', '_')}_run{i+1}.html"
-                            fig.write_html(os.path.join(save_dir, filename))
-                    except Exception:
-                        pass
+        # 甘特图HTML已在上方保存，这里无需重复保存
         
     except Exception as e:
         # 静默失败，不影响主流程
@@ -531,6 +628,118 @@ def calculate_product_total_time(product: str, product_routes: dict) -> float:
     """计算产品总加工时间"""
     route = product_routes.get(product, [])
     return sum(step["time"] for step in route)
+
+def save_dynamic_event_ablation_results(result: dict) -> None:
+    """保存动态事件消融测试结果到文件（JSON不包含gantt_history，甘特图另存HTML）"""
+    try:
+        from environments import w_factory_config
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        model_name = result.get('model_name', 'model')
+        folder_name = f"ablation_{timestamp}_{model_name.replace('/', '_').replace(' ', '_')}"
+        save_dir = os.path.join(app_dir, "result", folder_name)
+        os.makedirs(save_dir, exist_ok=True)
+
+        def _clean_runs(runs: list, prefix: str):
+            cleaned = []
+            for i, r in enumerate(runs or []):
+                r2 = dict(r)
+                if r2.get('gantt_history'):
+                    try:
+                        fig = create_gantt_chart(r2['gantt_history'])
+                        if fig:
+                            filename = f"gantt_{prefix}_run{i+1}.html"
+                            fig.write_html(os.path.join(save_dir, filename))
+                            r2['gantt_html'] = filename
+                    except Exception:
+                        pass
+                    try:
+                        del r2['gantt_history']
+                    except Exception:
+                        pass
+                cleaned.append(r2)
+            return cleaned
+
+        disabled_clean = _clean_runs(result.get('disabled', []), "MARL_OFF")
+        enabled_clean = _clean_runs(result.get('enabled', []), "MARL_ON")
+
+        heur_dis = {}
+        heur_en = {}
+        for h, runs in (result.get('heuristic_disabled', {}) or {}).items():
+            heur_dis[h] = _clean_runs(runs, f"{h}_OFF")
+        for h, runs in (result.get('heuristic_enabled', {}) or {}).items():
+            heur_en[h] = _clean_runs(runs, f"{h}_ON")
+
+        failure_params = st.session_state.get('failure_config')
+        emergency_params = st.session_state.get('emergency_config')
+        if st.session_state.get('enable_failure', False) and not failure_params:
+            failure_params = dict(w_factory_config.EQUIPMENT_FAILURE)
+        if st.session_state.get('enable_emergency', False) and not emergency_params:
+            emergency_params = dict(w_factory_config.EMERGENCY_ORDERS)
+
+        score_summary_items = []
+        for group_name, group_data in {"OFF": {"MARL": disabled_clean, "heur": heur_dis}, "ON": {"MARL": enabled_clean, "heur": heur_en}}.items():
+            runs = (group_data.get("MARL") or [])
+            if runs:
+                try:
+                    score_summary_items.append({
+                        "group": group_name,
+                        "name": "MARL",
+                        "runs": len(runs),
+                        "avg_score": float(sum(r.get('score', 0.0) for r in runs) / len(runs)),
+                        "seeds_used": [int(r.get('seed')) for r in runs if r.get('seed') is not None]
+                    })
+                except Exception:
+                    pass
+            for h_name, hruns in (group_data.get("heur") or {}).items():
+                if hruns:
+                    try:
+                        score_summary_items.append({
+                            "group": group_name,
+                            "name": str(h_name),
+                            "runs": len(hruns),
+                            "avg_score": float(sum(r.get('score', 0.0) for r in hruns) / len(hruns)),
+                            "seeds_used": [int(r.get('seed')) for r in hruns if r.get('seed') is not None]
+                        })
+                    except Exception:
+                        pass
+
+        payload = {
+            "type": "dynamic_event_ablation",
+            "model_name": result.get('model_name'),
+            "model_path": result.get('model_path'),
+            "seeds_used": result.get('seeds_used', []),
+            "orders": st.session_state.get('orders', []),
+            "dynamic_environment_on": {
+                "equipment_failure": {
+                    "enabled": st.session_state.get('enable_failure', False),
+                    "parameters": failure_params if st.session_state.get('enable_failure', False) else None
+                },
+                "emergency_orders": {
+                    "enabled": st.session_state.get('enable_emergency', False),
+                    "parameters": emergency_params if st.session_state.get('enable_emergency', False) else None
+                }
+            },
+            "runs": {
+                "OFF": {
+                    "MARL": disabled_clean,
+                    "heuristics": heur_dis,
+                },
+                "ON": {
+                    "MARL": enabled_clean,
+                    "heuristics": heur_en,
+                }
+            },
+            "score_summary": {
+                "type": "dynamic_event_ablation",
+                "items": score_summary_items
+            },
+            "saved_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        }
+
+        with open(os.path.join(save_dir, "ablation_result.json"), "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
 
 def validate_order_config(orders: list, custom_products: dict = None) -> dict:
     """
@@ -654,6 +863,42 @@ def validate_order_config(orders: list, custom_products: dict = None) -> dict:
         'difficulty_level': difficulty_level
     }
 
+def extract_orders_from_json_obj(obj):
+    if obj is None:
+        return None
+    if isinstance(obj, list):
+        return obj
+    if isinstance(obj, dict):
+        if isinstance(obj.get('orders'), list):
+            return obj.get('orders')
+        if isinstance(obj.get('order_config'), list):
+            return obj.get('order_config')
+        if isinstance(obj.get('order_list'), list):
+            return obj.get('order_list')
+        if isinstance(obj.get('config'), dict):
+            nested = obj.get('config')
+            if isinstance(nested.get('orders'), list):
+                return nested.get('orders')
+    return None
+
+def normalize_orders_list(orders):
+    if not isinstance(orders, list):
+        return None
+    normalized = []
+    for o in orders:
+        if not isinstance(o, dict):
+            return None
+        if 'product' not in o or 'quantity' not in o or 'priority' not in o or 'due_date' not in o:
+            return None
+        normalized.append({
+            'product': o.get('product'),
+            'quantity': int(o.get('quantity')),
+            'priority': int(o.get('priority')),
+            'arrival_time': int(o.get('arrival_time', 0)),
+            'due_date': int(o.get('due_date')),
+        })
+    return normalized
+
 @st.cache_resource
 def load_model(model_path):
     """加载训练好的模型"""
@@ -742,7 +987,7 @@ def find_available_models():
     
     return models
 
-def run_heuristic_scheduling(heuristic_name, orders_config, custom_products=None, max_steps=1500, progress_bar=None, status_text=None, enable_failure=False, enable_emergency=False, failure_config=None, emergency_config=None):
+def run_heuristic_scheduling(heuristic_name, orders_config, custom_products=None, max_steps=1500, progress_bar=None, status_text=None, enable_failure=False, enable_emergency=False, failure_config=None, emergency_config=None, seed: int = 42, progress_callback=None, progress_callback_interval: int = 10):
     """
     运行启发式算法调度仿真
     
@@ -785,7 +1030,7 @@ def run_heuristic_scheduling(heuristic_name, orders_config, custom_products=None
         final_config.update(config)
         
         env = WFactoryEnv(config=final_config)
-        obs, info = env.reset(seed=42)
+        obs, info = env.reset(seed=seed)
         sim = env.sim
         
         step_count = 0
@@ -924,8 +1169,20 @@ def run_heuristic_scheduling(heuristic_name, orders_config, custom_products=None
                 if status_text:
                     status_text.text(f"运行{heuristic_name}调度... ({step_count}/{max_steps})")
             
+            if progress_callback and (step_count % int(progress_callback_interval) == 0):
+                try:
+                    progress_callback(int(step_count), int(max_steps))
+                except Exception:
+                    pass
+            
             if any(terminations.values()) or any(truncations.values()):
                 break
+
+        if progress_callback:
+            try:
+                progress_callback(int(max_steps), int(max_steps))
+            except Exception:
+                pass
         
         if status_text:
             status_text.text(f"{heuristic_name}调度完成")
@@ -945,7 +1202,7 @@ def run_heuristic_scheduling(heuristic_name, orders_config, custom_products=None
         if original_routes is not None:
             w_factory_config.PRODUCT_ROUTES = original_routes
 
-def run_scheduling(actor_model, orders_config, custom_products=None, max_steps=1500, progress_bar=None, status_text=None, enable_failure=False, enable_emergency=False, failure_config=None, emergency_config=None):
+def run_scheduling(actor_model, orders_config, custom_products=None, max_steps=1500, progress_bar=None, status_text=None, enable_failure=False, enable_emergency=False, failure_config=None, emergency_config=None, seed: int = 42, progress_callback=None, progress_callback_interval: int = 10):
     """运行调度仿真"""
     # 如果有自定义产品，临时添加到PRODUCT_ROUTES
     from environments import w_factory_config
@@ -979,7 +1236,7 @@ def run_scheduling(actor_model, orders_config, custom_products=None, max_steps=1
             status_text.text(get_text("initializing", get_language()))
         
         env = WFactoryEnv(config=config)
-        obs, info = env.reset(seed=42)
+        obs, info = env.reset(seed=seed)
         
         step_count = 0
         total_reward = 0
@@ -1039,6 +1296,12 @@ def run_scheduling(actor_model, orders_config, custom_products=None, max_steps=1
                 progress_bar.progress(progress)
                 if status_text:
                     status_text.text(get_text("scheduling", get_language(), step_count, max_steps))
+
+            if progress_callback and (step_count % int(progress_callback_interval) == 0):
+                try:
+                    progress_callback(int(step_count), int(max_steps))
+                except Exception:
+                    pass
             
             if any(terminations.values()) or any(truncations.values()):
                 break
@@ -1633,8 +1896,21 @@ def main():
                     value=300,
                     step=10
                 )
-            
-            submitted = st.form_submit_button(get_text("add_order_button", lang))
+
+            btn_col1, btn_col2 = st.columns([1, 1])
+            with btn_col1:
+                submitted = st.form_submit_button(get_text("add_order_button", lang))
+            with btn_col2:
+                import_submitted = st.form_submit_button("从JSON导入")
+
+            st.markdown("粘贴JSON订单配置（支持仿真结果JSON的 orders 字段，或导出配置的订单list）")
+            import_json_text = st.text_area(
+                "",
+                height=150,
+                key="orders_import_text",
+                label_visibility="collapsed"
+            )
+
             if submitted:
                 order = {
                     "product": product,
@@ -1648,6 +1924,25 @@ def main():
                 save_app_state()  # 💾 保存状态
                 st.success(get_text("order_added_full", lang, product, quantity, arrival_time, due_date))
                 st.rerun()
+
+            if import_submitted:
+                if not (import_json_text or "").strip():
+                    st.warning("请先粘贴JSON内容")
+                else:
+                    try:
+                        obj = json.loads(import_json_text)
+                        extracted = extract_orders_from_json_obj(obj)
+                        normalized = normalize_orders_list(extracted)
+                        if not normalized:
+                            st.error("JSON格式不正确：需要是订单列表，或包含 orders 字段的仿真结果JSON")
+                        else:
+                            st.session_state['orders'] = normalized
+                            clear_simulation_results()
+                            save_app_state()
+                            st.success(f"已导入 {len(normalized)} 条订单")
+                            st.rerun()
+                    except Exception as e:
+                        st.error(f"解析JSON失败：{str(e)}")
     
     else:  # 随机生成订单
         st.subheader(get_text("random_order_gen", lang))
@@ -1838,6 +2133,16 @@ def main():
             help=get_text("compare_heuristics_help", lang),
             key="compare_heuristics"
         )
+
+        base_seed_single = st.number_input(
+            get_text("base_seed_single", lang),
+            min_value=0,
+            max_value=1000000,
+            value=int(st.session_state.get('base_seed_single', 42)),
+            step=1,
+            help=get_text("base_seed_single_help", lang),
+            key="base_seed_single"
+        )
         
         # 12-02 新增：动态环境配置
         st.subheader("动态环境配置")
@@ -1967,7 +2272,8 @@ def main():
                     enable_failure=enable_failure,
                     enable_emergency=enable_emergency,
                     failure_config=failure_config,
-                    emergency_config=emergency_config
+                    emergency_config=emergency_config,
+                    seed=int(base_seed_single)
                 )
                 
                 # 保存MARL结果
@@ -1993,7 +2299,8 @@ def main():
                             enable_failure=enable_failure,
                             enable_emergency=enable_emergency,
                             failure_config=failure_config,
-                            emergency_config=emergency_config
+                            emergency_config=emergency_config,
+                            seed=int(base_seed_single)
                         )
                         
                         heuristic_results[heuristic] = {
@@ -2010,12 +2317,14 @@ def main():
                 
                 # 保存完整调度结果（含甘特图和对比数据）
                 model_path = st.session_state.get('model_path', '')
+                seeds_used = [int(base_seed_single)]
                 save_schedule_result(
                     model_path, orders, final_stats, score, 
                     gantt_history=gantt_history,
                     heuristic_results=heuristic_results,
                     enable_failure=st.session_state.get('enable_failure', False),
-                    enable_emergency=st.session_state.get('enable_emergency', False)
+                    enable_emergency=st.session_state.get('enable_emergency', False),
+                    seeds_used=seeds_used
                 )
 
                 # 同时保存到持久化变量（包括启发式算法对比结果）
@@ -2200,6 +2509,295 @@ def main():
     # ============ 模型性能对比模块 ============
     st.divider()
     st.header("🛠 " + get_text("model_comparison", lang))
+
+    # --- 动态事件消融测试：同一模型在启用/禁用动态事件下的性能对比 ---
+    with st.expander(get_text("dynamic_event_ablation_title", lang), expanded=False):
+        st.markdown(get_text("dynamic_event_ablation_help", lang))
+
+        if not st.session_state.get('orders', []):
+            st.warning(get_text("config_orders_first_comparison", lang))
+        else:
+            ablation_models = find_available_models()
+            if not ablation_models:
+                st.warning(get_text("no_model_found", lang))
+            else:
+                ablation_model_options = {m["name"]: m["path"] for m in ablation_models}
+                default_ablation_model = list(ablation_model_options.keys())[:1]
+                selected_ablation_model = st.selectbox(
+                    get_text("select_single_model", lang),
+                    options=list(ablation_model_options.keys()),
+                    index=0 if default_ablation_model else 0,
+                    key="ablation_model_select"
+                )
+
+                include_heuristics_ablation = st.checkbox(
+                    get_text("include_heuristics_baseline", lang),
+                    value=bool(st.session_state.get('include_heuristics_ablation', True)),
+                    help=get_text("include_heuristics_baseline_help", lang),
+                    key="include_heuristics_ablation"
+                )
+
+                col1, col2 = st.columns(2)
+                with col1:
+                    ablation_max_steps = st.number_input(
+                        get_text("max_steps", lang),
+                        min_value=500,
+                        max_value=3000,
+                        value=1500,
+                        step=100,
+                        key="ablation_max_steps"
+                    )
+                with col2:
+                    ablation_multi_seed = st.toggle(
+                        get_text("seed_mode", lang),
+                        value=False,
+                        help=get_text("seed_mode_help", lang),
+                        key="ablation_multi_seed"
+                    )
+
+                col3, col4 = st.columns(2)
+                with col3:
+                    ablation_runs = st.number_input(
+                        get_text("comparison_runs", lang),
+                        min_value=1,
+                        max_value=5,
+                        value=2,
+                        step=1,
+                        disabled=(not ablation_multi_seed),
+                        help=get_text("comparison_runs_help", lang),
+                        key="ablation_runs"
+                    )
+                with col4:
+                    ablation_base_seed = st.number_input(
+                        get_text("base_seed", lang),
+                        min_value=0,
+                        max_value=1000000,
+                        value=42,
+                        step=1,
+                        help=get_text("base_seed_help", lang),
+                        key="ablation_base_seed"
+                    )
+
+                enabled_failure = bool(st.session_state.get('enable_failure', False))
+                enabled_emergency = bool(st.session_state.get('enable_emergency', False))
+                ablation_ready = bool(enabled_failure or enabled_emergency)
+                if not ablation_ready:
+                    st.warning("请至少勾选一个动态事件（设备故障/紧急插单）后才能运行消融测试")
+
+                if st.button(get_text("start_dynamic_event_ablation", lang), type="primary", use_container_width=True, disabled=(not ablation_ready)):
+                    try:
+                        # 生成 seeds_used
+                        if ablation_multi_seed:
+                            seeds_used = [int(ablation_base_seed + i) for i in range(int(ablation_runs))]
+                        else:
+                            seeds_used = [int(ablation_base_seed)]
+
+                        # 读取当前动态事件配置作为“启用组”配置
+                        enabled_failure_cfg = st.session_state.get('failure_config')
+                        enabled_emergency_cfg = st.session_state.get('emergency_config')
+
+                        model_path = ablation_model_options[selected_ablation_model]
+                        actor_model, message = load_model(model_path)
+                        if actor_model is None:
+                            st.error(f"{get_text('load_model_failed', lang, selected_ablation_model)}: {message}")
+                        else:
+                            orders_cfg = st.session_state['orders']
+                            custom_products = st.session_state.get('custom_products')
+
+                            disabled_runs = []
+                            enabled_runs = []
+
+                            heuristic_disabled = {h: [] for h in ['FIFO', 'EDD', 'SPT']} if include_heuristics_ablation else {}
+                            heuristic_enabled = {h: [] for h in ['FIFO', 'EDD', 'SPT']} if include_heuristics_ablation else {}
+
+                            progress_bar = st.progress(0)
+                            status_text = st.empty()
+                            num_heuristics = 3 if include_heuristics_ablation else 0
+                            total_steps = len(seeds_used) * (2 + 2 * num_heuristics)
+                            done = 0
+
+                            def _make_step_cb(job_index: int):
+                                def _cb(step_now: int, step_max: int, _seed=None, _mode=None):
+                                    try:
+                                        ratio = 0.0 if step_max <= 0 else float(step_now) / float(step_max)
+                                        progress_bar.progress(min((job_index + ratio) / float(total_steps), 1.0))
+                                        if status_text and (_seed is not None) and (_mode is not None):
+                                            status_text.text(get_text("ablation_running", lang, _mode, _seed) + f" ({int(step_now)}/{int(step_max)})")
+                                    except Exception:
+                                        pass
+                                return _cb
+
+                            for s in seeds_used:
+                                # 禁用动态事件
+                                status_text.text(get_text("ablation_running", lang, "OFF", s) + f" (0/{int(ablation_max_steps)})")
+                                d_stats, d_hist, d_score, d_reward = run_scheduling(
+                                    actor_model,
+                                    orders_cfg,
+                                    custom_products,
+                                    max_steps=int(ablation_max_steps),
+                                    enable_failure=False,
+                                    enable_emergency=False,
+                                    failure_config=None,
+                                    emergency_config=None,
+                                    progress_bar=None,
+                                    status_text=None,
+                                    seed=int(s),
+                                    progress_callback=(lambda step_now, step_max, _cb=_make_step_cb(done), _s=int(s): _cb(step_now, step_max, _seed=_s, _mode="OFF")),
+                                    progress_callback_interval=10
+                                )
+                                disabled_runs.append({
+                                    'stats': d_stats,
+                                    'score': d_score,
+                                    'total_reward': d_reward,
+                                    'gantt_history': d_hist,
+                                    'seed': int(s)
+                                })
+                                done += 1
+                                progress_bar.progress(done / total_steps)
+
+                                if include_heuristics_ablation:
+                                    for h in ['FIFO', 'EDD', 'SPT']:
+                                        h_stats, h_hist, h_score = run_heuristic_scheduling(
+                                            h,
+                                            orders_cfg,
+                                            custom_products,
+                                            max_steps=int(ablation_max_steps),
+                                            progress_bar=None,
+                                            status_text=None,
+                                            enable_failure=False,
+                                            enable_emergency=False,
+                                            failure_config=None,
+                                            emergency_config=None,
+                                            seed=int(s),
+                                            progress_callback=(lambda step_now, step_max, _cb=_make_step_cb(done), _s=int(s): _cb(step_now, step_max, _seed=_s, _mode="OFF")),
+                                            progress_callback_interval=10
+                                        )
+                                        heuristic_disabled[h].append({
+                                            'stats': h_stats,
+                                            'score': h_score,
+                                            'gantt_history': h_hist,
+                                            'seed': int(s)
+                                        })
+                                        done += 1
+                                        progress_bar.progress(done / total_steps)
+
+                                # 启用动态事件（使用当前页面设置）
+                                status_text.text(get_text("ablation_running", lang, "ON", s) + f" (0/{int(ablation_max_steps)})")
+                                e_stats, e_hist, e_score, e_reward = run_scheduling(
+                                    actor_model,
+                                    orders_cfg,
+                                    custom_products,
+                                    max_steps=int(ablation_max_steps),
+                                    enable_failure=enabled_failure,
+                                    enable_emergency=enabled_emergency,
+                                    failure_config=enabled_failure_cfg,
+                                    emergency_config=enabled_emergency_cfg,
+                                    progress_bar=None,
+                                    status_text=None,
+                                    seed=int(s),
+                                    progress_callback=(lambda step_now, step_max, _cb=_make_step_cb(done), _s=int(s): _cb(step_now, step_max, _seed=_s, _mode="ON")),
+                                    progress_callback_interval=10
+                                )
+                                enabled_runs.append({
+                                    'stats': e_stats,
+                                    'score': e_score,
+                                    'total_reward': e_reward,
+                                    'gantt_history': e_hist,
+                                    'seed': int(s)
+                                })
+                                done += 1
+                                progress_bar.progress(done / total_steps)
+
+                                if include_heuristics_ablation:
+                                    for h in ['FIFO', 'EDD', 'SPT']:
+                                        h_stats, h_hist, h_score = run_heuristic_scheduling(
+                                            h,
+                                            orders_cfg,
+                                            custom_products,
+                                            max_steps=int(ablation_max_steps),
+                                            progress_bar=None,
+                                            status_text=None,
+                                            enable_failure=enabled_failure,
+                                            enable_emergency=enabled_emergency,
+                                            failure_config=enabled_failure_cfg,
+                                            emergency_config=enabled_emergency_cfg,
+                                            seed=int(s),
+                                            progress_callback=(lambda step_now, step_max, _cb=_make_step_cb(done), _s=int(s): _cb(step_now, step_max, _seed=_s, _mode="ON")),
+                                            progress_callback_interval=10
+                                        )
+                                        heuristic_enabled[h].append({
+                                            'stats': h_stats,
+                                            'score': h_score,
+                                            'gantt_history': h_hist,
+                                            'seed': int(s)
+                                        })
+                                        done += 1
+                                        progress_bar.progress(done / total_steps)
+
+                            progress_bar.empty()
+                            status_text.empty()
+
+                            st.session_state['dynamic_event_ablation_results'] = {
+                                'model_name': selected_ablation_model,
+                                'model_path': model_path,
+                                'seeds_used': seeds_used,
+                                'disabled': disabled_runs,
+                                'enabled': enabled_runs,
+                                'heuristic_disabled': heuristic_disabled,
+                                'heuristic_enabled': heuristic_enabled,
+                            }
+
+                            # 落盘保存（JSON不含gantt_history，甘特图另存HTML）
+                            try:
+                                save_dynamic_event_ablation_results(st.session_state['dynamic_event_ablation_results'])
+                            except Exception:
+                                pass
+                            st.success(get_text("ablation_completed", lang))
+                            st.rerun()
+                    except Exception as e:
+                        st.error(f"{get_text('ablation_failed', lang)}{str(e)}")
+
+                if 'dynamic_event_ablation_results' in st.session_state and st.session_state['dynamic_event_ablation_results']:
+                    res = st.session_state['dynamic_event_ablation_results']
+                    if res.get('model_name') == selected_ablation_model:
+                        def _avg(lst, key_fn):
+                            return sum(key_fn(x) for x in lst) / max(1, len(lst))
+
+                        disabled_runs = res.get('disabled', [])
+                        enabled_runs = res.get('enabled', [])
+                        if disabled_runs and enabled_runs:
+                            total_parts_target = sum(order['quantity'] for order in st.session_state['orders'])
+                            table = []
+                            def _append_row(alg_name: str, tag: str, runs: list):
+                                avg_parts = _avg(runs, lambda r: r['stats'].get('total_parts', 0))
+                                avg_makespan = _avg(runs, lambda r: r['stats'].get('makespan', 0.0))
+                                avg_util = _avg(runs, lambda r: r['stats'].get('mean_utilization', 0.0))
+                                avg_tard = _avg(runs, lambda r: r['stats'].get('total_tardiness', 0.0))
+                                avg_score = _avg(runs, lambda r: r.get('score', 0.0))
+                                completion_rate_pct = (avg_parts / total_parts_target * 100) if total_parts_target > 0 else 0
+                                table.append({
+                                    get_text("algorithm", lang): alg_name,
+                                    get_text("ablation_group", lang): tag,
+                                    get_text("completion_rate", lang): f"{completion_rate_pct:.1f}%",
+                                    get_text("avg_makespan", lang): f"{avg_makespan:.1f}",
+                                    get_text("avg_utilization", lang): f"{avg_util*100:.1f}%",
+                                    get_text("avg_tardiness", lang): f"{avg_tard:.1f}",
+                                    get_text("avg_score", lang): f"{avg_score:.3f}",
+                                    get_text("runs", lang): len(runs),
+                                })
+
+                            _append_row("MARL (PPO)", "OFF", disabled_runs)
+                            _append_row("MARL (PPO)", "ON", enabled_runs)
+
+                            h_dis = res.get('heuristic_disabled', {}) or {}
+                            h_en = res.get('heuristic_enabled', {}) or {}
+                            for h in ['FIFO', 'EDD', 'SPT']:
+                                if h in h_dis and h_dis[h]:
+                                    _append_row(h, "OFF", h_dis[h])
+                                if h in h_en and h_en[h]:
+                                    _append_row(h, "ON", h_en[h])
+                            st.dataframe(pd.DataFrame(table), use_container_width=True, hide_index=True)
+
     
     with st.expander(get_text("model_comparison_description", lang), expanded=False):
         st.markdown(get_text("model_comparison_help", lang))
@@ -2267,36 +2865,70 @@ def main():
                             key="max_steps_comparison"
                         )
                     with col2:
+                        seed_mode = st.toggle(
+                            get_text("seed_mode", lang),
+                            value=False,
+                            help=get_text("seed_mode_help", lang),
+                            key="comparison_multi_seed"
+                        )
+
                         comparison_runs = st.number_input(
                             get_text("comparison_runs", lang),
                             min_value=1,
                             max_value=5,
-                            value=1,
+                            value=2,
+                            step=1,
+                            disabled=(not seed_mode),
                             help=get_text("comparison_runs_help", lang),
                             key="comparison_runs"
                         )
+
+                    base_seed = st.number_input(
+                        get_text("base_seed", lang),
+                        min_value=0,
+                        max_value=1000000,
+                        value=42,
+                        step=1,
+                        help=get_text("base_seed_help", lang),
+                        key="comparison_base_seed"
+                    )
+
+                    include_heuristics_comparison = st.checkbox(
+                        get_text("include_heuristics_baseline", lang),
+                        value=bool(st.session_state.get('include_heuristics_comparison', True)),
+                        help=get_text("include_heuristics_baseline_help", lang),
+                        key="include_heuristics_comparison"
+                    )
                     
                     # 开始对比按钮
                     if st.button(get_text("start_comparison", lang), type="primary", use_container_width=True):
                         # 初始化对比结果存储
                         comparison_results = {}
+
+                        heuristic_baselines = {h: [] for h in ['FIFO', 'EDD', 'SPT']} if include_heuristics_comparison else {}
+
+                        effective_runs = int(comparison_runs) if seed_mode else 1
+                        seeds_used = [int(base_seed + i) for i in range(effective_runs)] if seed_mode else [int(base_seed)]
                         
                         # 创建进度条
-                        total_runs = len(selected_model_names) * comparison_runs
+                        total_runs = len(selected_model_names) * effective_runs
+                        if include_heuristics_comparison:
+                            total_runs += 3 * effective_runs
                         progress_bar = st.progress(0)
                         status_text = st.empty()
                         
-                        current_run = 0
+                        job_done = 0
                         
                         # 依次运行每个模型
                         for model_name in selected_model_names:
                             model_path = model_options[model_name]
                             model_results = []
                             
-                            for run_idx in range(comparison_runs):
-                                current_run += 1
-                                status_text.text(f"{get_text('running_model', lang, model_name, run_idx + 1, comparison_runs)}")
-                                progress_bar.progress(current_run / total_runs)
+                            for run_idx in range(effective_runs):
+                                status_text.text(f"{get_text('running_model', lang, model_name, run_idx + 1, effective_runs)}")
+                                progress_bar.progress(min(job_done / total_runs, 1.0))
+
+                                current_seed = int(seeds_used[min(run_idx, len(seeds_used) - 1)])
                                 
                                 # 加载模型
                                 actor_model, message = load_model(model_path)
@@ -2306,6 +2938,14 @@ def main():
                                 
                                 # 运行调度
                                 try:
+                                    def _step_cb(step_now: int, step_max: int, _base=job_done, _tot=total_runs):
+                                        try:
+                                            ratio = 0.0 if step_max <= 0 else float(step_now) / float(step_max)
+                                            progress_bar.progress(min((_base + ratio) / float(_tot), 1.0))
+                                            status_text.text(f"{get_text('running_model', lang, model_name, run_idx + 1, effective_runs)} ({int(step_now)}/{int(step_max)})")
+                                        except Exception:
+                                            pass
+
                                     final_stats, gantt_history, score, total_reward = run_scheduling(
                                         actor_model,
                                         st.session_state['orders'],
@@ -2314,15 +2954,20 @@ def main():
                                         enable_failure=st.session_state.get('enable_failure', False),
                                         enable_emergency=st.session_state.get('enable_emergency', False),
                                         progress_bar=None,  # 不显示子进度条
-                                        status_text=None
+                                        status_text=None,
+                                        seed=current_seed,
+                                        progress_callback=_step_cb,
+                                        progress_callback_interval=10
                                     )
                                     
                                     model_results.append({
                                         'stats': final_stats,
                                         'score': score,
                                         'total_reward': total_reward,
-                                        'gantt_history': gantt_history
+                                        'gantt_history': gantt_history,
+                                        'seed': current_seed
                                     })
+                                    job_done += 1
                                 except Exception as e:
                                     st.error(f"{get_text('scheduling_failed', lang, model_name)}: {str(e)}")
                                     continue
@@ -2330,6 +2975,48 @@ def main():
                             # 保存该模型的所有运行结果
                             if model_results:
                                 comparison_results[model_name] = model_results
+
+                        if include_heuristics_comparison:
+                            for h in ['FIFO', 'EDD', 'SPT']:
+                                for run_idx in range(effective_runs):
+                                    current_seed = int(seeds_used[min(run_idx, len(seeds_used) - 1)])
+                                    try:
+                                        status_text.text(get_text('running_model', lang, h, run_idx + 1, effective_runs))
+                                        progress_bar.progress(min(job_done / total_runs, 1.0))
+
+                                        def _h_step_cb(step_now: int, step_max: int, _base=job_done, _tot=total_runs):
+                                            try:
+                                                ratio = 0.0 if step_max <= 0 else float(step_now) / float(step_max)
+                                                progress_bar.progress(min((_base + ratio) / float(_tot), 1.0))
+                                                status_text.text(get_text('running_model', lang, h, run_idx + 1, effective_runs) + f" ({int(step_now)}/{int(step_max)})")
+                                            except Exception:
+                                                pass
+
+                                        h_stats, h_history, h_score = run_heuristic_scheduling(
+                                            h,
+                                            st.session_state['orders'],
+                                            st.session_state.get('custom_products'),
+                                            max_steps=max_steps_comparison,
+                                            progress_bar=None,
+                                            status_text=None,
+                                            enable_failure=st.session_state.get('enable_failure', False),
+                                            enable_emergency=st.session_state.get('enable_emergency', False),
+                                            failure_config=st.session_state.get('failure_config'),
+                                            emergency_config=st.session_state.get('emergency_config'),
+                                            seed=current_seed,
+                                            progress_callback=_h_step_cb,
+                                            progress_callback_interval=10
+                                        )
+                                        heuristic_baselines[h].append({
+                                            'stats': h_stats,
+                                            'score': h_score,
+                                            'total_reward': 0.0,
+                                            'gantt_history': h_history,
+                                            'seed': current_seed
+                                        })
+                                        job_done += 1
+                                    except Exception:
+                                        continue
                         
                         progress_bar.empty()
                         status_text.empty()
@@ -2337,9 +3024,11 @@ def main():
                         # 保存对比结果到session_state
                         if comparison_results:
                             st.session_state['model_comparison_results'] = comparison_results
+                            if include_heuristics_comparison:
+                                st.session_state['model_comparison_heuristics'] = heuristic_baselines
                             
                             # 保存模型对比结果到文件
-                            save_model_comparison_results(comparison_results, selected_model_names)
+                            save_model_comparison_results(comparison_results, selected_model_names, seeds_used=seeds_used, heuristic_baselines=heuristic_baselines)
                             
                             st.success(get_text("comparison_completed", lang))
                             st.rerun()
@@ -2352,6 +3041,11 @@ def main():
                 st.subheader(get_text("comparison_results", lang))
                 
                 results = st.session_state['model_comparison_results']
+                heuristics = st.session_state.get('model_comparison_heuristics', {})
+                if heuristics:
+                    for h, runs in heuristics.items():
+                        if runs:
+                            results = {**results, **{h: runs}}
                 
                 # 准备对比数据
                 comparison_data = []

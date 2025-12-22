@@ -1144,6 +1144,86 @@ TEXTS = {
         "zh-TW": "每個模型運行的次數，用於獲得平均性能（1-5次）",
         "en": "Number of runs per model to get average performance (1-5 runs)"
     },
+    "seed_mode": {
+        "zh-CN": "多Seed评估（每次运行使用不同Seed）",
+        "zh-TW": "多Seed評估（每次運行使用不同Seed）",
+        "en": "Multi-seed Evaluation (different seed per run)"
+    },
+    "seed_mode_help": {
+        "zh-CN": "关闭时：每次运行都使用同一个Seed（严格控制变量，重复运行结果一致）。开启时：每次运行使用 base_seed + run_idx，用于评估鲁棒性（所有模型共享同一组Seed，保证公平可复现）",
+        "zh-TW": "關閉時：每次運行都使用同一個Seed（嚴格控制變量，重複運行結果一致）。開啟時：每次運行使用 base_seed + run_idx，用於評估魯棒性（所有模型共享同一組Seed，保證公平可復現）",
+        "en": "Off: all runs use the same seed (strict control variables, repeated runs identical). On: each run uses base_seed + run_idx for robustness evaluation (all models share the same seed set for fair reproducibility)."
+    },
+    "base_seed": {
+        "zh-CN": "基础Seed",
+        "zh-TW": "基礎Seed",
+        "en": "Base Seed"
+    },
+    "base_seed_help": {
+        "zh-CN": "固定Seed模式：所有运行使用该Seed。多Seed模式：使用 base_seed, base_seed+1, ... 作为 seeds_used",
+        "zh-TW": "固定Seed模式：所有運行使用該Seed。多Seed模式：使用 base_seed, base_seed+1, ... 作為 seeds_used",
+        "en": "Fixed seed mode: all runs use this seed. Multi-seed mode: uses base_seed, base_seed+1, ... as seeds_used"
+    },
+    "base_seed_single": {
+        "zh-CN": "基础Seed（普通仿真）",
+        "zh-TW": "基礎Seed（普通仿真）",
+        "en": "Base Seed (Single Simulation)"
+    },
+    "base_seed_single_help": {
+        "zh-CN": "用于普通“开始调度仿真”的随机种子。相同订单与相同Seed可保证完全可复现。启用动态事件时，不同Seed会产生不同扰动轨迹",
+        "zh-TW": "用於普通“開始調度仿真”的隨機種子。相同訂單與相同Seed可保證完全可復現。啟用動態事件時，不同Seed會產生不同擾動軌跡",
+        "en": "Random seed for single simulation. Same orders + same seed reproduces exactly. With dynamic events on, different seeds yield different disturbance trajectories."
+    },
+    "dynamic_event_ablation_title": {
+        "zh-CN": "动态事件消融测试（同一模型 ON/OFF 对比）",
+        "zh-TW": "動態事件消融測試（同一模型 ON/OFF 對比）",
+        "en": "Dynamic Event Ablation (Same Model ON/OFF)"
+    },
+    "dynamic_event_ablation_help": {
+        "zh-CN": "用于验证同一个模型在同一套订单下，启用/禁用动态事件（设备故障、紧急插单）对性能的影响。ON 组使用当前页面的动态环境开关与参数，OFF 组强制关闭动态事件。",
+        "zh-TW": "用於驗證同一個模型在同一套訂單下，啟用/禁用動態事件（設備故障、緊急插單）對性能的影響。ON 組使用當前頁面的動態環境開關與參數，OFF 組強制關閉動態事件。",
+        "en": "Compare the same model on the same orders with dynamic events ON vs OFF. ON uses current page dynamic settings; OFF forces dynamic events disabled."
+    },
+    "select_single_model": {
+        "zh-CN": "选择一个模型",
+        "zh-TW": "選擇一個模型",
+        "en": "Select One Model"
+    },
+    "start_dynamic_event_ablation": {
+        "zh-CN": "🧪 开始消融测试",
+        "zh-TW": "🧪 開始消融測試",
+        "en": "🧪 Start Ablation"
+    },
+    "ablation_running": {
+        "zh-CN": "消融测试运行中：动态事件 {} | Seed {}",
+        "zh-TW": "消融測試運行中：動態事件 {} | Seed {}",
+        "en": "Ablation running: dynamic events {} | seed {}"
+    },
+    "ablation_completed": {
+        "zh-CN": "消融测试完成",
+        "zh-TW": "消融測試完成",
+        "en": "Ablation completed"
+    },
+    "ablation_failed": {
+        "zh-CN": "消融测试失败：",
+        "zh-TW": "消融測試失敗：",
+        "en": "Ablation failed: "
+    },
+    "ablation_group": {
+        "zh-CN": "动态事件",
+        "zh-TW": "動態事件",
+        "en": "Dynamic Events"
+    },
+    "include_heuristics_baseline": {
+        "zh-CN": "加入启发式基线（FIFO/EDD/SPT）",
+        "zh-TW": "加入啟發式基線（FIFO/EDD/SPT）",
+        "en": "Include Heuristic Baselines (FIFO/EDD/SPT)"
+    },
+    "include_heuristics_baseline_help": {
+        "zh-CN": "同时运行启发式规则作为基准（FIFO、EDD、SPT），并与模型结果一起展示/保存。建议用于论文实验的基线对比。",
+        "zh-TW": "同時運行啟發式規則作為基準（FIFO、EDD、SPT），並與模型結果一起展示/保存。建議用於論文實驗的基線對比。",
+        "en": "Run heuristic rules (FIFO, EDD, SPT) as baselines and show/save them together with model results. Useful for baseline comparison."
+    },
     "start_comparison": {
         "zh-CN": "🚀 开始对比",
         "zh-TW": "🚀 開始對比",
