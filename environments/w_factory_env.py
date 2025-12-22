@@ -190,6 +190,8 @@ class WFactorySim:
         # 🔧 新增：迟期总量缓存与候选缓存（保证同一步一致性）
         self._last_overdue_sum: float = 0.0
         self._cached_candidates: Dict[str, List[Dict[str, Any]]] = {}
+        self._initial_target_parts: int = 0
+        self._last_score_potential: float = 0.0
         
         # 🔧 新增：进度和紧急度追踪（用于新奖励系统）
         self._last_progress_ratio: float = 0.0
@@ -207,6 +209,8 @@ class WFactorySim:
         # 备份基础订单，以便在重置时重新引入随机性
         self._base_orders_template = [o.copy() for o in BASE_ORDERS]
         self._initialize_orders()
+
+        self._init_score_decomposition_tracking()
 
         # 10-27-16-30 新增：若启用紧急插单，则启动插单生成进程
         if self._emergency_orders_enabled:
@@ -240,6 +244,8 @@ class WFactorySim:
         self._initialize_resources()
         self._initialize_orders()
 
+        self._init_score_decomposition_tracking()
+
         # 10-27-16-30 新增：reset 后重新启动紧急插单进程
         if bool(self.config.get('emergency_orders_enabled', False)):
             self.env.process(self._emergency_order_process())
@@ -268,6 +274,83 @@ class WFactorySim:
         # 重置进度和紧急度追踪
         self._last_progress_ratio = 0.0
         self._last_urgency_sum = 0.0
+    
+    def _init_score_decomposition_tracking(self):
+        try:
+            self._initial_target_parts = int(sum(int(o.quantity) for o in self.orders)) if self.orders else 0
+        except Exception:
+            self._initial_target_parts = 0
+
+        if REWARD_CONFIG.get('score_decomposition_shaping_enabled', False):
+            try:
+                weights = REWARD_CONFIG.get('score_decomposition_shaping_weights', {}) or {}
+                self._last_score_potential = float(self._compute_score_decomposition_potential(weights))
+            except Exception:
+                self._last_score_potential = 0.0
+        else:
+            self._last_score_potential = 0.0
+
+    def _estimate_total_tardiness_now(self, current_time: float) -> float:
+        total_tardiness = 0.0
+        for order in self.orders:
+            completion_time = self.order_completion_times.get(order.order_id)
+            if completion_time is not None:
+                if completion_time > order.due_date:
+                    total_tardiness += float(completion_time - order.due_date)
+            else:
+                if current_time > order.due_date:
+                    total_tardiness += float(current_time - order.due_date)
+        return float(total_tardiness)
+
+    def _estimate_mean_utilization_now(self, current_time: float) -> float:
+        if current_time <= 0:
+            return 0.0
+
+        util_values = []
+        for station_name in WORKSTATIONS.keys():
+            status = self.equipment_status.get(station_name, {})
+            capacity = WORKSTATIONS[station_name]['count']
+            if capacity <= 0:
+                util_values.append(0.0)
+                continue
+
+            busy_machine_time = float(status.get('busy_machine_time', 0.0))
+            last_event_time = float(status.get('last_event_time', 0.0))
+            busy_count = float(status.get('busy_count', 0.0))
+            if current_time > last_event_time:
+                busy_machine_time += (current_time - last_event_time) * busy_count
+
+            util_values.append(float(busy_machine_time / (float(current_time) * float(capacity))))
+
+        return float(np.mean(util_values)) if util_values else 0.0
+
+    def _compute_score_decomposition_potential(self, weights: Dict[str, float]) -> float:
+        current_time = float(self.env.now)
+
+        target_parts = int(self._initial_target_parts) if int(self._initial_target_parts) > 0 else 0
+        completed_parts = int(len(self.completed_parts))
+        completion_score = (float(completed_parts) / float(target_parts)) if target_parts > 0 else 0.0
+        if completion_score > 1.0:
+            completion_score = 1.0
+        if completion_score < 0.0:
+            completion_score = 0.0
+
+        tardiness = float(self._estimate_total_tardiness_now(current_time))
+        tardiness_score = max(0.0, 1.0 - tardiness / float(SIMULATION_TIME * 2.0))
+        makespan_score = max(0.0, 1.0 - current_time / float(SIMULATION_TIME * 1.5))
+        utilization_score = float(self._estimate_mean_utilization_now(current_time))
+
+        w_completion = float(weights.get('completion', 0.40))
+        w_tardiness = float(weights.get('tardiness', 0.35))
+        w_makespan = float(weights.get('makespan', 0.15))
+        w_util = float(weights.get('utilization', 0.10))
+
+        return (
+            w_completion * float(completion_score) +
+            w_tardiness * float(tardiness_score) +
+            w_makespan * float(makespan_score) +
+            w_util * float(utilization_score)
+        )
     
     def _initialize_resources(self):
         """初始化设备资源和队列"""
@@ -941,8 +1024,8 @@ class WFactorySim:
         if part.current_step < len(route) - 1:
             downstream_station = route[part.current_step + 1]["station"]
             if downstream_station in self.queues:
-                congestion = len(self.queues[downstream_station].items) / ENHANCED_OBS_CONFIG["w_station_capacity_norm"]
-                downstream_congestion = np.clip(congestion, 0, 1.0)
+                congestion = len(self.queues[downstream_station].items)
+                downstream_congestion = np.clip(congestion / ENHANCED_OBS_CONFIG["w_station_capacity_norm"], 0, 1.0)
         
         # 特征6: 订单优先级
         priority = part.priority / 5.0
@@ -1027,8 +1110,7 @@ class WFactorySim:
             status = self.equipment_status[station_name]
             capacity = WORKSTATIONS[station_name]['count']
             
-            # 专家修复：计算到当前时间的累积利用率，提供稳定信号
-            # 结算从 last_event_time 到当前时间的忙碌面积
+            # 专家修复 V3.1：修正错误的属性访问，应为 part.contribution_map
             if self.env.now > status.get('last_event_time', 0.0):
                 elapsed = self.env.now - status.get('last_event_time', 0.0)
                 busy_count = status.get('busy_count', 0)
@@ -1108,24 +1190,20 @@ class WFactorySim:
                         if result is not None:
                             selected_part, part_index = result
                             
-                            # 确保工件在本step中未被任何其他智能体选择
-                            if selected_part.part_id not in selected_part_ids_this_step:
-                                # 锁定工件：加入待处理列表
-                                parts_to_process_this_agent.append(selected_part)
-                                
-                                # 全局去重：将part_id加入全局已选集合
-                                selected_part_ids_this_step.add(selected_part.part_id)
-                                
-                                # 更新本站点的本地计数器，用于计算下一台机器的可用容量
-                                local_start_count[station_name] += 1
-                                
-                                # 记录启动的零件及其决策时的slack，用于奖励计算
-                                context["started_parts"].append({
-                                    "part_id": selected_part.part_id,
-                                    "slack": calculate_slack_time(selected_part, decision_time, self.queues, WORKSTATIONS)
-                                })
-                            else:
-                                context["invalid_attempts"] = context.get("invalid_attempts", 0) + 1
+                            # 锁定工件：加入待处理列表
+                            parts_to_process_this_agent.append(selected_part)
+                            
+                            # 全局去重：将part_id加入全局已选集合
+                            selected_part_ids_this_step.add(selected_part.part_id)
+                            
+                            # 更新本站点的本地计数器，用于计算下一台机器的可用容量
+                            local_start_count[station_name] += 1
+                            
+                            # 记录启动的零件及其决策时的slack，用于奖励计算
+                            context["started_parts"].append({
+                                "part_id": selected_part.part_id,
+                                "slack": calculate_slack_time(selected_part, decision_time, self.queues, WORKSTATIONS)
+                            })
                         else:
                             context["invalid_attempts"] = context.get("invalid_attempts", 0) + 1
                     else:
@@ -1503,6 +1581,33 @@ class WFactorySim:
                     if available_count > 0:
                         idle_penalty = eta_idle * (available_count / resource.count)
                         rewards[agent_id] += idle_penalty
+        
+        # ============================================================
+        # 🔧 新增：评分分解项的逐步奖励塑形
+        # ============================================================
+        if REWARD_CONFIG.get('score_decomposition_shaping_enabled', False):
+            try:
+                weights = REWARD_CONFIG.get('score_decomposition_shaping_weights', {}) or {}
+                potential_now = float(self._compute_score_decomposition_potential(weights))
+                delta = potential_now - float(self._last_score_potential)
+                self._last_score_potential = potential_now
+
+                scale = float(REWARD_CONFIG.get('score_decomposition_shaping_scale', 0.0))
+                clip_abs = float(REWARD_CONFIG.get('score_decomposition_shaping_clip_abs', 0.0))
+                shaping = float(scale) * float(delta)
+
+                if clip_abs > 0.0:
+                    if shaping > clip_abs:
+                        shaping = clip_abs
+                    elif shaping < -clip_abs:
+                        shaping = -clip_abs
+
+                if shaping != 0.0:
+                    per_agent = float(shaping) / float(max(1, len(rewards)))
+                    for agent_id in rewards:
+                        rewards[agent_id] += per_agent
+            except Exception:
+                pass
         
         # 更新订单进度与统计
         self._update_order_progress()

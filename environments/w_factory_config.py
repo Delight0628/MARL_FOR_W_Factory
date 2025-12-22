@@ -354,11 +354,22 @@ REWARD_CONFIG = {
     "slack_tardiness_normalize_scale": 480.0,    # 归一化基准（分钟）
     "wip_penalty_coeff": -0.01,                   # WIP拥塞惩罚系数
     "idle_penalty_coeff": -0.005,                 # 瓶颈闲置惩罚系数
+
+    "score_decomposition_shaping_enabled": True,
+    "score_decomposition_shaping_scale": 50.0,
+    "score_decomposition_shaping_clip_abs": 1.0,
+    "score_decomposition_shaping_weights": {
+        "completion": 0.40,
+        "tardiness": 0.35,
+        "makespan": 0.15,
+        "utilization": 0.10,
+    },
 }
 
 # =============================================================================
 # 7. 环境随机化配置 (Environment Randomization)
 # =============================================================================
+
 ENV_RANDOMIZATION_CONFIG = {
     "due_date_jitter": 50.0,      # 交货日期抖动范围 (+/- 分钟)
     "arrival_time_jitter": 30.0,  # 到达时间抖动范围 (0 to X 分钟)
