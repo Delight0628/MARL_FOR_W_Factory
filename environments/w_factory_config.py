@@ -364,6 +364,14 @@ REWARD_CONFIG = {
         "makespan": 0.15,
         "utilization": 0.10,
     },
+
+    "terminal_score_bonus_enabled": True,
+    "terminal_score_bonus_scale": 100.0,
+    "terminal_score_bonus_clip_delta_abs": 0.5,
+    "terminal_score_bonus_baseline_mode": "ema",
+    "terminal_score_bonus_baseline_value": 0.0,
+    "terminal_score_bonus_ema_alpha": 0.05,
+    "idle_when_work_available_penalty": -1.0,
 }
 
 # =============================================================================

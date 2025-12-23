@@ -220,25 +220,75 @@ def setup_page():
 
 def load_custom_products():
     """从文件加载自定义产品配置"""
-    config_file = os.path.join(app_dir, "custom_products.json")
-    if os.path.exists(config_file):
+    config_dir = os.path.join(app_dir, "custom_products")
+    new_file = os.path.join(config_dir, "custom_products.json")
+    old_file = os.path.join(app_dir, "custom_products.json")
+    try:
+        os.makedirs(config_dir, exist_ok=True)
+    except Exception:
+        pass
+
+    if (not os.path.exists(new_file)) and os.path.exists(old_file):
         try:
-            with open(config_file, 'r', encoding='utf-8') as f:
+            os.replace(old_file, new_file)
+        except Exception:
+            pass
+
+    if os.path.exists(new_file):
+        try:
+            with open(new_file, 'r', encoding='utf-8') as f:
                 return json.load(f)
-        except:
+        except Exception:
             return {}
     return {}
 
 def save_custom_products(products):
     """保存自定义产品配置到文件"""
-    config_file = os.path.join(app_dir, "custom_products.json")
+    config_dir = os.path.join(app_dir, "custom_products")
+    try:
+        os.makedirs(config_dir, exist_ok=True)
+    except Exception:
+        pass
+    config_file = os.path.join(config_dir, "custom_products.json")
     try:
         with open(config_file, 'w', encoding='utf-8') as f:
             json.dump(products, f, ensure_ascii=False, indent=2)
         return True
-    except Exception as e:
-        st.error(get_text("save_failed", get_language(), str(e)))
+    except Exception:
         return False
+
+def _migrate_legacy_files_once() -> None:
+    if st.session_state.get('_legacy_files_migrated', False):
+        return
+    st.session_state['_legacy_files_migrated'] = True
+
+    try:
+        state_dir = os.path.join(app_dir, 'app_state')
+        os.makedirs(state_dir, exist_ok=True)
+        for name in os.listdir(app_dir):
+            if name.startswith('app_state_') and name.endswith('.json'):
+                old_path = os.path.join(app_dir, name)
+                new_path = os.path.join(state_dir, name)
+                if os.path.exists(old_path) and (not os.path.exists(new_path)):
+                    try:
+                        os.replace(old_path, new_path)
+                    except Exception:
+                        pass
+    except Exception:
+        pass
+
+    try:
+        old_custom = os.path.join(app_dir, 'custom_products.json')
+        new_custom_dir = os.path.join(app_dir, 'custom_products')
+        new_custom = os.path.join(new_custom_dir, 'custom_products.json')
+        os.makedirs(new_custom_dir, exist_ok=True)
+        if os.path.exists(old_custom) and (not os.path.exists(new_custom)):
+            try:
+                os.replace(old_custom, new_custom)
+            except Exception:
+                pass
+    except Exception:
+        pass
 
 def get_session_id() -> str:
     """获取当前会话的唯一ID（浏览器会话级别）。"""
@@ -252,12 +302,39 @@ def _get_state_file_path() -> str:
     """根据会话ID生成独立的状态文件路径。"""
     session_id = get_session_id()
     # 为不同会话分别保存，如 app_state_<session_id>.json
-    return os.path.join(app_dir, f"app_state_{session_id}.json")
+    state_dir = os.path.join(app_dir, "app_state")
+    try:
+        os.makedirs(state_dir, exist_ok=True)
+    except Exception:
+        pass
+    return os.path.join(state_dir, f"app_state_{session_id}.json")
+
+def _maybe_migrate_state_file(state_file: str) -> str:
+    if not state_file:
+        return state_file
+    try:
+        if os.path.exists(state_file):
+            return state_file
+        base = os.path.basename(state_file)
+        old_file = os.path.join(app_dir, base)
+        if os.path.exists(old_file):
+            try:
+                os.makedirs(os.path.dirname(state_file), exist_ok=True)
+            except Exception:
+                pass
+            try:
+                os.replace(old_file, state_file)
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return state_file
 
 
 def load_app_state():
     """从会话专属文件加载应用状态（订单配置、模型路径、仿真结果等）。"""
-    state_file = _get_state_file_path()
+    _migrate_legacy_files_once()
+    state_file = _maybe_migrate_state_file(_get_state_file_path())
     if os.path.exists(state_file):
         try:
             with open(state_file, 'r', encoding='utf-8') as f:
@@ -290,7 +367,8 @@ def clear_simulation_results():
 
 def save_app_state():
     """保存应用状态到当前会话专属文件"""
-    state_file = _get_state_file_path()
+    _migrate_legacy_files_once()
+    state_file = _maybe_migrate_state_file(_get_state_file_path())
     try:
         # 准备要保存的状态
         state_to_save = {
@@ -315,6 +393,7 @@ def save_app_state():
                 'max_due': st.session_state.get('due_max', 700),
                 'min_arrival': st.session_state.get('arrival_min', 0),
                 'max_arrival': st.session_state.get('arrival_max', 50),
+                'max_steps_single': st.session_state.get('max_steps_single', 1500),
                 # 动态环境配置开关
                 'enable_failure': st.session_state.get('enable_failure', False),
                 'enable_emergency': st.session_state.get('enable_emergency', False),
@@ -448,6 +527,10 @@ def save_schedule_result(model_path: str, orders: list, final_stats: dict, score
             "seeds_used": seeds_used if seeds_used is not None else [],
             "score_summary": score_summary,
             "saved_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "simulation_limits": {
+                "max_steps": int(st.session_state.get('max_steps_single', 1500)),
+                "max_sim_time": float(st.session_state.get('max_steps_single', 1500)),
+            },
         }
 
         with open(os.path.join(save_dir, "result.json"), "w", encoding="utf-8") as f:
@@ -604,7 +687,8 @@ def save_model_comparison_results(comparison_results: dict, model_names: list, s
                 "max_arrival": st.session_state.get('arrival_max', 50),
             },
             "comparison_parameters": {
-                "max_steps": st.session_state.get('max_steps_comparison', 1500),
+                "max_steps": st.session_state.get('max_steps_single', 1500),
+                "max_sim_time": st.session_state.get('max_steps_single', 1500),
                 "runs_per_model": st.session_state.get('comparison_runs', 1)
             },
             "score_summary": {
@@ -1008,7 +1092,9 @@ def run_heuristic_scheduling(heuristic_name, orders_config, custom_products=None
             'custom_orders': orders_config,
             'equipment_failure_enabled': enable_failure,
             'emergency_orders_enabled': enable_emergency,
-            'stage_name': f'{heuristic_name}启发式调度'
+            'stage_name': f'{heuristic_name}启发式调度',
+            'MAX_SIM_STEPS': int(max_steps),
+            'MAX_SIM_TIME': float(max_steps),
         }
         
         # 12-02 新增：合并设备故障和紧急插单的高级配置参数
@@ -1218,7 +1304,9 @@ def run_scheduling(actor_model, orders_config, custom_products=None, max_steps=1
             'custom_orders': orders_config,
             'equipment_failure_enabled': enable_failure,
             'emergency_orders_enabled': enable_emergency,
-            'stage_name': '用户自定义调度'
+            'stage_name': '用户自定义调度',
+            'MAX_SIM_STEPS': int(max_steps),
+            'MAX_SIM_TIME': float(max_steps),
         }
         
         # 12-02 新增：合并设备故障和紧急插单的高级配置参数
@@ -1492,8 +1580,9 @@ def main():
                 current_language = st.session_state.get('language', 'zh-CN')
                 
                 # 删除保存文件
-                state_file = os.path.join(app_dir, "app_state.json")
-                custom_file = os.path.join(app_dir, "custom_products.json")
+                state_file = _get_state_file_path()
+                state_file = _maybe_migrate_state_file(state_file)
+                custom_file = os.path.join(app_dir, "custom_products", "custom_products.json")
                 
                 try:
                     if os.path.exists(state_file):
@@ -1542,6 +1631,8 @@ def main():
                     st.session_state['arrival_min'] = ui_config.get('min_arrival', 0)
                 if 'arrival_max' not in st.session_state:
                     st.session_state['arrival_max'] = ui_config.get('max_arrival', 50)
+                if 'max_steps_single' not in st.session_state:
+                    st.session_state['max_steps_single'] = ui_config.get('max_steps_single', 1500)
                 # 恢复动态环境配置开关
                 if 'enable_failure' not in st.session_state:
                     st.session_state['enable_failure'] = ui_config.get('enable_failure', False)
@@ -1566,6 +1657,8 @@ def main():
                     st.session_state['arrival_min'] = 0
                 if 'arrival_max' not in st.session_state:
                     st.session_state['arrival_max'] = 50
+                if 'max_steps_single' not in st.session_state:
+                    st.session_state['max_steps_single'] = 1500
                 if 'enable_failure' not in st.session_state:
                     st.session_state['enable_failure'] = False
                 if 'enable_emergency' not in st.session_state:
@@ -2251,6 +2344,17 @@ def main():
                     'due_date_reduction': due_reduction
                 }
 
+        max_steps_single = st.number_input(
+            get_text("max_steps", lang),
+            min_value=500,
+            max_value=20000,
+            value=int(st.session_state.get('max_steps_single', 1500)),
+            step=100,
+            help=get_text("max_steps_help", lang),
+            key="max_steps_single"
+        )
+        st.caption(get_text("max_steps_comparison_help", lang))
+
         st.write("")  # 空行
         
         if st.button(get_text("start_simulation", lang), type="primary", use_container_width=True):
@@ -2267,6 +2371,7 @@ def main():
                 status_text.text("🧠 运行MARL模型...")
                 final_stats, gantt_history, score, total_reward = run_scheduling(
                     actor_model, orders, custom_products, 
+                    max_steps=int(max_steps_single),
                     progress_bar=progress_bar, 
                     status_text=status_text,
                     enable_failure=enable_failure,
@@ -2294,6 +2399,7 @@ def main():
                         
                         h_stats, h_history, h_score = run_heuristic_scheduling(
                             heuristic, orders, custom_products,
+                            max_steps=int(max_steps_single),
                             progress_bar=progress_bar,
                             status_text=status_text,
                             enable_failure=enable_failure,
@@ -2539,14 +2645,8 @@ def main():
 
                 col1, col2 = st.columns(2)
                 with col1:
-                    ablation_max_steps = st.number_input(
-                        get_text("max_steps", lang),
-                        min_value=500,
-                        max_value=3000,
-                        value=1500,
-                        step=100,
-                        key="ablation_max_steps"
-                    )
+                    ablation_max_steps = int(st.session_state.get('max_steps_single', 1500))
+                    st.caption(f"{get_text('max_steps', lang)}: {int(ablation_max_steps)}")
                 with col2:
                     ablation_multi_seed = st.toggle(
                         get_text("seed_mode", lang),
@@ -2855,15 +2955,8 @@ def main():
                     st.subheader(get_text("comparison_parameters", lang))
                     col1, col2 = st.columns(2)
                     with col1:
-                        max_steps_comparison = st.number_input(
-                            get_text("max_steps", lang),
-                            min_value=500,
-                            max_value=3000,
-                            value=1500,
-                            step=100,
-                            help=get_text("max_steps_comparison_help", lang),
-                            key="max_steps_comparison"
-                        )
+                        max_steps_comparison = int(st.session_state.get('max_steps_single', 1500))
+                        st.caption(f"{get_text('max_steps', lang)}: {int(max_steps_comparison)}")
                     with col2:
                         seed_mode = st.toggle(
                             get_text("seed_mode", lang),

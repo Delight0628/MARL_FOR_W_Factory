@@ -116,6 +116,25 @@ class WFactorySim:
     def __init__(self, config: Dict[str, Any] = None):
         self.config = config or {}
         
+        # 允许从config覆盖仿真时间尺度/超时上限（默认保持与w_factory_config一致）
+        try:
+            self._simulation_time = float(self.config.get('SIMULATION_TIME', SIMULATION_TIME))
+        except Exception:
+            self._simulation_time = float(SIMULATION_TIME)
+
+        try:
+            self._simulation_timeout_multiplier = float(
+                self.config.get('SIMULATION_TIMEOUT_MULTIPLIER', SIMULATION_TIMEOUT_MULTIPLIER)
+            )
+        except Exception:
+            self._simulation_timeout_multiplier = float(SIMULATION_TIMEOUT_MULTIPLIER)
+
+        try:
+            default_max_time = float(self._simulation_time) * float(self._simulation_timeout_multiplier)
+            self._max_sim_time = float(self.config.get('MAX_SIM_TIME', default_max_time))
+        except Exception:
+            self._max_sim_time = float(SIMULATION_TIME) * float(SIMULATION_TIMEOUT_MULTIPLIER)
+        
         # 定义智能体列表
         self.agents = [f"agent_{station}" for station in WORKSTATIONS.keys()]
         
@@ -180,7 +199,8 @@ class WFactorySim:
             'max_tardiness': 0,
             'equipment_utilization': {},
             'queue_lengths': defaultdict(list),
-            'total_parts': 0
+            'total_parts': 0,
+            'idle_when_work_available_count': 0
         }
 
         # 终局奖励发放标记（防重复）
@@ -260,7 +280,8 @@ class WFactorySim:
             'max_tardiness': 0,
             'equipment_utilization': {},
             'queue_lengths': defaultdict(list),
-            'total_parts': 0
+            'total_parts': 0,
+            'idle_when_work_available_count': 0
         }
 
         # 重置终局奖励标记
@@ -326,6 +347,7 @@ class WFactorySim:
 
     def _compute_score_decomposition_potential(self, weights: Dict[str, float]) -> float:
         current_time = float(self.env.now)
+        _t = float(self._simulation_time) if float(self._simulation_time) > 0 else float(SIMULATION_TIME)
 
         target_parts = int(self._initial_target_parts) if int(self._initial_target_parts) > 0 else 0
         completed_parts = int(len(self.completed_parts))
@@ -336,8 +358,8 @@ class WFactorySim:
             completion_score = 0.0
 
         tardiness = float(self._estimate_total_tardiness_now(current_time))
-        tardiness_score = max(0.0, 1.0 - tardiness / float(SIMULATION_TIME * 2.0))
-        makespan_score = max(0.0, 1.0 - current_time / float(SIMULATION_TIME * 1.5))
+        tardiness_score = max(0.0, 1.0 - tardiness / float(_t * 2.0))
+        makespan_score = max(0.0, 1.0 - current_time / float(_t * 1.5))
         utilization_score = float(self._estimate_mean_utilization_now(current_time))
 
         w_completion = float(weights.get('completion', 0.40))
@@ -489,7 +511,7 @@ class WFactorySim:
                     self.equipment_status[station_name]['is_failed'] = False
             else:
                 # 静态训练模式：设备不会故障，只需要等待仿真结束
-                yield self.env.timeout(SIMULATION_TIME)
+                yield self.env.timeout(float(self._simulation_time))
 
     # 10-27-16-30 新增：紧急插单生成进程
     def _emergency_order_process(self):
@@ -497,14 +519,14 @@ class WFactorySim:
         while True:
             if not self._emergency_orders_enabled:
                 # 未启用时，避免忙等
-                yield self.env.timeout(SIMULATION_TIME)
+                yield self.env.timeout(float(self._simulation_time))
                 continue
 
             # 12-02 新增：支持自定义紧急插单参数
             arrival_rate_per_hour = self._emergency_orders_config.get('arrival_rate', EMERGENCY_ORDERS.get('arrival_rate', 0.0))
             if arrival_rate_per_hour <= 0.0:
                 # 无到达，直接等待至仿真结束
-                yield self.env.timeout(SIMULATION_TIME)
+                yield self.env.timeout(float(self._simulation_time))
                 continue
             inter_arrival = np.random.exponential(60.0 / arrival_rate_per_hour)
             yield self.env.timeout(inter_arrival)
@@ -649,7 +671,8 @@ class WFactorySim:
         agent_features = np.array(agent_features_list, dtype=np.float32)
 
         # 保留：时间进度、WIP率、瓶颈拥堵度、当前队列长度（4维中性信息）
-        time_normalized = self.env.now / SIMULATION_TIME
+        _t = float(self._simulation_time) if float(self._simulation_time) > 0 else float(SIMULATION_TIME)
+        time_normalized = self.env.now / _t
         total_parts_in_system = sum(order.quantity for order in self.orders)
         wip_normalized = len(self.active_parts) / total_parts_in_system if total_parts_in_system > 0 else 0.0
         
@@ -1079,7 +1102,8 @@ class WFactorySim:
         global_features = []
         
         # 1. 环境时间信息
-        time_normalized = self.env.now / SIMULATION_TIME
+        _t = float(self._simulation_time) if float(self._simulation_time) > 0 else float(SIMULATION_TIME)
+        time_normalized = self.env.now / _t
         global_features.append(time_normalized)
         
         # 2. 全局任务进度
@@ -1157,11 +1181,22 @@ class WFactorySim:
             if not isinstance(agent_action, (list, np.ndarray)):
                 agent_action = [agent_action]
 
+            try:
+                capacity = int(WORKSTATIONS[station_name]['count'])
+            except Exception:
+                capacity = 0
+            try:
+                busy_count = int(self.equipment_status[station_name]['busy_count'])
+            except Exception:
+                busy_count = 0
+            available_capacity = max(0, capacity - busy_count)
+
             context = {
                 "queue_len_before": len(pre_queue_snapshot),
                 "queue_snapshot": pre_queue_snapshot,
                 "decision_time": decision_time,
                 "action": agent_action,
+                "available_capacity": available_capacity,
                 "selected_part": None,
                 "processed": False,
                 "started_parts": [],  # 记录本步该agent启动的所有零件及其决策时slack
@@ -1472,8 +1507,14 @@ class WFactorySim:
                 rewards[agent_id] += REWARD_CONFIG["invalid_action_penalty"]
             
             # 若全部为零且队列非空，判定为不必要的空转
-            if all_zero and queue_len_before > 0:
+            available_capacity = int(context.get("available_capacity", 0))
+            if all_zero and queue_len_before > 0 and available_capacity > 0:
                 rewards[agent_id] += REWARD_CONFIG["unnecessary_idle_penalty"]
+
+                idle_wa_pen = float(REWARD_CONFIG.get("idle_when_work_available_penalty", 0.0))
+                if idle_wa_pen != 0.0:
+                    rewards[agent_id] += idle_wa_pen
+                    self.stats['idle_when_work_available_count'] = int(self.stats.get('idle_when_work_available_count', 0)) + 1
 
             # 10-21-22-45 修复：对被回退机制“修正”的无效/冲突尝试也进行惩罚，避免环境替代学习信号
             invalid_attempts = int(context.get("invalid_attempts", 0))
@@ -1633,7 +1674,7 @@ class WFactorySim:
         
         # 条件3: 时间耗尽 (备用条件，增加时间限制)
         # 给智能体更多时间完成任务，避免总是超时截断
-        max_time = SIMULATION_TIME * SIMULATION_TIMEOUT_MULTIPLIER  # 从1.5增加到2.0，给更充足的时间
+        max_time = float(self._max_sim_time)
         if self.current_time >= max_time:
             if not hasattr(self, '_timeout_logged'):
                 # 训练模式下完全静默
@@ -1762,6 +1803,9 @@ class WFactoryEnv(ParallelEnv):
         self.step_count = 0
         self.render_mode = None
 
+        self._terminal_bonus_given = False
+        self._terminal_score_baseline_ema = float(REWARD_CONFIG.get('terminal_score_bonus_baseline_value', 0.0))
+
         # 修复缺陷二：一次性创建静态元数据
         self.obs_meta = {
             'agent_feature_names': [
@@ -1848,10 +1892,13 @@ class WFactoryEnv(ParallelEnv):
         self.step_count = 0
         self.agents = self.possible_agents[:]
         
+        self._terminal_bonus_given = False
+        
         self.observations = {agent: self.sim.get_state_for_agent(agent) for agent in self.agents}
         self.rewards = {agent: 0 for agent in self.agents}
         self.terminations = {agent: False for agent in self.agents}
         self.truncations = {agent: False for agent in self.agents}
+        
         self.infos = {agent: {} for agent in self.agents}
 
         # 在info中添加全局状态与观测元信息/候选映射/队列快照
@@ -1859,6 +1906,8 @@ class WFactoryEnv(ParallelEnv):
         for agent_id in self.agents:
             self.infos[agent_id]['global_state'] = global_state
             self.infos[agent_id]['obs_meta'] = self.obs_meta
+            
+            # 修复缺陷三：使用决策前捕获的信息
             station_name = agent_id.replace("agent_", "")
             # 候选映射
             candidate_list = self.sim._get_candidate_workpieces(station_name)
@@ -1938,10 +1987,44 @@ class WFactoryEnv(ParallelEnv):
         
         # 信息
         infos = {agent: {} for agent in self.agents}
-        if self.sim.is_done():
+        episode_ended = bool(any(terminations.values()) or any(truncations.values()))
+        if episode_ended:
             final_stats = self.sim.get_final_stats()
+            episode_score = float(calculate_episode_score(final_stats, config=self.config))
             for agent in self.agents:
                 infos[agent]["final_stats"] = final_stats
+                infos[agent]["episode_score"] = episode_score
+
+            if (not self._terminal_bonus_given) and bool(REWARD_CONFIG.get('terminal_score_bonus_enabled', False)):
+                baseline_mode = str(REWARD_CONFIG.get('terminal_score_bonus_baseline_mode', 'ema'))
+                if baseline_mode == 'none':
+                    baseline = 0.0
+                elif baseline_mode == 'fixed':
+                    baseline = float(REWARD_CONFIG.get('terminal_score_bonus_baseline_value', 0.0))
+                else:
+                    baseline = float(getattr(self, '_terminal_score_baseline_ema', float(REWARD_CONFIG.get('terminal_score_bonus_baseline_value', 0.0))))
+
+                delta = float(episode_score) - float(baseline)
+                clip_abs = float(REWARD_CONFIG.get('terminal_score_bonus_clip_delta_abs', 0.0))
+                if clip_abs > 0.0:
+                    delta = float(np.clip(delta, -clip_abs, clip_abs))
+
+                scale = float(REWARD_CONFIG.get('terminal_score_bonus_scale', 0.0))
+                bonus_total = float(scale) * float(delta)
+                if bonus_total != 0.0:
+                    per_agent = float(bonus_total) / float(max(1, len(rewards)))
+                    for agent_id in rewards:
+                        rewards[agent_id] += per_agent
+                    for agent_id in infos:
+                        infos[agent_id]['terminal_score_bonus'] = float(per_agent)
+                        infos[agent_id]['episode_score_baseline'] = float(baseline)
+                        infos[agent_id]['episode_score_delta'] = float(delta)
+
+                if baseline_mode == 'ema':
+                    alpha = float(REWARD_CONFIG.get('terminal_score_bonus_ema_alpha', 0.05))
+                    alpha = float(np.clip(alpha, 0.0, 1.0))
+                    self._terminal_score_baseline_ema = (1.0 - alpha) * float(self._terminal_score_baseline_ema) + alpha * float(episode_score)
+                self._terminal_bonus_given = True
         
         # 在info中添加全局状态 + 观测元信息 + 候选映射 + 队列快照（与reset一致）
         global_state = self.sim.get_global_state()
