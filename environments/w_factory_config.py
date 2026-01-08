@@ -366,11 +366,12 @@ REWARD_CONFIG = {
     },
 
     "terminal_score_bonus_enabled": True,
-    "terminal_score_bonus_scale": 100.0,
-    "terminal_score_bonus_clip_delta_abs": 0.5,
-    "terminal_score_bonus_baseline_mode": "ema",
-    "terminal_score_bonus_baseline_value": 0.0,
+    "terminal_score_bonus_scale": 50.0,
+    "terminal_score_bonus_clip_delta_abs": 0.2,
+    "terminal_score_bonus_baseline_mode": "fixed",
+    "terminal_score_bonus_baseline_value": 0.68,
     "terminal_score_bonus_ema_alpha": 0.05,
+    "terminal_score_bonus_positive_only": True,
     "idle_when_work_available_penalty": -1.0,
 }
 
@@ -382,9 +383,6 @@ ENV_RANDOMIZATION_CONFIG = {
     "due_date_jitter": 50.0,      # 交货日期抖动范围 (+/- 分钟)
     "arrival_time_jitter": 30.0,  # 到达时间抖动范围 (0 to X 分钟)
 }
-
-# =============================================================================
-# 8. 自定义MAPPO训练配置 (Custom PPO Training Configuration)
 # =============================================================================
 
 # PPO网络架构配置
@@ -400,6 +398,13 @@ PPO_NETWORK_CONFIG = {
     "advantage_clip_val": 5.0,           # 🔧 新增：优势函数的裁剪值
     "gamma": 0.99,                       # GAE折扣因子
     "lambda_gae": 0.95,                  # GAE平滑参数
+    "heuristic_mixture_enabled": True,
+    "heuristic_mixture_beta": 1.0,
+    "teacher_bc_enabled": True,
+    "teacher_bc_mode": "edd",
+    "teacher_bc_coeff_start": 0.05,
+    "teacher_bc_coeff_end": 0.0,
+    "teacher_bc_anneal_episodes": 200,
 }
 
 # 🔧 新增：自适应熵调整配置

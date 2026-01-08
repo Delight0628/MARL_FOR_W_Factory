@@ -759,6 +759,7 @@ class SimplePPOTrainer:
         # 初始化训练统计
         total_actor_loss, total_critic_loss, total_entropy = 0, 0, 0
         total_approx_kl, total_clip_fraction = 0, 0
+        total_bc_loss, total_bc_coeff = 0, 0
         update_count = 0
 
         # 2. 标准PPO更新循环 (Epochs + Mini-batch)
@@ -808,7 +809,9 @@ class SimplePPOTrainer:
                     mini_batch_old_probs,
                     mini_batch_advantages,
                     mini_batch_returns,
-                    entropy_coeff=entropy_coeff
+                    entropy_coeff=entropy_coeff,
+                    bc_coeff=float(batch.get("bc_coeff", 0.0)),
+                    bc_teacher=str(batch.get("bc_teacher", "edd")),
                 )
 
                 # 累加统计信息
@@ -818,6 +821,10 @@ class SimplePPOTrainer:
                     total_entropy += loss_info["entropy"]
                     total_approx_kl += loss_info["approx_kl"]
                     total_clip_fraction += loss_info["clip_fraction"]
+                    if "bc_loss" in loss_info:
+                        total_bc_loss += float(loss_info.get("bc_loss", 0.0))
+                    if "bc_coeff" in loss_info:
+                        total_bc_coeff += float(loss_info.get("bc_coeff", 0.0))
                     update_count += 1
         
         # 返回平均损失
@@ -826,6 +833,8 @@ class SimplePPOTrainer:
                 "actor_loss": total_actor_loss / update_count,
                 "critic_loss": total_critic_loss / update_count,
                 "entropy": total_entropy / update_count,
+                "bc_loss": float(total_bc_loss) / update_count,
+                "bc_coeff": float(total_bc_coeff) / update_count,
                 "approx_kl": total_approx_kl / update_count,
                 "clip_fraction": total_clip_fraction / update_count,
             }
@@ -944,6 +953,12 @@ class SimplePPOTrainer:
                         action_probs = self.shared_network.actor(state, training=False)
                         if isinstance(self.action_space, gym.spaces.MultiDiscrete):
                             action_prob_list = action_probs if isinstance(action_probs, list) else [action_probs]
+                            
+                            # 方案4.1：Actor可能额外输出 mixture_weights（不属于动作头），这里需要剥离
+                            num_heads_expected = len(self.action_space.nvec)
+                            if isinstance(action_prob_list, (list, tuple)) and len(action_prob_list) == (num_heads_expected + 1):
+                                action_prob_list = list(action_prob_list[:-1])
+                            
                             heads = len(action_prob_list)
                             used = set()
                             selected = []
@@ -1237,6 +1252,17 @@ class SimplePPOTrainer:
                 # 🔧 V6 安全的策略更新（包含内存检查）
                 update_start_time = time.time()
                 if batch is not None:
+                    bc_enabled = bool(PPO_NETWORK_CONFIG.get('teacher_bc_enabled', False))
+                    bc_teacher = str(PPO_NETWORK_CONFIG.get('teacher_bc_mode', 'edd'))
+                    bc_start = float(PPO_NETWORK_CONFIG.get('teacher_bc_coeff_start', 0.0))
+                    bc_end = float(PPO_NETWORK_CONFIG.get('teacher_bc_coeff_end', 0.0))
+                    bc_anneal_episodes = float(PPO_NETWORK_CONFIG.get('teacher_bc_anneal_episodes', 1.0))
+                    bc_t = 1.0
+                    if bc_anneal_episodes > 0:
+                        bc_t = float(np.clip(float(episode) / float(bc_anneal_episodes), 0.0, 1.0))
+                    bc_coeff = (bc_start + (bc_end - bc_start) * bc_t) if bc_enabled else 0.0
+                    batch['bc_coeff'] = float(max(0.0, bc_coeff))
+                    batch['bc_teacher'] = bc_teacher
                     losses = self.update_policy(batch, entropy_coeff=self.current_entropy_coeff)
                 else:
                     # 空批次防御：提供安全的默认指标并跳过更新
@@ -1244,9 +1270,15 @@ class SimplePPOTrainer:
                         'actor_loss': 0.0,
                         'critic_loss': 0.0,
                         'entropy': float(self.current_entropy_coeff),
+                        'bc_loss': 0.0,
+                        'bc_coeff': 0.0,
                         'approx_kl': 0.0,
                         'clip_fraction': 0.0,
                     }
+                if 'bc_loss' not in losses:
+                    losses['bc_loss'] = 0.0
+                if 'bc_coeff' not in losses:
+                    losses['bc_coeff'] = 0.0
                 update_duration = time.time() - update_start_time
                 
                 # 记录统计
@@ -1399,6 +1431,8 @@ class SimplePPOTrainer:
                                 tf.summary.scalar('Training/Actor_Loss', losses['actor_loss'], step=episode)
                                 tf.summary.scalar('Training/Critic_Loss', losses['critic_loss'], step=episode)
                                 tf.summary.scalar('Training/Entropy', losses['entropy'], step=episode)
+                                tf.summary.scalar('Training/BC_Loss', losses.get('bc_loss', 0.0), step=episode)
+                                tf.summary.scalar('Training/BC_Coeff', losses.get('bc_coeff', 0.0), step=episode)
                                 tf.summary.scalar('Training/KL_Divergence', losses['approx_kl'], step=episode)
                                 tf.summary.scalar('Training/Clip_Fraction', losses['clip_fraction'], step=episode)
                                 # 性能指标

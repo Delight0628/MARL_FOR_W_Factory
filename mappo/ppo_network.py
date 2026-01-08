@@ -15,7 +15,7 @@ import sys
 current_dir = os.path.dirname(os.path.abspath(__file__))
 parent_dir = os.path.dirname(current_dir)
 sys.path.append(parent_dir)
-from environments.w_factory_config import PPO_NETWORK_CONFIG, LEARNING_RATE_CONFIG, WORKSTATIONS
+from environments.w_factory_config import PPO_NETWORK_CONFIG, LEARNING_RATE_CONFIG, WORKSTATIONS, ENHANCED_OBS_CONFIG
 
 
 class PPONetwork:
@@ -131,19 +131,96 @@ class PPONetwork:
         if self.is_multidiscrete:
             num_heads = len(self.action_dims)
             action_dim_per_head = self.action_dims[0]
+
+            heuristic_mixture_enabled = bool(config.get('heuristic_mixture_enabled', False))
+            heuristic_mixture_beta = float(config.get('heuristic_mixture_beta', 0.0))
+
+            # 方案4.1：混合启发式权重（w_edd, w_spt）
+            # 输出为 softmax 权重，便于记录与可选的辅助学习
+            mixture_weights = None
+            if heuristic_mixture_enabled:
+                mix_kernel_init = (tf.keras.initializers.Zeros() if self._deterministic_init
+                                   else tf.keras.initializers.GlorotUniform(seed=2100))
+                mixture_logits = tf.keras.layers.Dense(
+                    2,
+                    activation=None,
+                    kernel_initializer=mix_kernel_init,
+                    bias_initializer=tf.keras.initializers.Zeros(),
+                    name="heuristic_mixture_logits"
+                )(actor_x)
+                mixture_weights = tf.keras.layers.Softmax(name="heuristic_mixture_weights")(mixture_logits)
+
+            # 方案4.1：根据观测中的候选特征构造对候选动作的bias（不改变动作空间，只改变偏好）
+            bias_vec = None
+            if heuristic_mixture_enabled and (heuristic_mixture_beta != 0.0):
+                try:
+                    num_stations = int(len(WORKSTATIONS))
+                    agent_feat_dim = int(num_stations + 3)  # one_hot + capacity + busy_ratio + is_failed
+                    global_feat_dim = 4
+                    queue_summary_dim = 30
+                    cand_feat_dim = int(ENHANCED_OBS_CONFIG.get('candidate_feature_dim', 9))
+                    cand_start = int(agent_feat_dim + global_feat_dim + queue_summary_dim)
+
+                    # 动作维度推导候选数（应等于 num_candidate_workpieces）
+                    cand_count_action = int(max(0, action_dim_per_head - 1))
+                    cand_count_obs = int(ENHANCED_OBS_CONFIG.get('num_candidate_workpieces', cand_count_action))
+                    cand_count = int(min(cand_count_action, cand_count_obs))
+
+                    # 从state_input切出候选特征
+                    # 每个候选 9 维：exists(0), ... current_op_duration(3), ... time_pressure(8)
+                    exists_list = []
+                    opdur_list = []
+                    tpress_list = []
+                    for i in range(cand_count):
+                        base = cand_start + i * cand_feat_dim
+                        exists_list.append(state_input[:, base + 0])
+                        opdur_list.append(state_input[:, base + 3])
+                        tpress_list.append(state_input[:, base + 8])
+
+                    exists = tf.stack(exists_list, axis=1)  # (B, cand_count)
+                    opdur = tf.stack(opdur_list, axis=1)
+                    tpress = tf.stack(tpress_list, axis=1)
+
+                    edd_score = tpress
+                    spt_score = 1.0 - opdur
+                    w_edd = mixture_weights[:, 0:1]
+                    w_spt = mixture_weights[:, 1:2]
+                    mixed = (w_edd * edd_score + w_spt * spt_score) * exists
+
+                    # bias: [IDLE=0] + cand_count 个候选
+                    bias = tf.concat([tf.zeros((tf.shape(state_input)[0], 1), dtype=tf.float32), mixed], axis=1)
+
+                    # 若 action_dim_per_head > 1 + cand_count，则尾部补0（兼容配置不一致）
+                    pad = int(max(0, action_dim_per_head - int(1 + cand_count)))
+                    if pad > 0:
+                        bias = tf.concat([bias, tf.zeros((tf.shape(state_input)[0], pad), dtype=tf.float32)], axis=1)
+
+                    bias_vec = tf.cast(bias, tf.float32) * float(heuristic_mixture_beta)
+                except Exception:
+                    bias_vec = None
+
             actor_outputs = []
             for i in range(num_heads):
                 kernel_init = (tf.keras.initializers.Zeros() if self._deterministic_init 
                               else tf.keras.initializers.GlorotUniform(seed=2000 + i))
-                head_output = tf.keras.layers.Dense(
+                # 先输出logits，再加启发式bias，最后softmax
+                head_logits = tf.keras.layers.Dense(
                     action_dim_per_head,
-                    activation="softmax",
+                    activation=None,
                     kernel_initializer=kernel_init,
                     bias_initializer=tf.keras.initializers.Zeros(),
-                    name=f"actor_output_{i}"
+                    name=f"actor_logits_{i}"
                 )(actor_x)
+                if bias_vec is not None:
+                    head_logits = tf.keras.layers.Add(name=f"actor_logits_biased_{i}")([head_logits, bias_vec])
+                head_output = tf.keras.layers.Softmax(name=f"actor_output_{i}")(head_logits)
                 actor_outputs.append(head_output)
-            self.actor = tf.keras.Model(inputs=state_input, outputs=actor_outputs)
+
+            # 若启用混合权重，则作为额外输出附加在末尾（不参与动作空间）
+            if heuristic_mixture_enabled and (mixture_weights is not None):
+                self.actor = tf.keras.Model(inputs=state_input, outputs=actor_outputs + [mixture_weights])
+            else:
+                self.actor = tf.keras.Model(inputs=state_input, outputs=actor_outputs)
         else:
             kernel_init = (tf.keras.initializers.Zeros() if self._deterministic_init 
                           else tf.keras.initializers.GlorotUniform(seed=3000))
@@ -216,6 +293,11 @@ class PPONetwork:
         # MultiDiscrete：多头无放回采样（带无效头掩码）
         if self.is_multidiscrete:
             action_prob_list = action_probs if isinstance(action_probs, list) else [action_probs]
+
+            # 方案4.1：Actor可能额外输出 mixture_weights（不属于动作头），这里需要剥离
+            num_heads_expected = len(self.action_dims)
+            if isinstance(action_prob_list, (list, tuple)) and len(action_prob_list) == (num_heads_expected + 1):
+                action_prob_list = list(action_prob_list[:-1])
             
             # 标准化各头张量形状为 (B, action_dim)
             normalized_heads = []
@@ -342,7 +424,8 @@ class PPONetwork:
     
     def update(self, states: np.ndarray, global_states: np.ndarray, actions: np.ndarray, 
                old_probs: np.ndarray, advantages: np.ndarray, 
-               returns: np.ndarray, clip_ratio: float = None, entropy_coeff: float = None) -> Dict[str, float]:
+               returns: np.ndarray, clip_ratio: float = None, entropy_coeff: float = None,
+               bc_coeff: float = 0.0, bc_teacher: str = None) -> Dict[str, float]:
         """
         执行一次PPO策略更新
         
@@ -366,6 +449,62 @@ class PPONetwork:
         """
         clip_ratio = clip_ratio or self.config.get("clip_ratio", 0.2)
         entropy_coeff = entropy_coeff or self.config.get("entropy_coeff", 0.01)
+        bc_coeff = float(bc_coeff or 0.0)
+        bc_teacher = str(bc_teacher or self.config.get("teacher_bc_mode", "edd"))
+
+        teacher_actions_np = None
+        if self.is_multidiscrete and (bc_coeff > 0.0):
+            try:
+                num_heads = int(len(self.action_dims))
+                action_dim = int(self.action_dims[0])
+                num_stations = int(len(WORKSTATIONS))
+                agent_feat_dim = int(num_stations + 3)
+                global_feat_dim = 4
+                queue_summary_dim = 30
+                cand_feat_dim = int(ENHANCED_OBS_CONFIG.get('candidate_feature_dim', 9))
+                cand_start = int(agent_feat_dim + global_feat_dim + queue_summary_dim)
+                cand_count_action = int(max(0, action_dim - 1))
+                cand_count_obs = int(ENHANCED_OBS_CONFIG.get('num_candidate_workpieces', cand_count_action))
+                cand_count = int(min(cand_count_action, cand_count_obs))
+
+                agent_one_hot_np = np.asarray(global_states, dtype=np.float32)[:, -self._num_agents:]
+                agent_idx_np = np.argmax(agent_one_hot_np, axis=1).astype(np.int32)
+                k_valid_np = np.asarray(self._agent_machine_counts.numpy(), dtype=np.int32)[agent_idx_np]
+
+                states_np = np.asarray(states, dtype=np.float32)
+                exists = np.zeros((states_np.shape[0], cand_count), dtype=np.float32)
+                opdur = np.zeros((states_np.shape[0], cand_count), dtype=np.float32)
+                tpress = np.zeros((states_np.shape[0], cand_count), dtype=np.float32)
+                for i in range(cand_count):
+                    base = cand_start + i * cand_feat_dim
+                    exists[:, i] = states_np[:, base + 0]
+                    opdur[:, i] = states_np[:, base + 3]
+                    tpress[:, i] = states_np[:, base + 8]
+
+                if bc_teacher.lower() == 'spt':
+                    score = (1.0 - opdur) * exists
+                else:
+                    score = tpress * exists
+
+                rank = np.argsort(-score, axis=1)  # (B, cand_count)
+                chosen = np.zeros((states_np.shape[0], num_heads), dtype=np.int32)
+                for b in range(states_np.shape[0]):
+                    used = set()
+                    for h in range(num_heads):
+                        if h >= int(k_valid_np[b]):
+                            chosen[b, h] = 0
+                            continue
+                        picked = 0
+                        for r in rank[b]:
+                            a = int(r) + 1
+                            if a not in used:
+                                picked = a
+                                used.add(a)
+                                break
+                        chosen[b, h] = picked
+                teacher_actions_np = chosen
+            except Exception:
+                teacher_actions_np = None
 
         # 统一dtype，避免TF运算的float32/float64混用错误
         states = tf.convert_to_tensor(states, dtype=tf.float32)
@@ -381,9 +520,16 @@ class PPONetwork:
             # 前向传播：与采样一致，禁用Dropout等正则化
             action_probs = self.actor(states, training=False)
             
+            bc_loss = tf.constant(0.0, dtype=tf.float32)
+
             # 处理MultiDiscrete多头输出
             if self.is_multidiscrete:
                 action_prob_list = action_probs if isinstance(action_probs, list) else [action_probs]
+
+                # 方案4.1：Actor可能额外输出 mixture_weights（不属于动作头），这里需要剥离
+                num_heads_expected = len(self.action_dims)
+                if isinstance(action_prob_list, (list, tuple)) and len(action_prob_list) == (num_heads_expected + 1):
+                    action_prob_list = list(action_prob_list[:-1])
                 num_heads = len(self.action_dims)
                 log_probs_list = []
                 entropy_list = []
@@ -441,6 +587,33 @@ class PPONetwork:
                 # 联合对数概率与总熵
                 current_probs = tf.add_n(log_probs_list)
                 entropy_loss = tf.add_n(entropy_list)
+
+                if (bc_coeff > 0.0) and (teacher_actions_np is not None):
+                    teacher_actions = tf.convert_to_tensor(teacher_actions_np, dtype=tf.int32)
+                    teacher_log_probs_list = []
+                    bc_mask = tf.zeros_like(action_prob_list[0], dtype=tf.bool)
+                    for i in range(num_heads):
+                        head_probs = action_prob_list[i]
+                        teacher_slice = teacher_actions[:, i]
+                        teacher_one_hot = tf.one_hot(teacher_slice, int(self.action_dims[0]))
+
+                        valid = tf.less(tf.cast(i, tf.int32), k_valid_heads)
+                        valid_f = tf.cast(valid, tf.float32)
+
+                        masked_probs = tf.where(bc_mask, tf.zeros_like(head_probs), head_probs)
+                        norm = tf.reduce_sum(masked_probs, axis=1, keepdims=True) + 1e-8
+                        masked_probs = masked_probs / norm
+
+                        logp_full = tf.math.log(tf.reduce_sum(masked_probs * teacher_one_hot, axis=1) + 1e-8)
+                        teacher_log_probs_list.append(logp_full * valid_f)
+
+                        is_idle = tf.equal(teacher_slice, 0)
+                        not_idle_ex = tf.expand_dims(tf.cast(tf.logical_not(is_idle), tf.bool), axis=1)
+                        bc_mask_update = tf.logical_and(tf.cast(teacher_one_hot > 0, tf.bool), tf.expand_dims(tf.cast(valid_f > 0, tf.bool), axis=1))
+                        bc_mask_update = tf.logical_and(bc_mask_update, not_idle_ex)
+                        bc_mask = tf.logical_or(bc_mask, bc_mask_update)
+
+                    bc_loss = -tf.reduce_mean(tf.add_n(teacher_log_probs_list))
             else:
                 # Discrete单头输出
                 action_one_hot = tf.one_hot(tf.squeeze(actions), self.action_dims[0])
@@ -460,6 +633,9 @@ class PPONetwork:
             actor_loss = -tf.reduce_mean(tf.minimum(ratio * advantages, clipped_ratio * advantages))
             entropy_mean = tf.reduce_mean(entropy_loss)
             actor_loss -= entropy_coeff * entropy_mean
+
+            if bc_coeff > 0.0:
+                actor_loss += tf.cast(bc_coeff, tf.float32) * tf.cast(bc_loss, tf.float32)
             
         # Actor梯度更新
         actor_grads = tape.gradient(actor_loss, self.actor.trainable_variables)
@@ -487,6 +663,8 @@ class PPONetwork:
             "actor_loss": actor_loss.numpy(),
             "critic_loss": critic_loss.numpy(),
             "entropy": entropy_mean.numpy(),
+            "bc_loss": float(bc_loss.numpy()) if isinstance(bc_loss, tf.Tensor) else float(bc_loss),
+            "bc_coeff": float(bc_coeff),
             "approx_kl": float(approx_kl.numpy()),
             "clip_fraction": clip_fraction.numpy()
         }

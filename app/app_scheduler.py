@@ -1279,6 +1279,24 @@ def run_heuristic_scheduling(heuristic_name, orders_config, custom_products=None
         final_stats = env.sim.get_final_stats()
         gantt_history = env.sim.gantt_chart_history
         score = calculate_episode_score(final_stats, final_config)
+
+        try:
+            last_info = info or {}
+            first_agent = env.agents[0] if getattr(env, 'agents', None) else None
+            ainfo = last_info.get(first_agent, {}) if first_agent is not None else {}
+            if isinstance(ainfo, dict):
+                if 'terminal_score_bonus' in ainfo:
+                    bonus_per_agent = float(ainfo.get('terminal_score_bonus', 0.0))
+                    final_stats['terminal_score_bonus_per_agent'] = bonus_per_agent
+                    final_stats['terminal_score_bonus_total'] = float(bonus_per_agent) * float(max(1, len(getattr(env, 'agents', []) or [])))
+                if 'episode_score_baseline' in ainfo:
+                    final_stats['episode_score_baseline'] = float(ainfo.get('episode_score_baseline', 0.0))
+                if 'episode_score_delta' in ainfo:
+                    final_stats['episode_score_delta'] = float(ainfo.get('episode_score_delta', 0.0))
+                if 'episode_score' in ainfo:
+                    final_stats['episode_score_from_env'] = float(ainfo.get('episode_score', 0.0))
+        except Exception:
+            pass
         
         env.close()
         
@@ -1403,6 +1421,24 @@ def run_scheduling(actor_model, orders_config, custom_products=None, max_steps=1
         final_stats = env.sim.get_final_stats()
         gantt_history = env.sim.gantt_chart_history
         score = calculate_episode_score(final_stats, config)
+
+        try:
+            last_info = info or {}
+            first_agent = env.agents[0] if getattr(env, 'agents', None) else None
+            ainfo = last_info.get(first_agent, {}) if first_agent is not None else {}
+            if isinstance(ainfo, dict):
+                if 'terminal_score_bonus' in ainfo:
+                    bonus_per_agent = float(ainfo.get('terminal_score_bonus', 0.0))
+                    final_stats['terminal_score_bonus_per_agent'] = bonus_per_agent
+                    final_stats['terminal_score_bonus_total'] = float(bonus_per_agent) * float(max(1, len(getattr(env, 'agents', []) or [])))
+                if 'episode_score_baseline' in ainfo:
+                    final_stats['episode_score_baseline'] = float(ainfo.get('episode_score_baseline', 0.0))
+                if 'episode_score_delta' in ainfo:
+                    final_stats['episode_score_delta'] = float(ainfo.get('episode_score_delta', 0.0))
+                if 'episode_score' in ainfo:
+                    final_stats['episode_score_from_env'] = float(ainfo.get('episode_score', 0.0))
+        except Exception:
+            pass
         
         env.close()
         

@@ -37,6 +37,15 @@ def choose_parallel_actions_multihead(
         rng = np.random.RandomState()
 
     probs_list = _as_head_probs_list(head_probs)
+    # 方案4.1：Actor可能额外输出 mixture_weights（例如长度为2的向量），不属于动作头
+    # 若外部直接把整个输出列表传入，这里自动剥离末尾，避免把mixture当成一个头。
+    if isinstance(probs_list, list) and len(probs_list) == (int(num_heads) + 1):
+        try:
+            tail = np.asarray(probs_list[-1]).squeeze()
+            if tail.shape == (2,):
+                probs_list = probs_list[:-1]
+        except Exception:
+            pass
     used_non_idle = set()  # 记录非零动作，避免重复
 
     # 决定本次是否整体随机采样

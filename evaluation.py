@@ -313,6 +313,24 @@ def run_single_episode(env: WFactoryEnv, policy_fn, seed: int, config: dict = No
             
     final_stats = env.sim.get_final_stats()
     score = calculate_episode_score(final_stats, config)
+
+    try:
+        last_info = info or {}
+        first_agent = env.agents[0] if getattr(env, 'agents', None) else None
+        ainfo = last_info.get(first_agent, {}) if first_agent is not None else {}
+        if isinstance(ainfo, dict):
+            if 'terminal_score_bonus' in ainfo:
+                bonus_per_agent = float(ainfo.get('terminal_score_bonus', 0.0))
+                final_stats['terminal_score_bonus_per_agent'] = bonus_per_agent
+                final_stats['terminal_score_bonus_total'] = float(bonus_per_agent) * float(max(1, len(getattr(env, 'agents', []) or [])))
+            if 'episode_score_baseline' in ainfo:
+                final_stats['episode_score_baseline'] = float(ainfo.get('episode_score_baseline', 0.0))
+            if 'episode_score_delta' in ainfo:
+                final_stats['episode_score_delta'] = float(ainfo.get('episode_score_delta', 0.0))
+            if 'episode_score' in ainfo:
+                final_stats['episode_score_from_env'] = float(ainfo.get('episode_score', 0.0))
+    except Exception:
+        pass
     
     # 仅在第一个回合（seed=0）返回详细的加工历史
     history = env.sim.gantt_chart_history if seed == 0 else None
@@ -347,6 +365,16 @@ def evaluate_marl_model(model_path: str, config: dict = STATIC_EVAL_CONFIG, gene
                     head_probs_list = [np.squeeze(h.numpy()) for h in model_out]
                 else:
                     head_probs_list = [np.squeeze(model_out.numpy()[0])]
+                
+                # 方案4.1：Actor可能额外输出 mixture_weights（不属于动作头），这里需要剥离
+                if isinstance(head_probs_list, list) and len(head_probs_list) > 1:
+                    # 检查末尾是否为mixture_weights（shape为(2,)的softmax权重）
+                    try:
+                        tail = np.asarray(head_probs_list[-1]).squeeze()
+                        if tail.shape == (2,):
+                            head_probs_list = head_probs_list[:-1]
+                    except Exception:
+                        pass
                 space = env.action_space(agent)
                 if isinstance(space, gym.spaces.MultiDiscrete):
                     k = len(space.nvec)

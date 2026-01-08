@@ -190,17 +190,21 @@ class WFactorySim:
         self.order_progress = {}  # 订单进度跟踪
         self.order_completion_times = {}  # 订单完成时间
         
-
         self.stats: Dict[str, Any] = {
             'last_completed_count': 0,
             'completed_orders': 0,
+            'last_completed_orders': 0,
             'makespan': 0,
             'total_tardiness': 0,
             'max_tardiness': 0,
             'equipment_utilization': {},
             'queue_lengths': defaultdict(list),
             'total_parts': 0,
-            'idle_when_work_available_count': 0
+            'idle_when_work_available_count': 0,
+            'equipment_failure_event_count': 0,
+            'equipment_failure_event_count_by_station': {},
+            'emergency_orders_inserted_count': 0,
+            'emergency_parts_inserted_count': 0
         }
 
         # 终局奖励发放标记（防重复）
@@ -281,7 +285,11 @@ class WFactorySim:
             'equipment_utilization': {},
             'queue_lengths': defaultdict(list),
             'total_parts': 0,
-            'idle_when_work_available_count': 0
+            'idle_when_work_available_count': 0,
+            'equipment_failure_event_count': 0,
+            'equipment_failure_event_count_by_station': {},
+            'emergency_orders_inserted_count': 0,
+            'emergency_parts_inserted_count': 0
         }
 
         # 重置终局奖励标记
@@ -501,6 +509,15 @@ class WFactorySim:
                 
                 if random.random() < failure_prob:
                     # 设备故障
+                    try:
+                        self.stats['equipment_failure_event_count'] = int(self.stats.get('equipment_failure_event_count', 0)) + 1
+                        by_station = self.stats.get('equipment_failure_event_count_by_station', {})
+                        if not isinstance(by_station, dict):
+                            by_station = {}
+                        by_station[station_name] = int(by_station.get(station_name, 0)) + 1
+                        self.stats['equipment_failure_event_count_by_station'] = by_station
+                    except Exception:
+                        pass
                     self.equipment_status[station_name]['is_failed'] = True
                     repair_time = np.random.exponential(mttr_minutes)
                     self.equipment_status[station_name]['failure_end_time'] = (
@@ -571,6 +588,12 @@ class WFactorySim:
                     arrival_time=self.env.now
                 )
                 self.orders.append(emerg_order)
+
+                try:
+                    self.stats['emergency_orders_inserted_count'] = int(self.stats.get('emergency_orders_inserted_count', 0)) + 1
+                    self.stats['emergency_parts_inserted_count'] = int(self.stats.get('emergency_parts_inserted_count', 0)) + int(quantity)
+                except Exception:
+                    pass
 
                 # 创建零件并注入首工位队列
                 for part in emerg_order.create_parts():
@@ -1073,6 +1096,11 @@ class WFactorySim:
             time_pressure = 2.0
         time_pressure_normalized = np.clip(time_pressure / 2.0, 0, 1.0)  # 归一化到[0,1]
 
+        # 🔧 新增：真实slack（分钟）：due_date - (current_time + remaining_total_time)
+        slack = float(part.due_date) - float(self.env.now) - float(total_remaining_time)
+        slack_norm = float(REWARD_CONFIG.get('slack_tardiness_normalize_scale', 480.0))
+        slack_normalized = float(np.clip(slack / (slack_norm if slack_norm > 0 else 1.0), -1.0, 1.0))
+
         # 10-23-14-50 新增：压缩归一化，缓解跨阶段/随机订单的饱和
         if ENHANCED_OBS_CONFIG.get("use_compressed_norm", False):
             def _compress(x: float) -> float:
@@ -1091,7 +1119,8 @@ class WFactorySim:
             priority,
             is_final_op,
             product_id,
-            time_pressure_normalized,  # 🔧 新增
+            time_pressure_normalized,
+            slack_normalized,
         ]
         
         return np.array(feature_list, dtype=np.float32)
@@ -1822,12 +1851,13 @@ class WFactoryEnv(ParallelEnv):
             ],
             'candidate_feature_names': [
                 'exists', 'remaining_ops', 'total_remaining_time', 'current_op_duration',
-                'downstream_congestion', 'priority', 'is_final_op', 'product_id', 'time_pressure'
+                'downstream_congestion', 'priority', 'is_final_op', 'product_id', 'time_pressure', 'slack'
             ],
             'normalization_constants': {
                 'max_op_duration_norm': ENHANCED_OBS_CONFIG["max_op_duration_norm"],
                 'max_bom_ops_norm': ENHANCED_OBS_CONFIG["max_bom_ops_norm"],
                 'total_remaining_time_norm': ENHANCED_OBS_CONFIG["total_remaining_time_norm"],
+                'slack_time_norm': float(REWARD_CONFIG.get('slack_tardiness_normalize_scale', 480.0)),
             },
             'num_stations': len(WORKSTATIONS),
             # 移除固定的动作空间大小，因为它现在是异构的
@@ -1887,113 +1917,64 @@ class WFactoryEnv(ParallelEnv):
         if seed is not None:
             np.random.seed(seed)
             random.seed(seed)
-        
+
         self.sim.reset()
         self.step_count = 0
         self.agents = self.possible_agents[:]
-        
-        self._terminal_bonus_given = False
-        
-        self.observations = {agent: self.sim.get_state_for_agent(agent) for agent in self.agents}
-        self.rewards = {agent: 0 for agent in self.agents}
-        self.terminations = {agent: False for agent in self.agents}
-        self.truncations = {agent: False for agent in self.agents}
-        
-        self.infos = {agent: {} for agent in self.agents}
 
-        # 在info中添加全局状态与观测元信息/候选映射/队列快照
+        self._terminal_bonus_given = False
+
+        observations = {agent: self.sim.get_state_for_agent(agent) for agent in self.agents}
+        infos = {agent: {} for agent in self.agents}
+
         global_state = self.sim.get_global_state()
         for agent_id in self.agents:
-            self.infos[agent_id]['global_state'] = global_state
-            self.infos[agent_id]['obs_meta'] = self.obs_meta
-            
-            # 修复缺陷三：使用决策前捕获的信息
-            station_name = agent_id.replace("agent_", "")
-            # 候选映射
-            candidate_list = self.sim._get_candidate_workpieces(station_name)
-            candidates_map = []
-            for i, c in enumerate(candidate_list):
-                action = self.sim._candidate_action_start + i
-                candidates_map.append({
-                    'action': action,
-                    'queue_index': c.get('index'),
-                    'part_id': c.get('part').part_id if isinstance(c.get('part'), Part) else None,
-                })
-            self.infos[agent_id]['candidates_map'] = candidates_map
-            # 队列快照（含关键属性，供启发式使用）
-            queue_snapshot = []
-            for idx, part in enumerate(self.sim.queues[station_name].items):
-                queue_snapshot.append({
-                    'queue_index': idx,
-                    'part_id': part.part_id,
-                    'slack': float(calculate_slack_time(part, self.sim.env.now)),
-                    'proc_time': float(part.get_processing_time()),
-                })
-            self.infos[agent_id]['queue_snapshot'] = queue_snapshot
-            # 🔧 新增：动作掩码
-            self.infos[agent_id]['action_mask'] = self.sim._get_action_mask(station_name)
-            
-        return self.observations, self.infos
-    
-    def step(self, actions: Dict[str, int]):
-        """执行一步"""
-        if not self.sim:
-            raise RuntimeError("Environment not initialized. Call reset() first.")
-        
-        # 修复缺陷三：在状态改变前捕获决策时的上下文信息
-        pre_step_info = {}
-        for agent_id in self.agents:
-            station_name = agent_id.replace("agent_", "")
-            
-            # 捕获候选映射
-            candidate_list = self.sim._get_candidate_workpieces(station_name)
-            candidates_map = []
-            for i, c in enumerate(candidate_list):
-                action = self.sim._candidate_action_start + i
-                candidates_map.append({
-                    'action': action,
-                    'queue_index': c.get('index'),
-                    'part_id': c.get('part').part_id if isinstance(c.get('part'), Part) else None,
-                })
-            
-            # 捕获队列快照
-            queue_snapshot = []
-            for idx, part in enumerate(self.sim.queues[station_name].items):
-                queue_snapshot.append({
-                    'queue_index': idx,
-                    'part_id': part.part_id,
-                    'slack': float(calculate_slack_time(part, self.sim.env.now)),
-                    'proc_time': float(part.get_processing_time()),
-                })
-            
-            pre_step_info[agent_id] = {
-                "candidates_map": candidates_map,
-                "queue_snapshot": queue_snapshot,
-            }
+            infos[agent_id]['global_state'] = global_state
+            infos[agent_id]['obs_meta'] = self.obs_meta
 
-        # 执行仿真步骤
-        rewards = self.sim.step_with_actions(actions)
+            station_name = agent_id.replace("agent_", "")
+            candidate_list = self.sim._get_candidate_workpieces(station_name)
+            candidates_map = []
+            for i, c in enumerate(candidate_list):
+                action = self.sim._candidate_action_start + i
+                candidates_map.append({
+                    'action': action,
+                    'queue_index': c.get('index'),
+                    'part_id': c.get('part').part_id if isinstance(c.get('part'), Part) else None,
+                })
+            infos[agent_id]['candidates_map'] = candidates_map
+
+            queue_snapshot = []
+            for idx, part in enumerate(self.sim.queues[station_name].items):
+                queue_snapshot.append({
+                    'queue_index': idx,
+                    'part_id': part.part_id,
+                    'slack': float(calculate_slack_time(part, self.sim.env.now)),
+                    'proc_time': float(part.get_processing_time()),
+                })
+            infos[agent_id]['queue_snapshot'] = queue_snapshot
+            infos[agent_id]['action_mask'] = self.sim._get_action_mask(station_name)
+
+        self.infos = infos
+        return observations, infos
+
+    def step(self, actions: Dict[str, int]):
+        """执行一个时间步"""
         self.step_count += 1
-        
-        # 获取新的观测
-        observations = {
-            agent: self.sim.get_state_for_agent(agent)
-            for agent in self.agents
-        }
-        
-        # 检查是否结束
+
+        rewards = self.sim.step_with_actions(actions)
+        observations = {agent: self.sim.get_state_for_agent(agent) for agent in self.agents}
         terminations = {agent: self.sim.is_done() for agent in self.agents}
         truncations = {agent: self.step_count >= self.max_steps for agent in self.agents}
-        
-        # 信息
         infos = {agent: {} for agent in self.agents}
+
         episode_ended = bool(any(terminations.values()) or any(truncations.values()))
         if episode_ended:
             final_stats = self.sim.get_final_stats()
             episode_score = float(calculate_episode_score(final_stats, config=self.config))
-            for agent in self.agents:
-                infos[agent]["final_stats"] = final_stats
-                infos[agent]["episode_score"] = episode_score
+            for agent_id in self.agents:
+                infos[agent_id]["final_stats"] = final_stats
+                infos[agent_id]["episode_score"] = episode_score
 
             if (not self._terminal_bonus_given) and bool(REWARD_CONFIG.get('terminal_score_bonus_enabled', False)):
                 baseline_mode = str(REWARD_CONFIG.get('terminal_score_bonus_baseline_mode', 'ema'))
@@ -2002,9 +1983,12 @@ class WFactoryEnv(ParallelEnv):
                 elif baseline_mode == 'fixed':
                     baseline = float(REWARD_CONFIG.get('terminal_score_bonus_baseline_value', 0.0))
                 else:
-                    baseline = float(getattr(self, '_terminal_score_baseline_ema', float(REWARD_CONFIG.get('terminal_score_bonus_baseline_value', 0.0))))
+                    baseline = float(self._terminal_score_baseline_ema)
 
                 delta = float(episode_score) - float(baseline)
+                if bool(REWARD_CONFIG.get('terminal_score_bonus_positive_only', False)):
+                    if delta < 0.0:
+                        delta = 0.0
                 clip_abs = float(REWARD_CONFIG.get('terminal_score_bonus_clip_delta_abs', 0.0))
                 if clip_abs > 0.0:
                     delta = float(np.clip(delta, -clip_abs, clip_abs))
@@ -2025,32 +2009,46 @@ class WFactoryEnv(ParallelEnv):
                     alpha = float(np.clip(alpha, 0.0, 1.0))
                     self._terminal_score_baseline_ema = (1.0 - alpha) * float(self._terminal_score_baseline_ema) + alpha * float(episode_score)
                 self._terminal_bonus_given = True
-        
-        # 在info中添加全局状态 + 观测元信息 + 候选映射 + 队列快照（与reset一致）
+
         global_state = self.sim.get_global_state()
         for agent_id in self.agents:
             infos[agent_id]['global_state'] = global_state
             infos[agent_id]['obs_meta'] = self.obs_meta
-            
-            # 修复缺陷三：使用决策前捕获的信息
-            infos[agent_id]['candidates_map'] = pre_step_info[agent_id]['candidates_map']
-            infos[agent_id]['queue_snapshot'] = pre_step_info[agent_id]['queue_snapshot']
-            # 🔧 新增：动作掩码（使用当前状态生成）
+
             station_name = agent_id.replace("agent_", "")
+            candidate_list = self.sim._get_candidate_workpieces(station_name)
+            candidates_map = []
+            for i, c in enumerate(candidate_list):
+                action = self.sim._candidate_action_start + i
+                candidates_map.append({
+                    'action': action,
+                    'queue_index': c.get('index'),
+                    'part_id': c.get('part').part_id if isinstance(c.get('part'), Part) else None,
+                })
+            infos[agent_id]['candidates_map'] = candidates_map
+
+            queue_snapshot = []
+            for idx, part in enumerate(self.sim.queues[station_name].items):
+                queue_snapshot.append({
+                    'queue_index': idx,
+                    'part_id': part.part_id,
+                    'slack': float(calculate_slack_time(part, self.sim.env.now)),
+                    'proc_time': float(part.get_processing_time()),
+                })
+            infos[agent_id]['queue_snapshot'] = queue_snapshot
             infos[agent_id]['action_mask'] = self.sim._get_action_mask(station_name)
 
-        # 将本步信息存入实例，便于外部策略访问候选映射等元信息
         self.infos = infos
 
         if self.render_mode == "human":
             self.render()
-        
         return observations, rewards, terminations, truncations, infos
     
     def render(self, mode="human"):
         self.render_mode = mode
         if mode == "human":
             print(f"仿真时间: {self.sim.current_time:.1f}")
+
             print(f"完成零件数: {len(self.sim.completed_parts)}")
             for station_name in WORKSTATIONS.keys():
                 queue_len = len(self.sim.queues[station_name].items)
