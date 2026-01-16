@@ -207,6 +207,8 @@ PRODUCT_ROUTES = {
     ],
 }
 
+SYSTEM_PRODUCT_TYPES = tuple(sorted(PRODUCT_ROUTES.keys()))
+
 # =============================================================================
 # 4. 订单配置 (Order Configuration)
 # =============================================================================
@@ -267,9 +269,9 @@ ENHANCED_OBS_CONFIG = {
     "queue_summary_stats": 5,               # 统计类型数（min, max, mean, std, median）
     
     # 候选工件特征配置
-    # 9维特征：exists、剩余工序、剩余时间、当前工序时间、下游拥堵、
-    #         优先级、是否最终工序、产品类型、时间压力感知
-    "candidate_feature_dim": 9,
+    # 10维特征：exists、剩余工序、剩余时间、当前工序时间、下游拥堵、
+    #         优先级、是否最终工序、产品类型、时间压力感知、slack
+    "candidate_feature_dim": 10,
     
     # 压缩归一化开关：先归一化x/norm，再压缩y=y/(1+y)到(0,1)，防止特征饱和
     "use_compressed_norm": True,
@@ -401,7 +403,8 @@ PPO_NETWORK_CONFIG = {
     "heuristic_mixture_enabled": True,
     "heuristic_mixture_beta": 1.0,
     "teacher_bc_enabled": True,
-    "teacher_bc_mode": "edd",
+    "teacher_bc_mode": "bottleneck_aware",
+    "teacher_bottleneck_lambda": 1.0,
     "teacher_bc_coeff_start": 0.05,
     "teacher_bc_coeff_end": 0.0,
     "teacher_bc_anneal_episodes": 200,

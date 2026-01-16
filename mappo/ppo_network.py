@@ -475,18 +475,59 @@ class PPONetwork:
                 exists = np.zeros((states_np.shape[0], cand_count), dtype=np.float32)
                 opdur = np.zeros((states_np.shape[0], cand_count), dtype=np.float32)
                 tpress = np.zeros((states_np.shape[0], cand_count), dtype=np.float32)
+                downstream_cong = np.zeros((states_np.shape[0], cand_count), dtype=np.float32)
+                slack = np.zeros((states_np.shape[0], cand_count), dtype=np.float32)
                 for i in range(cand_count):
                     base = cand_start + i * cand_feat_dim
                     exists[:, i] = states_np[:, base + 0]
                     opdur[:, i] = states_np[:, base + 3]
                     tpress[:, i] = states_np[:, base + 8]
+                    # candidate feature index: downstream_congestion=4, slack=9 (after adding slack feature)
+                    if cand_feat_dim >= 10:
+                        downstream_cong[:, i] = states_np[:, base + 4]
+                        slack[:, i] = states_np[:, base + 9]
 
-                if bc_teacher.lower() == 'spt':
+                teacher_mode = bc_teacher.lower()
+                if teacher_mode in ['bottleneck_aware', 'bottleneck-aware', 'bottleneck']:
+                    lam = float(self.config.get('teacher_bottleneck_lambda', 1.0))
+                    # 越小越好：slack更小(更紧急)优先，同时惩罚下游拥堵
+                    score = slack + lam * downstream_cong
+                    # 不存在的候选置为 +inf，保证不会被选到
+                    score = np.where(exists > 0.5, score, np.inf)
+                    rank = np.argsort(score, axis=1)  # (B, cand_count) 升序
+                elif teacher_mode in ['best_of_edd_spt', 'best-of-edd-spt', 'best_edd_spt', 'bestof_edd_spt']:
+                    # EDD: time_pressure 越大越优先（降序）
+                    edd_score = tpress * exists
+                    rank_edd = np.argsort(-edd_score, axis=1)
+
+                    # SPT: opdur 越小越优先（等价于 1-opdur 越大，降序）
+                    spt_score = (1.0 - opdur) * exists
+                    rank_spt = np.argsort(-spt_score, axis=1)
+
+                    # 选择策略：对每个样本比较两种排序的 top1 候选。
+                    # 若有 slack（cand_feat_dim>=10），优先选择 slack 更小（更紧急）的一侧。
+                    # 否则退化为选择 time_pressure 更大的一侧。
+                    pick_rank = np.zeros((states_np.shape[0],), dtype=np.int32)
+                    for b in range(states_np.shape[0]):
+                        i_edd = int(rank_edd[b, 0]) if cand_count > 0 else 0
+                        i_spt = int(rank_spt[b, 0]) if cand_count > 0 else 0
+                        if cand_feat_dim >= 10:
+                            m_edd = float(slack[b, i_edd])
+                            m_spt = float(slack[b, i_spt])
+                            pick_rank[b] = 0 if (m_edd <= m_spt) else 1
+                        else:
+                            m_edd = float(tpress[b, i_edd])
+                            m_spt = float(tpress[b, i_spt])
+                            pick_rank[b] = 0 if (m_edd >= m_spt) else 1
+
+                    # 拼出最终rank矩阵：每行选 EDD 或 SPT 的排序
+                    rank = np.where(pick_rank[:, None] == 0, rank_edd, rank_spt)
+                elif teacher_mode == 'spt':
                     score = (1.0 - opdur) * exists
+                    rank = np.argsort(-score, axis=1)  # (B, cand_count) 降序
                 else:
                     score = tpress * exists
-
-                rank = np.argsort(-score, axis=1)  # (B, cand_count)
+                    rank = np.argsort(-score, axis=1)  # (B, cand_count) 降序
                 chosen = np.zeros((states_np.shape[0], num_heads), dtype=np.int32)
                 for b in range(states_np.shape[0]):
                     used = set()

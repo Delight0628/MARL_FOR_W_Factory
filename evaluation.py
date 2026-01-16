@@ -494,6 +494,7 @@ def evaluate_heuristic(heuristic_name: str, config: dict = STATIC_EVAL_CONFIG, g
             'FIFO': 'FIFO',
             'EDD': 'URGENT_EDD',
             'SPT': 'SHORT_SPT',
+            'ATC': 'ATC',
         }
         
         target_action_name = heuristic_to_action_map.get(heuristic_name)
@@ -541,6 +542,20 @@ def evaluate_heuristic(heuristic_name: str, config: dict = STATIC_EVAL_CONFIG, g
                 # SPT：按当前工序时间从小到大排序
                 parts_sorted = sorted(queue, key=lambda p: p.get_processing_time())
                 selected_parts = parts_sorted
+            elif heuristic_name == 'ATC':
+                now = float(sim.env.now)
+                procs = [max(1e-6, float(p.get_processing_time())) for p in queue]
+                p_bar = float(np.mean(procs)) if procs else 1.0
+                k = 2.0
+                scored = []
+                for p in queue:
+                    proc = max(1e-6, float(p.get_processing_time()))
+                    slack = float(calculate_slack_time(p, sim.env.now, sim.queues))
+                    slack_pos = max(0.0, slack)
+                    score = float(np.exp(-slack_pos / max(1e-6, k * p_bar))) / proc
+                    scored.append((p, score))
+                scored.sort(key=lambda x: x[1], reverse=True)
+                selected_parts = [p for p, _ in scored]
             else:
                 raise ValueError(f"未知的启发式规则: {heuristic_name}")
             

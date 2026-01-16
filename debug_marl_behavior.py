@@ -126,6 +126,9 @@ def decode_observation(obs_vector: np.ndarray, agent_id: str, obs_meta: dict) ->
                     elif feature_name == 'current_op_duration':
                          value *= norm_constants.get('max_op_duration_norm', 1)
                          formatted_value = f"{value:.1f} min"
+                    elif feature_name == 'slack':
+                        value *= norm_constants.get('slack_time_norm', 1)
+                        formatted_value = f"{value:.1f} min"
                     else:
                         formatted_value = f"{value:.3f}"
                 decoded_lines.append(f"      - {feature_name}: {formatted_value}")

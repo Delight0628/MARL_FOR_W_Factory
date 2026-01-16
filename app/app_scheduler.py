@@ -729,7 +729,8 @@ def save_dynamic_event_ablation_results(result: dict) -> None:
                 r2 = dict(r)
                 if r2.get('gantt_history'):
                     try:
-                        fig = create_gantt_chart(r2['gantt_history'])
+                        _etl = (r2.get('stats', {}) or {}).get('event_timeline')
+                        fig = create_gantt_chart(r2['gantt_history'], _etl)
                         if fig:
                             filename = f"gantt_{prefix}_run{i+1}.html"
                             fig.write_html(os.path.join(save_dir, filename))
@@ -1153,6 +1154,7 @@ def run_heuristic_scheduling(heuristic_name, orders_config, custom_products=None
                 'FIFO': 'FIFO',
                 'EDD': 'URGENT_EDD',
                 'SPT': 'SHORT_SPT',
+                'ATC': 'ATC',
             }
             
             target_action_name = heuristic_to_action_map.get(heuristic_name)
@@ -1189,6 +1191,20 @@ def run_heuristic_scheduling(heuristic_name, orders_config, custom_products=None
                     selected_parts = sorted(queue, key=lambda p: calculate_slack_time(p, sim.env.now, sim.queues))
                 elif heuristic_name == 'SPT':
                     selected_parts = sorted(queue, key=lambda p: p.get_processing_time())
+                elif heuristic_name == 'ATC':
+                    now = float(sim.env.now)
+                    procs = [max(1e-6, float(p.get_processing_time())) for p in queue]
+                    p_bar = float(np.mean(procs)) if procs else 1.0
+                    k = 2.0
+                    scored = []
+                    for p in queue:
+                        proc = max(1e-6, float(p.get_processing_time()))
+                        slack = float(calculate_slack_time(p, sim.env.now, sim.queues))
+                        slack_pos = max(0.0, slack)
+                        score = float(np.exp(-slack_pos / max(1e-6, k * p_bar))) / proc
+                        scored.append((p, score))
+                    scored.sort(key=lambda x: x[1], reverse=True)
+                    selected_parts = [p for p, _ in scored]
                 else:
                     raise ValueError(f"未知的启发式规则: {heuristic_name}")
                 
@@ -1354,7 +1370,21 @@ def run_scheduling(actor_model, orders_config, custom_products=None, max_steps=1
             actions = {}
             for agent in env.agents:
                 if agent in obs:
-                    state = tf.expand_dims(obs[agent], 0)
+                    # 兼容旧模型：若环境观测维度与模型输入不一致，则自动截断/补零
+                    try:
+                        expected_dim = int(getattr(actor_model, 'input_shape', [None, None])[-1])
+                    except Exception:
+                        expected_dim = None
+
+                    x = np.asarray(obs[agent], dtype=np.float32).reshape(-1)
+                    if expected_dim is not None and expected_dim > 0 and x.shape[0] != expected_dim:
+                        if x.shape[0] > expected_dim:
+                            x = x[:expected_dim]
+                        else:
+                            pad = expected_dim - x.shape[0]
+                            x = np.concatenate([x, np.zeros((pad,), dtype=np.float32)], axis=0)
+
+                    state = tf.expand_dims(x, 0)
                     # 10-25-14-30 统一：兼容多头/单头输出并采用按头无放回贪心选择
                     action_probs_tensor = actor_model(state, training=False)
                     if isinstance(action_probs_tensor, (list, tuple)):
@@ -1451,7 +1481,7 @@ def run_scheduling(actor_model, orders_config, custom_products=None, max_steps=1
         if original_routes is not None:
             w_factory_config.PRODUCT_ROUTES = original_routes
 
-def create_gantt_chart(history):
+def create_gantt_chart(history, event_timeline=None):
     """创建交互式甘特图"""
     if not history:
         return None
@@ -1487,6 +1517,78 @@ def create_gantt_chart(history):
             name=row['Product'],
             showlegend=row['Product'] not in [trace.name for trace in fig.data]
         ))
+
+    # 叠加动态事件时间线标注（故障区间 / 插单时刻）
+    try:
+        if event_timeline:
+            failures = [e for e in (event_timeline or []) if isinstance(e, dict) and e.get('type') == 'failure']
+            emerg = [e for e in (event_timeline or []) if isinstance(e, dict) and e.get('type') == 'emergency_order']
+
+            # 故障：半透明区间（覆盖整个y轴）
+            for i, e in enumerate(failures):
+                try:
+                    x0 = float(e.get('start', 0.0))
+                    x1 = float(e.get('end', x0))
+                    station = str(e.get('station', ''))
+                    fig.add_shape(
+                        type='rect',
+                        xref='x',
+                        yref='paper',
+                        x0=x0,
+                        x1=x1,
+                        y0=0.0,
+                        y1=1.0,
+                        fillcolor='rgba(220, 53, 69, 0.12)',
+                        line=dict(width=0),
+                        layer='below'
+                    )
+                    fig.add_annotation(
+                        x=(x0 + x1) / 2.0,
+                        y=1.02,
+                        xref='x',
+                        yref='paper',
+                        text=f"故障: {station}",
+                        showarrow=False,
+                        font=dict(size=10, color='rgba(220, 53, 69, 0.95)')
+                    )
+                except Exception:
+                    pass
+
+            # 插单：竖线 + 注释
+            for i, e in enumerate(emerg):
+                try:
+                    t = float(e.get('time', 0.0))
+                    oid = e.get('order_id', None)
+                    qty = e.get('quantity', None)
+                    fig.add_shape(
+                        type='line',
+                        xref='x',
+                        yref='paper',
+                        x0=t,
+                        x1=t,
+                        y0=0.0,
+                        y1=1.0,
+                        line=dict(color='rgba(255, 193, 7, 0.85)', width=2, dash='dot'),
+                        layer='above'
+                    )
+                    label = "插单"
+                    if oid is not None:
+                        label += f"#{oid}"
+                    if qty is not None:
+                        label += f" x{qty}"
+                    fig.add_annotation(
+                        x=t,
+                        y=1.08,
+                        xref='x',
+                        yref='paper',
+                        text=label,
+                        showarrow=False,
+                        font=dict(size=10, color='rgba(255, 193, 7, 0.95)')
+                    )
+                except Exception:
+                    pass
+    except Exception:
+        pass
     
     fig.update_layout(
         title=get_text('gantt_chart_title', lang),
@@ -2429,7 +2531,7 @@ def main():
                 if compare_heuristics:
                     heuristic_results = {}
                     
-                    for heuristic in ['FIFO', 'EDD', 'SPT']:
+                    for heuristic in ['FIFO', 'EDD', 'SPT', 'ATC']:
                         status_text.text(f"⚙️ 运行 {heuristic} 启发式算法...")
                         progress_bar.progress(0)
                         
@@ -2553,7 +2655,7 @@ def main():
         
         # 甘特图（MARL）
         with st.expander(get_text("gantt_chart", lang) + " - MARL (PPO)", expanded=True):
-            gantt_fig = create_gantt_chart(gantt_history)
+            gantt_fig = create_gantt_chart(gantt_history, stats.get('event_timeline'))
             if gantt_fig:
                 # 更新标题显示算法名称
                 gantt_fig.update_layout(title=f"{get_text('gantt_chart_title', lang)} - MARL (PPO)")
@@ -2616,9 +2718,10 @@ def main():
             
             for heuristic_name, heuristic_data in st.session_state['heuristic_results'].items():
                 h_history = heuristic_data['history']
+                h_stats = heuristic_data.get('stats', {}) if isinstance(heuristic_data, dict) else {}
                 
                 with st.expander(get_text("gantt_chart_algorithm", lang, heuristic_name), expanded=False):
-                    h_gantt_fig = create_gantt_chart(h_history)
+                    h_gantt_fig = create_gantt_chart(h_history, h_stats.get('event_timeline'))
                     if h_gantt_fig:
                         # 更新标题显示算法名称
                         h_gantt_fig.update_layout(title=f"{get_text('gantt_chart_title', lang)} - {heuristic_name}")
@@ -2743,12 +2846,12 @@ def main():
                             disabled_runs = []
                             enabled_runs = []
 
-                            heuristic_disabled = {h: [] for h in ['FIFO', 'EDD', 'SPT']} if include_heuristics_ablation else {}
-                            heuristic_enabled = {h: [] for h in ['FIFO', 'EDD', 'SPT']} if include_heuristics_ablation else {}
+                            heuristic_disabled = {h: [] for h in ['FIFO', 'EDD', 'SPT', 'ATC']} if include_heuristics_ablation else {}
+                            heuristic_enabled = {h: [] for h in ['FIFO', 'EDD', 'SPT', 'ATC']} if include_heuristics_ablation else {}
 
                             progress_bar = st.progress(0)
                             status_text = st.empty()
-                            num_heuristics = 3 if include_heuristics_ablation else 0
+                            num_heuristics = 4 if include_heuristics_ablation else 0
                             total_steps = len(seeds_used) * (2 + 2 * num_heuristics)
                             done = 0
 
@@ -2792,7 +2895,7 @@ def main():
                                 progress_bar.progress(done / total_steps)
 
                                 if include_heuristics_ablation:
-                                    for h in ['FIFO', 'EDD', 'SPT']:
+                                    for h in ['FIFO', 'EDD', 'SPT', 'ATC']:
                                         h_stats, h_hist, h_score = run_heuristic_scheduling(
                                             h,
                                             orders_cfg,
@@ -2845,7 +2948,7 @@ def main():
                                 progress_bar.progress(done / total_steps)
 
                                 if include_heuristics_ablation:
-                                    for h in ['FIFO', 'EDD', 'SPT']:
+                                    for h in ['FIFO', 'EDD', 'SPT', 'ATC']:
                                         h_stats, h_hist, h_score = run_heuristic_scheduling(
                                             h,
                                             orders_cfg,
@@ -2899,6 +3002,24 @@ def main():
                         def _avg(lst, key_fn):
                             return sum(key_fn(x) for x in lst) / max(1, len(lst))
 
+                        def _std(lst, key_fn):
+                            vals = [float(key_fn(x)) for x in (lst or [])]
+                            if len(vals) <= 1:
+                                return 0.0
+                            return float(np.std(vals, ddof=1))
+
+                        def _get_stat_int(run: dict, key: str) -> int:
+                            try:
+                                return int((run or {}).get('stats', {}).get(key, 0) or 0)
+                            except Exception:
+                                return 0
+
+                        def _get_stat_float(run: dict, key: str) -> float:
+                            try:
+                                return float((run or {}).get('stats', {}).get(key, 0.0) or 0.0)
+                            except Exception:
+                                return 0.0
+
                         disabled_runs = res.get('disabled', [])
                         enabled_runs = res.get('enabled', [])
                         if disabled_runs and enabled_runs:
@@ -2910,6 +3031,10 @@ def main():
                                 avg_util = _avg(runs, lambda r: r['stats'].get('mean_utilization', 0.0))
                                 avg_tard = _avg(runs, lambda r: r['stats'].get('total_tardiness', 0.0))
                                 avg_score = _avg(runs, lambda r: r.get('score', 0.0))
+                                std_score = _std(runs, lambda r: r.get('score', 0.0))
+                                avg_failures = _avg(runs, lambda r: _get_stat_int(r, 'equipment_failure_event_count'))
+                                avg_emerg_orders = _avg(runs, lambda r: _get_stat_int(r, 'emergency_orders_inserted_count'))
+                                avg_emerg_parts = _avg(runs, lambda r: _get_stat_int(r, 'emergency_parts_inserted_count'))
                                 completion_rate_pct = (avg_parts / total_parts_target * 100) if total_parts_target > 0 else 0
                                 table.append({
                                     get_text("algorithm", lang): alg_name,
@@ -2919,6 +3044,10 @@ def main():
                                     get_text("avg_utilization", lang): f"{avg_util*100:.1f}%",
                                     get_text("avg_tardiness", lang): f"{avg_tard:.1f}",
                                     get_text("avg_score", lang): f"{avg_score:.3f}",
+                                    "score_std": f"{std_score:.3f}",
+                                    "故障次数(均值)": f"{avg_failures:.2f}",
+                                    "插单数(均值)": f"{avg_emerg_orders:.2f}",
+                                    "插入零件(均值)": f"{avg_emerg_parts:.2f}",
                                     get_text("runs", lang): len(runs),
                                 })
 
@@ -2927,12 +3056,186 @@ def main():
 
                             h_dis = res.get('heuristic_disabled', {}) or {}
                             h_en = res.get('heuristic_enabled', {}) or {}
-                            for h in ['FIFO', 'EDD', 'SPT']:
+                            for h in ['FIFO', 'EDD', 'SPT', 'ATC']:
                                 if h in h_dis and h_dis[h]:
                                     _append_row(h, "OFF", h_dis[h])
                                 if h in h_en and h_en[h]:
                                     _append_row(h, "ON", h_en[h])
-                            st.dataframe(pd.DataFrame(table), use_container_width=True, hide_index=True)
+
+                            df_table = pd.DataFrame(table)
+                            st.dataframe(df_table, use_container_width=True, hide_index=True)
+
+                            def _collect_score_points(alg_name: str, tag: str, runs: list):
+                                rows = []
+                                for r in (runs or []):
+                                    try:
+                                        rows.append({
+                                            'algorithm': alg_name,
+                                            'group': tag,
+                                            'seed': r.get('seed', None),
+                                            'score': float(r.get('score', 0.0) or 0.0),
+                                            'tardiness': _get_stat_float(r, 'total_tardiness'),
+                                            'makespan': _get_stat_float(r, 'makespan'),
+                                            'failures': _get_stat_int(r, 'equipment_failure_event_count'),
+                                            'emergency_orders': _get_stat_int(r, 'emergency_orders_inserted_count'),
+                                        })
+                                    except Exception:
+                                        pass
+                                return rows
+
+                            points = []
+                            points += _collect_score_points('MARL (PPO)', 'OFF', disabled_runs)
+                            points += _collect_score_points('MARL (PPO)', 'ON', enabled_runs)
+                            for h in ['FIFO', 'EDD', 'SPT', 'ATC']:
+                                if h in h_dis and h_dis[h]:
+                                    points += _collect_score_points(h, 'OFF', h_dis[h])
+                                if h in h_en and h_en[h]:
+                                    points += _collect_score_points(h, 'ON', h_en[h])
+                            df_points = pd.DataFrame(points)
+
+                            if not df_points.empty:
+                                st.subheader("动态事件鲁棒性摘要")
+
+                                def _mean_of(alg: str, group: str) -> float:
+                                    try:
+                                        sub = df_points[(df_points['algorithm'] == alg) & (df_points['group'] == group)]
+                                        if sub.empty:
+                                            return 0.0
+                                        return float(sub['score'].mean())
+                                    except Exception:
+                                        return 0.0
+
+                                def _std_of(alg: str, group: str) -> float:
+                                    try:
+                                        sub = df_points[(df_points['algorithm'] == alg) & (df_points['group'] == group)]
+                                        if len(sub) <= 1:
+                                            return 0.0
+                                        return float(sub['score'].std(ddof=1))
+                                    except Exception:
+                                        return 0.0
+
+                                marl_off = _mean_of('MARL (PPO)', 'OFF')
+                                marl_on = _mean_of('MARL (PPO)', 'ON')
+                                marl_drop = (marl_on - marl_off)
+                                marl_drop_pct = (marl_drop / marl_off * 100.0) if marl_off > 1e-9 else 0.0
+
+                                best_heur_on = None
+                                best_heur_name = None
+                                for h in ['FIFO', 'EDD', 'SPT', 'ATC']:
+                                    v = _mean_of(h, 'ON')
+                                    if best_heur_on is None or v > best_heur_on:
+                                        best_heur_on = v
+                                        best_heur_name = h
+
+                                marl_adv = (marl_on - (best_heur_on if best_heur_on is not None else 0.0))
+                                marl_adv_pct = (marl_adv / best_heur_on * 100.0) if (best_heur_on is not None and best_heur_on > 1e-9) else 0.0
+
+                                c1, c2, c3, c4 = st.columns(4)
+                                c1.metric("MARL 平均分 (OFF)", f"{marl_off:.3f}")
+                                c2.metric("MARL 平均分 (ON)", f"{marl_on:.3f}", f"{marl_drop:+.3f} ({marl_drop_pct:+.1f}%)")
+                                c3.metric("MARL 稳定性(ON std)", f"{_std_of('MARL (PPO)', 'ON'):.3f}")
+                                label_best = f"相对最强启发式(ON): {best_heur_name}" if best_heur_name else "相对启发式(ON)"
+                                c4.metric(label_best, f"{marl_adv:+.3f}", f"{marl_adv_pct:+.1f}%")
+
+                                st.subheader("分数分布（箱线图）")
+                                fig = go.Figure()
+                                for alg in df_points['algorithm'].unique():
+                                    for grp in ['OFF', 'ON']:
+                                        sub = df_points[(df_points['algorithm'] == alg) & (df_points['group'] == grp)]
+                                        if sub.empty:
+                                            continue
+                                        name = f"{alg} / {grp}"
+                                        fig.add_trace(go.Box(y=sub['score'], name=name, boxmean='sd'))
+                                fig.update_layout(
+                                    height=420,
+                                    margin=dict(l=10, r=10, t=10, b=10),
+                                    yaxis_title="score"
+                                )
+                                st.plotly_chart(fig, use_container_width=True)
+
+                                st.subheader("按 seed 配对的提升（Pairwise Gains）")
+
+                                present_heur = [h for h in ['FIFO', 'EDD', 'SPT', 'ATC'] if h in df_points['algorithm'].unique()]
+                                baseline_options = ['最强启发式(ON)'] + present_heur
+                                baseline_choice = st.selectbox(
+                                    "基线(ON)",
+                                    options=baseline_options,
+                                    index=0,
+                                    key="ablation_pairwise_baseline"
+                                )
+
+                                # MARL ON vs MARL OFF（同seed差值）
+                                try:
+                                    marl_on_df = df_points[(df_points['algorithm'] == 'MARL (PPO)') & (df_points['group'] == 'ON')][['seed', 'score']].rename(columns={'score': 'marl_on'})
+                                    marl_off_df = df_points[(df_points['algorithm'] == 'MARL (PPO)') & (df_points['group'] == 'OFF')][['seed', 'score']].rename(columns={'score': 'marl_off'})
+                                    merged_marl = pd.merge(marl_on_df, marl_off_df, on='seed', how='inner')
+                                    merged_marl['delta_on_off'] = merged_marl['marl_on'] - merged_marl['marl_off']
+                                except Exception:
+                                    merged_marl = pd.DataFrame()
+
+                                if not merged_marl.empty:
+                                    merged_marl = merged_marl.sort_values('seed')
+                                    fig_pair1 = go.Figure()
+                                    fig_pair1.add_trace(go.Bar(
+                                        x=merged_marl['seed'].astype(str),
+                                        y=merged_marl['delta_on_off'],
+                                        name='MARL(ON) - MARL(OFF)'
+                                    ))
+                                    fig_pair1.add_shape(
+                                        type='line',
+                                        xref='paper',
+                                        yref='y',
+                                        x0=0.0,
+                                        x1=1.0,
+                                        y0=0.0,
+                                        y1=0.0,
+                                        line=dict(color='rgba(0,0,0,0.35)', width=1)
+                                    )
+                                    fig_pair1.update_layout(
+                                        height=360,
+                                        margin=dict(l=10, r=10, t=10, b=10),
+                                        yaxis_title='Δscore'
+                                    )
+                                    st.plotly_chart(fig_pair1, use_container_width=True)
+
+                                # MARL ON vs baseline ON（同seed差值）
+                                try:
+                                    if baseline_choice == '最强启发式(ON)':
+                                        baseline_alg = best_heur_name
+                                    else:
+                                        baseline_alg = baseline_choice
+
+                                    base_on_df = df_points[(df_points['algorithm'] == baseline_alg) & (df_points['group'] == 'ON')][['seed', 'score']].rename(columns={'score': 'baseline_on'})
+                                    marl_on_df2 = df_points[(df_points['algorithm'] == 'MARL (PPO)') & (df_points['group'] == 'ON')][['seed', 'score']].rename(columns={'score': 'marl_on'})
+                                    merged_vs = pd.merge(marl_on_df2, base_on_df, on='seed', how='inner')
+                                    merged_vs['delta_vs_baseline'] = merged_vs['marl_on'] - merged_vs['baseline_on']
+                                except Exception:
+                                    merged_vs = pd.DataFrame()
+
+                                if not merged_vs.empty:
+                                    merged_vs = merged_vs.sort_values('seed')
+                                    fig_pair2 = go.Figure()
+                                    fig_pair2.add_trace(go.Bar(
+                                        x=merged_vs['seed'].astype(str),
+                                        y=merged_vs['delta_vs_baseline'],
+                                        name=f"MARL(ON) - {baseline_alg}(ON)"
+                                    ))
+                                    fig_pair2.add_shape(
+                                        type='line',
+                                        xref='paper',
+                                        yref='y',
+                                        x0=0.0,
+                                        x1=1.0,
+                                        y0=0.0,
+                                        y1=0.0,
+                                        line=dict(color='rgba(0,0,0,0.35)', width=1)
+                                    )
+                                    fig_pair2.update_layout(
+                                        height=360,
+                                        margin=dict(l=10, r=10, t=10, b=10),
+                                        yaxis_title='Δscore'
+                                    )
+                                    st.plotly_chart(fig_pair2, use_container_width=True)
 
     
     with st.expander(get_text("model_comparison_description", lang), expanded=False):
@@ -3034,7 +3337,7 @@ def main():
                         # 初始化对比结果存储
                         comparison_results = {}
 
-                        heuristic_baselines = {h: [] for h in ['FIFO', 'EDD', 'SPT']} if include_heuristics_comparison else {}
+                        heuristic_baselines = {h: [] for h in ['FIFO', 'EDD', 'SPT', 'ATC']} if include_heuristics_comparison else {}
 
                         effective_runs = int(comparison_runs) if seed_mode else 1
                         seeds_used = [int(base_seed + i) for i in range(effective_runs)] if seed_mode else [int(base_seed)]
@@ -3042,7 +3345,7 @@ def main():
                         # 创建进度条
                         total_runs = len(selected_model_names) * effective_runs
                         if include_heuristics_comparison:
-                            total_runs += 3 * effective_runs
+                            total_runs += 4 * effective_runs
                         progress_bar = st.progress(0)
                         status_text = st.empty()
                         
@@ -3106,7 +3409,7 @@ def main():
                                 comparison_results[model_name] = model_results
 
                         if include_heuristics_comparison:
-                            for h in ['FIFO', 'EDD', 'SPT']:
+                            for h in ['FIFO', 'EDD', 'SPT', 'ATC']:
                                 for run_idx in range(effective_runs):
                                     current_seed = int(seeds_used[min(run_idx, len(seeds_used) - 1)])
                                     try:

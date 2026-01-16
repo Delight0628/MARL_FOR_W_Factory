@@ -180,6 +180,12 @@ class WFactorySim:
         
         # 新增：用于生成甘特图的加工历史记录
         self.gantt_chart_history: List[Dict[str, Any]] = []
+
+        # 新增：动态事件时间线（用于UI标注与回放）
+        # 记录格式（可JSON序列化）：
+        # - 故障：{"type":"failure","station":str,"start":float,"end":float}
+        # - 插单：{"type":"emergency_order","time":float,"order_id":int,"product":str,"quantity":int,"priority":int,"due_date":float}
+        self.event_timeline: List[Dict[str, Any]] = []
         
         # 性能指标
         self._start_times: Dict[int, float] = {}
@@ -259,6 +265,9 @@ class WFactorySim:
         
         # 新增：清空甘特图历史
         self.gantt_chart_history.clear()
+
+        # 新增：清空事件时间线
+        self.event_timeline.clear()
         
         # 重置订单跟踪
         self.order_progress.clear()
@@ -523,6 +532,17 @@ class WFactorySim:
                     self.equipment_status[station_name]['failure_end_time'] = (
                         self.env.now + repair_time
                     )
+
+                    # 记录故障事件区间（用于甘特图标注）
+                    try:
+                        self.event_timeline.append({
+                            'type': 'failure',
+                            'station': str(station_name),
+                            'start': float(self.env.now),
+                            'end': float(self.env.now + repair_time),
+                        })
+                    except Exception:
+                        pass
                     
                     yield self.env.timeout(repair_time)
                     self.equipment_status[station_name]['is_failed'] = False
@@ -600,6 +620,20 @@ class WFactorySim:
                     part.start_time = self.env.now  # 立即到达
                     self.env.process(self._part_process(part))
                     self.active_parts.append(part)
+
+                # 记录插单事件时间点（用于甘特图标注）
+                try:
+                    self.event_timeline.append({
+                        'type': 'emergency_order',
+                        'time': float(self.env.now),
+                        'order_id': int(emerg_order.order_id),
+                        'product': str(product),
+                        'quantity': int(quantity),
+                        'priority': int(priority),
+                        'due_date': float(due_date),
+                    })
+                except Exception:
+                    pass
             except Exception:
                 # 插单失败不应中断主仿真
                 pass
@@ -1036,6 +1070,7 @@ class WFactorySim:
             if candidate_idx < len(candidates):
                 candidate_info = candidates[candidate_idx]
                 part = candidate_info['part']
+                
                 # 需要找到这个工件在当前队列中的实际索引
                 # 🔧 核心修复：增加 part is not None 的检查，防止选择到已处理的候选槽
                 if part:
@@ -1080,12 +1115,19 @@ class WFactorySim:
         is_final_op = 1.0 if remaining_ops <= 1 else 0.0
         
         # 特征8: 产品类型编码（简化为产品ID）
-        product_types = list(PRODUCT_ROUTES.keys())
         product_id = 0.0
-        if part.product_type in product_types:
-            product_id = float(product_types.index(part.product_type)) / len(product_types)
+        try:
+            stable_products = list(SYSTEM_PRODUCT_TYPES)
+            unknown_idx = len(stable_products)
+            denom = float(max(1, unknown_idx + 1))
+            if part.product_type in stable_products:
+                product_id = float(stable_products.index(part.product_type)) / denom
+            else:
+                product_id = float(unknown_idx) / denom
+        except Exception:
+            product_id = 0.0
         
-        # 🔧 V2新增特征9: 时间压力感知（基于物理时间关系）
+        # V2新增特征9: 时间压力感知（基于物理时间关系）
         # 计算逻辑：压力 = 剩余加工时间 / (距离交期的剩余时间 + 1.0)
         # 压力值越大表示时间越紧张，≥1.0表示已无法按时完成
         remaining_time_to_due = part.due_date - self.env.now
@@ -1396,7 +1438,7 @@ class WFactorySim:
                 next_station = part.get_current_station()
                 if next_station:
                     yield self.queues[next_station].put(part)
-    
+
     def _calculate_progress_shaping_reward(self) -> float:
         """基于整体工序完成进度的塑形奖励"""
         if not self.orders:
@@ -1722,13 +1764,15 @@ class WFactorySim:
             if self.current_time > status.get('last_event_time', 0.0):
                 elapsed = self.current_time - status.get('last_event_time', 0.0)
                 busy_count = status.get('busy_count', 0)
-                status['busy_machine_time'] = status.get('busy_machine_time', 0.0) + elapsed * busy_count
-                status['last_event_time'] = self.current_time
-            
+                # 这个更新是临时的，不会写回status字典，仅用于计算当前全局状态
+                current_busy_machine_time = status.get('busy_machine_time', 0.0) + elapsed * busy_count
+            else:
+                current_busy_machine_time = status.get('busy_machine_time', 0.0)
+
             # 计算该工作站的设备利用率
             capacity = WORKSTATIONS[station_name]['count']
             if self.current_time > 0 and capacity > 0:
-                utilization = status.get('busy_machine_time', 0.0) / (self.current_time * capacity)
+                utilization = current_busy_machine_time / (self.current_time * capacity)
             else:
                 utilization = 0.0
             self.stats['equipment_utilization'][station_name] = utilization
@@ -1787,6 +1831,12 @@ class WFactorySim:
         self.stats['total_tardiness'] = total_tardiness
         self.stats['total_parts'] = len(self.completed_parts)
         self.stats['makespan'] = makespan
+        
+        # 新增：写入事件时间线（保证可JSON序列化）
+        try:
+            self.stats['event_timeline'] = list(self.event_timeline)
+        except Exception:
+            self.stats['event_timeline'] = []
         
         return self.stats
 
