@@ -186,6 +186,27 @@ def debug_marl_actions(model_path: str, config: dict, max_steps: int = 600, dete
     config_for_debug.setdefault('deterministic_candidates', True)
     env = WFactoryEnv(config=config_for_debug)
     obs, info = env.reset(seed=seed)
+
+    model_in_dim = None
+    try:
+        ish = getattr(actor_model, 'input_shape', None)
+        if isinstance(ish, (list, tuple)) and len(ish) > 0:
+            model_in_dim = int(ish[-1]) if ish[-1] is not None else None
+    except Exception:
+        model_in_dim = None
+
+    def _align_obs_dim(vec: np.ndarray, target_dim: int) -> np.ndarray:
+        arr = np.asarray(vec, dtype=np.float32).reshape(-1)
+        td = int(target_dim)
+        if td <= 0:
+            return arr
+        if arr.shape[0] == td:
+            return arr
+        if arr.shape[0] > td:
+            return arr[:td]
+        out = np.zeros((td,), dtype=np.float32)
+        out[:arr.shape[0]] = arr
+        return out
     
     print(f"🏭 环境信息:")
     print(f"   智能体数量: {len(env.agents)}")
@@ -212,7 +233,11 @@ def debug_marl_actions(model_path: str, config: dict, max_steps: int = 600, dete
         actions = {}
         for agent in env.agents:
             if agent in obs:
-                state = tf.expand_dims(obs[agent], 0)
+                if model_in_dim is not None:
+                    aligned = _align_obs_dim(obs[agent], model_in_dim)
+                else:
+                    aligned = np.asarray(obs[agent], dtype=np.float32)
+                state = tf.expand_dims(aligned, 0)
                 # 10-25-14-30 兼容多头/单头输出
                 action_probs_tensor = actor_model(state, training=False)
                 if isinstance(action_probs_tensor, (list, tuple)):

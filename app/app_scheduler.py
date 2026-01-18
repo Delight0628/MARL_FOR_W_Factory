@@ -2437,6 +2437,8 @@ def main():
                     'mttr_minutes': mttr_minutes,
                     'failure_probability': failure_prob
                 }
+
+                st.session_state['failure_config'] = failure_config
         
         # 紧急插单高级参数配置
         emergency_config = {}
@@ -2481,6 +2483,8 @@ def main():
                     'priority_boost': priority_boost,
                     'due_date_reduction': due_reduction
                 }
+
+                st.session_state['emergency_config'] = emergency_config
 
         max_steps_single = st.number_input(
             get_text("max_steps", lang),

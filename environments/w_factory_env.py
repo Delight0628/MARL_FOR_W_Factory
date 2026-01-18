@@ -755,9 +755,56 @@ class WFactorySim:
         # --- 4. 候选工件详细特征 (Candidate Workpieces) - 90维 ---
         candidate_features = self._get_candidate_features(station_name)
         
+        extra_features = None
+        try:
+            if bool(self.config.get('include_future_arrival_summary', True)):
+                extra_features = self._get_future_arrival_summary_features(float(self.env.now))
+        except Exception:
+            extra_features = None
+        
         # 组合所有特征
-        full_obs = np.concatenate([agent_features, global_features, queue_summary, candidate_features])
+        if isinstance(extra_features, np.ndarray) and extra_features.size > 0:
+            full_obs = np.concatenate([agent_features, global_features, queue_summary, candidate_features, extra_features])
+        else:
+            full_obs = np.concatenate([agent_features, global_features, queue_summary, candidate_features])
         return full_obs.flatten()
+
+    def _get_future_arrival_summary_features(self, now: float) -> np.ndarray:
+        _t = float(self._simulation_time) if float(self._simulation_time) > 0 else float(SIMULATION_TIME)
+        total_parts_in_system = float(sum(o.quantity for o in self.orders))
+        denom = total_parts_in_system if total_parts_in_system > 0 else 1.0
+
+        next_dt = None
+        parts_30 = 0.0
+        parts_60 = 0.0
+        parts_120 = 0.0
+        for o in (self.orders or []):
+            try:
+                at = float(getattr(o, 'arrival_time', 0.0))
+                dt = at - float(now)
+                if dt <= 0.0:
+                    continue
+                q = float(getattr(o, 'quantity', 0.0))
+                if next_dt is None or dt < next_dt:
+                    next_dt = dt
+                if dt <= 30.0:
+                    parts_30 += q
+                if dt <= 60.0:
+                    parts_60 += q
+                if dt <= 120.0:
+                    parts_120 += q
+            except Exception:
+                continue
+
+        if next_dt is None:
+            next_dt = float(_t)
+
+        next_dt_norm = float(np.clip(float(next_dt) / float(_t), 0.0, 1.0))
+        p30 = float(np.clip(parts_30 / denom, 0.0, 1.0))
+        p60 = float(np.clip(parts_60 / denom, 0.0, 1.0))
+        p120 = float(np.clip(parts_120 / denom, 0.0, 1.0))
+        return np.array([next_dt_norm, p30, p60, p120], dtype=np.float32)
+    
     def _get_queue_summary_features(self, station_name: str) -> np.ndarray:
         """
         队列摘要统计特征 (30维 = 6特征 × 5统计量)

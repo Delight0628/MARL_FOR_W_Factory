@@ -7,6 +7,7 @@ import subprocess
 from pathlib import Path
 import signal
 import shutil
+import threading
 
 # 全局变量，用于存储需要监控的子进程
 child_processes = []
@@ -48,9 +49,9 @@ def find_new_model_dir(base_dir, dirs_before, timeout=120):
 def run_detached_command(command):
     """在后台运行一个完全分离的命令。"""
     print(f"🚀 正在执行命令:\n   {command}", flush=True)
-    subprocess.Popen(command, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    subprocess.Popen(command, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
 
-def launch_and_monitor_child(cmd_list, log_file):
+def launch_and_monitor_child(cmd_list, log_file, cwd: str = None):
     """
     启动一个需要被监控的子进程（例如训练脚本），并将其记录下来以便后续清理。
     """
@@ -58,9 +59,56 @@ def launch_and_monitor_child(cmd_list, log_file):
     with open(log_file, 'wb') as f:
         # start_new_session=True 使子进程成为新会话的领导者，
         # 这使其能抵抗SIGHUP信号（类似于nohup），并创建一个新的进程组。
-        p = subprocess.Popen(cmd_list, stdout=f, stderr=f, start_new_session=True)
+        p = subprocess.Popen(cmd_list, stdout=f, stderr=f, start_new_session=True, cwd=cwd)
     child_processes.append(p)
     print(f"   -> 训练进程已启动，PID: {p.pid}", flush=True)
+
+def start_log_parser_watcher(log_file_path: str, cwd: str = None, poll_interval_s: int = 15):
+    last_mtime = None
+    last_size = None
+    last_run_ts = 0.0
+
+    def _worker():
+        nonlocal last_mtime, last_size, last_run_ts
+        while True:
+            try:
+                if not os.path.exists(log_file_path):
+                    time.sleep(poll_interval_s)
+                    continue
+                st = os.stat(log_file_path)
+                mtime = float(st.st_mtime)
+                size = int(st.st_size)
+                changed = (last_mtime is None) or (mtime != last_mtime) or (size != last_size)
+                last_mtime, last_size = mtime, size
+                if changed:
+                    now_ts = time.time()
+                    if now_ts - last_run_ts >= max(5, poll_interval_s):
+                        last_run_ts = now_ts
+                        try:
+                            r = subprocess.run(
+                                [sys.executable, "log_parser.py", log_file_path],
+                                cwd=cwd,
+                                stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE,
+                                check=False,
+                                text=True,
+                                encoding='utf-8',
+                                errors='ignore'
+                            )
+                            if r.returncode != 0:
+                                print(f"🔴 log_parser 执行失败(返回码={r.returncode})，日志: {log_file_path}", flush=True)
+                                if r.stdout:
+                                    print(r.stdout[-2000:], flush=True)
+                                if r.stderr:
+                                    print(r.stderr[-2000:], flush=True)
+                        except Exception:
+                            pass
+                time.sleep(poll_interval_s)
+            except Exception:
+                time.sleep(poll_interval_s)
+
+    t = threading.Thread(target=_worker, daemon=True)
+    t.start()
 
 def monitor_and_launch(model_run_dir, main_dir_name, folder_name, timeout_hours=24):
     """
@@ -79,6 +127,17 @@ def monitor_and_launch(model_run_dir, main_dir_name, folder_name, timeout_hours=
     timeout_seconds = timeout_hours * 3600
 
     print("🕒 监控循环已启动，将为每个新模型自动触发评估与调试...", flush=True)
+
+    def launch_detached_python(cmd_list, log_path, cwd=None):
+        try:
+            os.makedirs(os.path.dirname(log_path), exist_ok=True)
+            with open(log_path, 'wb') as f:
+                p = subprocess.Popen(cmd_list, stdout=f, stderr=f, start_new_session=True, cwd=cwd)
+            child_processes.append(p)
+            return p
+        except Exception as e:
+            print(f"🔴 启动后台任务失败: {e}", flush=True)
+            return None
 
     while time.time() - start_time < timeout_seconds:
         try:
@@ -121,22 +180,22 @@ def monitor_and_launch(model_run_dir, main_dir_name, folder_name, timeout_hours=
                 
                 # 将日志文件和输出都指向这个新目录
                 eval_log = os.path.join(marl_eval_subdir, f'ev_{base_name}.log')
-                eval_cmd = (
-                    f"nohup python evaluation.py "
-                    f'--model_path "{model_path}" '
-                    f"--generalization --gantt "
-                    f'--run_name "{folder_name}" '
-                    f'--output_dir "{marl_eval_subdir}" > "{eval_log}" 2>&1 &'
-                )
-                run_detached_command(eval_cmd)
+                eval_cmd_list = [
+                    sys.executable, "-u", "evaluation.py",
+                    "--model_path", model_path,
+                    "--generalization", "--gantt",
+                    "--run_name", folder_name,
+                    "--output_dir", marl_eval_subdir,
+                ]
+                launch_detached_python(eval_cmd_list, eval_log, cwd=main_dir_name)
 
                 # 启动 debug_marl_behavior.py (保持不变)
                 debug_log = os.path.join(debug_dir, f'db_{base_name}.log')
-                debug_cmd = (
-                    f"nohup python debug_marl_behavior.py "
-                    f'--model_path "{model_path}" > "{debug_log}" 2>&1 &'
-                )
-                run_detached_command(debug_cmd)
+                debug_cmd_list = [
+                    sys.executable, "-u", "debug_marl_behavior.py",
+                    "--model_path", model_path,
+                ]
+                launch_detached_python(debug_cmd_list, debug_log, cwd=main_dir_name)
                 
                 processed_models.add(model_file)
                 print(f"✅ 已为模型 '{model_file}' 触发评估和调试任务。", flush=True)
@@ -175,13 +234,15 @@ def launch_background_process(args):
         'mappo/sampling_utils.py',
         'debug_marl_behavior.py',
         'evaluation.py',
-        #'plotting.py'
+        'plotting.py',
+        'log_parser.py'
     ]
     print(f"📋 正在复制 {len(files_to_copy)} 个关键脚本到 '{main_dir_name}'...", flush=True)
     for file_path in files_to_copy:
         try:
-            # 将文件直接复制到主目录，不再创建子文件夹
-            shutil.copy(file_path, main_dir_name)
+            dst_path = os.path.join(main_dir_name, file_path)
+            os.makedirs(os.path.dirname(dst_path), exist_ok=True)
+            shutil.copy(file_path, dst_path)
         except Exception as e:
             print(f"   -> 🔴 复制文件 '{file_path}' 时出错: {e}", flush=True)
 
@@ -236,6 +297,13 @@ def run_background_tasks(args):
 
     print(f"✨ 自动化工作进程已启动，PID: {os.getpid()}", flush=True)
     print(f"📂 主运行目录: {main_dir_name}", flush=True)
+
+    try:
+        os.chdir(main_dir_name)
+    except Exception:
+        pass
+
+    start_log_parser_watcher(os.path.join(main_dir_name, "auto_train_monitor.log"), cwd=main_dir_name)
     
     # 定义模型和日志的输出目录
     models_dir = os.path.join(main_dir_name, "models")
@@ -250,12 +318,13 @@ def run_background_tasks(args):
     now = datetime.datetime.now()
     train_log_name = f"{now.strftime('%m%d_%H%M%S')}_{safe_folder_name}.log"
     train_log = os.path.join(main_dir_name, train_log_name)
+    start_log_parser_watcher(train_log, cwd=main_dir_name)
     train_cmd_list = [
-        "python", "-u", "mappo/ppo_marl_train.py",
+        sys.executable, "-u", "mappo/ppo_marl_train.py",
         "--models-dir", models_dir,
         "--logs-dir", logs_dir
     ]
-    launch_and_monitor_child(train_cmd_list, train_log)
+    launch_and_monitor_child(train_cmd_list, train_log, cwd=main_dir_name)
     
     time.sleep(10) 
 

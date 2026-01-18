@@ -14,82 +14,110 @@ def parse_log_file(log_path: str) -> List[Dict[str, Any]]:
     Returns:
         一个包含每回合数据的字典列表。
     """
-    with open(log_path, 'r', encoding='utf-8') as f:
-        log_content = f.read()
+    with open(log_path, 'r', encoding='utf-8', errors='ignore') as f:
+        lines = f.readlines()
 
-    # 正则表达式，用于匹配每个回合的数据块
-    episode_block_regex = re.compile(
-        r"🔂 回合\s+(\d+)/\d+.*?\| 奖励: (.*?)\s*\| Actor损失: (.*?)\|.*?本轮用时: ([\d.]+)s.*?\n"
-        r"📊 KPI - 总完工时间: ([\d.]+)min\s*\|\s*设备利用率: ([\d.]+)%\s*\|\s*延期时间: ([\d.]+)min\s*\|\s*完成零件数: (\d+)/(\d+).*?\n"
-        r"🚥 回合评分: ([\d.]+)\s*\(全局最佳: ([\d.]+)\)\s*\(阶段最佳: ([\d.]+)\)(.*?)\n",
-        re.DOTALL
+    # 兼容当前 ppo_trainer 的输出格式（见 mappo/ppo_trainer.py 的 line1/line2/line3）
+    re_episode = re.compile(
+        r"(?:🔂\s*)?(?:训练回合|回合)\s*(\d+)\s*/\s*(\d+).*?平均奖励:\s*([-\d.]+).*?Actor损失:\s*([-\d.]+).*?(?:本轮用[时時]|本轮用时):\s*([\d.]+)s"
     )
-
-    # 匹配所有课程阶段切换的区块
-    stage_change_regex = re.compile(
-        r"📚 \[回合 (\d+)\] 🔄 课程学习阶段切换!\n\s+新阶段: (.*?)\n"
+    re_kpi = re.compile(
+        r"(?:📊\s*)?(?:此回合KPI评估|KPI).*?总完工时间:\s*([\d.]+)min.*?(?:设备利用率|利用率):\s*([\d.]+)%.*?(?:订单延期时间|延期时间):\s*([\d.]+)min.*?完成零件数:\s*([\d.]+)\s*/\s*(\d+)"
     )
+    re_score = re.compile(
+        r"(?:🚥\s*)?回合评分:\s*([\d.]+).*?\(全局最佳:\s*([\d.]+)\)"
+    )
+    re_stage_course = re.compile(r"课程:\s*'([^']+)'", re.UNICODE)
+    re_stage_simple = re.compile(r"阶段:\s*'([^']+)'", re.UNICODE)
+    re_eval_env = re.compile(r"评估环境:\s*\[([^\]]+)\]", re.UNICODE)
 
-    # 提取所有数据
-    episodes_data = []
-    
-    # 解析课程阶段
-    stages = {}
-    last_stage_start = 1
-    last_stage_name = "初始阶段"
-    for match in stage_change_regex.finditer(log_content):
-        start_episode = int(match.group(1))
-        stage_name = match.group(2).strip()
-        
-        if last_stage_name:
-            for i in range(last_stage_start, start_episode):
-                stages[i] = last_stage_name
-        
-        last_stage_start = start_episode
-        last_stage_name = stage_name
-        
-    # 为最后一个阶段补充信息
-    total_episodes = 0
-    try:
-        all_episode_nums = [int(e[0]) for e in episode_block_regex.findall(log_content)]
-        if all_episode_nums:
-            total_episodes = max(all_episode_nums)
-    except (ValueError, IndexError):
-        pass # 如果找不到，则保持为0
+    episodes_data: List[Dict[str, Any]] = []
+    cur: Dict[str, Any] = {}
 
-    for i in range(last_stage_start, total_episodes + 1):
-        stages[i] = last_stage_name
+    def _flush_current():
+        nonlocal cur
+        if cur and ('回合' in cur):
+            episodes_data.append(cur)
+        cur = {}
 
-    # 解析每个回合的数据
-    for match in episode_block_regex.finditer(log_content):
-        (
-            episode, reward, actor_loss, iter_time,
-            makespan, utilization, tardiness, completed_parts, target_parts,
-            score, best_global_score, best_stage_score, model_update_info
-        ) = match.groups()
+    for ln in lines:
+        line = ln.strip()
+        if not line:
+            continue
 
-        episode_num = int(episode)
-        
-        # 清理并转换数据类型
-        data_dict = {
-            '课程阶段 (Stage)': stages.get(episode_num, "未知"),
-            '回合 (Episode)': episode_num,
-            '奖励 (Reward)': float(reward.strip()),
-            'Actor损失 (Actor_Loss)': float(actor_loss.strip()),
-            '总完工时间 (Makespan_min)': float(makespan.strip()),
-            '设备利用率 (Utilization_%)': float(utilization.strip()),
-            '延期时间 (Tardiness_min)': float(tardiness.strip()),
-            '完成零件数 (Completed_Parts)': int(completed_parts.strip()),
-            '目标零件数 (Target_Parts)': int(target_parts.strip()),
-            '回合评分 (Score)': float(score.strip()),
-            '全局最佳评分 (Best_Global_Score)': float(best_global_score.strip()),
-            '阶段最佳评分 (Best_Stage_Score)': float(best_stage_score.strip()),
-            '本轮用时 (Iteration_Time_s)': float(iter_time.strip()),
-            '模型是否更新 (Model_Updated)': 1 if '✅' in model_update_info else 0
-        }
-        episodes_data.append(data_dict)
+        m = re_episode.search(line)
+        if m:
+            _flush_current()
+            ep, ep_total, reward, actor_loss, it_time = m.groups()
+            cur = {
+                '课程阶段': '未知',
+                '回合': int(ep),
+                '奖励': float(reward),
+                'Actor损失': float(actor_loss),
+                '本轮用时_s': float(it_time),
+                '总完工时间_min': None,
+                '设备利用率_%': None,
+                '订单延期时间_min': None,
+                '完成零件数': None,
+                '目标零件数': None,
+                '回合评分': None,
+                '全局最佳评分': None,
+                '阶段最佳评分': None,
+                '模型是否更新': 0,
+                '评估环境': None,
+            }
+            continue
 
-    return episodes_data
+        if cur:
+            mk = re_kpi.search(line)
+            if mk:
+                makespan, util_pct, tard, comp, target = mk.groups()
+                cur['总完工时间_min'] = float(makespan)
+                cur['设备利用率_%'] = float(util_pct)
+                cur['订单延期时间_min'] = float(tard)
+                try:
+                    cur['完成零件数'] = int(float(comp))
+                except Exception:
+                    cur['完成零件数'] = None
+                cur['目标零件数'] = int(target)
+
+                me = re_eval_env.search(line)
+                if me:
+                    cur['评估环境'] = me.group(1).strip()
+
+                st = None
+                mc = re_stage_course.search(line)
+                if mc:
+                    st = mc.group(1)
+                else:
+                    ms = re_stage_simple.search(line)
+                    if ms:
+                        st = ms.group(1)
+                if st:
+                    cur['课程阶段'] = st
+                continue
+
+            ms = re_score.search(line)
+            if ms:
+                score, best_global = ms.groups()
+                cur['回合评分'] = float(score)
+                cur['全局最佳评分'] = float(best_global)
+                # “阶段最佳”在不同模式下字段名不同，这里做一个宽松提取
+                m_stage_best = re.search(r"\((?:基础阶段最佳|泛化阶段最佳|阶段最佳):\s*([\d.]+)\)", line)
+                if m_stage_best:
+                    cur['阶段最佳评分'] = float(m_stage_best.group(1))
+                cur['模型是否更新'] = 1 if ('✅' in line) else 0
+                continue
+
+    _flush_current()
+
+    # 过滤掉明显不完整的行（例如没有任何评分且没有KPI）
+    cleaned = []
+    for d in episodes_data:
+        if d.get('总完工时间_min') is None and d.get('回合评分') is None:
+            continue
+        cleaned.append(d)
+    return cleaned
 
 def main():
     """主函数，用于解析命令行参数并执行日志解析。"""

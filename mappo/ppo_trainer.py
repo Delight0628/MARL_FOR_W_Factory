@@ -302,6 +302,19 @@ class SimplePPOTrainer:
         else:
             criteria = self.training_flow_config["foundation_phase"]["graduation_criteria"]
 
+        def _base_parts_count() -> int:
+            try:
+                return int(sum(int(o.get('quantity', 0)) for o in (BASE_ORDERS or [])))
+            except Exception:
+                return 0
+
+        def _scale_threshold_sqrt(base_threshold: float, n_target_parts: int) -> float:
+            """sqrt缩放：thr * sqrt(N / N_base)。用于把绝对分钟阈值与任务规模对齐。"""
+            bt = float(base_threshold)
+            n = float(max(1, int(n_target_parts)))
+            n0 = float(max(1, _base_parts_count()))
+            return float(bt * np.sqrt(n / n0))
+
         target_score = criteria["target_score"]
         min_completion_rate = criteria.get("min_completion_rate", 100.0)
         target_consistency = criteria["target_consistency"]
@@ -349,7 +362,8 @@ class SimplePPOTrainer:
         
         target_score = criteria["target_score"]
         stability_goal = criteria["target_consistency"]
-        tardiness_threshold = criteria["tardiness_threshold"]
+        tardiness_threshold_base = float(criteria.get("tardiness_threshold", float('inf')))
+        tardiness_threshold = self._scale_threshold_sqrt(tardiness_threshold_base, int(total_parts_target))
         min_completion_rate = criteria["min_completion_rate"]
         current_tardiness = kpi_results.get('mean_tardiness', float('inf'))
 
@@ -361,7 +375,11 @@ class SimplePPOTrainer:
 
         if all(conditions_met.values()):
             self.foundation_achievement_count += 1
-            print(f"🎯 基础训练达标: 完成率 {completion_rate_kpi:.1f}%, 分数 {current_score:.3f}, 延期 {current_tardiness:.1f}min (连续第{self.foundation_achievement_count}/{stability_goal}次)")
+            print(
+                f"🎯 基础训练达标: 完成率 {completion_rate_kpi:.1f}%, 分数 {current_score:.3f}, "
+                f"延期 {current_tardiness:.1f}min (阈值 {tardiness_threshold_base:.1f}→{tardiness_threshold:.1f}, 目标零件 {int(total_parts_target)}) "
+                f"(连续第{self.foundation_achievement_count}/{stability_goal}次)"
+            )
         else:
             if self.foundation_achievement_count > 0:
                 reasons = [k for k, v in conditions_met.items() if not v]
@@ -372,6 +390,19 @@ class SimplePPOTrainer:
             print(f"🏆 基础训练完成！连续{stability_goal}次达到所有标准，准备进入泛化强化阶段。")
             return True
         return False
+
+    def _get_base_parts_count(self) -> int:
+        try:
+            return int(sum(int(o.get('quantity', 0)) for o in (BASE_ORDERS or [])))
+        except Exception:
+            return 0
+
+    def _scale_threshold_sqrt(self, base_threshold: float, n_target_parts: int) -> float:
+        """sqrt缩放：thr * sqrt(N / N_base)。用于把绝对分钟阈值与任务规模对齐。"""
+        bt = float(base_threshold)
+        n = float(max(1, int(n_target_parts)))
+        n0 = float(max(1, self._get_base_parts_count()))
+        return float(bt * np.sqrt(n / n0))
     
     def check_generalization_training_completion(self, current_score: float, completion_rate: float) -> bool:
         """检查泛化训练是否已达到最终训练完成的条件，由配置文件驱动"""

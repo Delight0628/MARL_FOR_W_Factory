@@ -49,6 +49,8 @@ TRAINING_FLOW_CONFIG = {
             "max_quantity_per_order": 12,
             "due_date_range": (200.0, 700.0),
             "priority_weights": [0.3, 0.5, 0.2],
+            "arrival_time_dist": "uniform",
+            "arrival_time_range": (0.0, 180.0),
         },
         
         # 多任务混合训练配置（防止灾难性遗忘）
@@ -99,6 +101,8 @@ TRAINING_FLOW_CONFIG = {
             "max_quantity_per_order": 12,
             "due_date_range": (200.0, 700.0),
             "priority_weights": [0.3, 0.5, 0.2],
+            "arrival_time_dist": "uniform",
+            "arrival_time_range": (0.0, 180.0),
         },
         
         # 多任务混合训练配置（防止灾难性遗忘）
@@ -215,14 +219,14 @@ SYSTEM_PRODUCT_TYPES = tuple(sorted(PRODUCT_ROUTES.keys()))
 
 # 基础订单模板
 BASE_ORDERS = [
-    {"product": "黑胡桃木餐桌", "quantity": 6, "priority": 1, "due_date": 300},  # 数量6个，优先级1，交期时间300分钟
-    {"product": "橡木书柜", "quantity": 6, "priority": 2, "due_date": 400},      
-    {"product": "松木床架", "quantity": 6, "priority": 1, "due_date": 350},      
-    {"product": "樱桃木椅子", "quantity": 4, "priority": 3, "due_date": 280},    
-    {"product": "黑胡桃木餐桌", "quantity": 4, "priority": 2, "due_date": 450},  
-    {"product": "橡木书柜", "quantity": 6, "priority": 1, "due_date": 320},      
-    {"product": "松木床架", "quantity": 4, "priority": 2, "due_date": 380},      
-    {"product": "樱桃木椅子", "quantity": 6, "priority": 1, "due_date": 250},    
+    {"product": "黑胡桃木餐桌", "quantity": 6, "priority": 1, "due_date": 300, "arrival_time": 0},  # 数量6个，优先级1，交期时间300分钟
+    {"product": "橡木书柜", "quantity": 6, "priority": 2, "due_date": 400, "arrival_time": 80},      
+    {"product": "松木床架", "quantity": 6, "priority": 1, "due_date": 350, "arrival_time": 50},      
+    {"product": "樱桃木椅子", "quantity": 4, "priority": 3, "due_date": 280, "arrival_time": 60},    
+    {"product": "黑胡桃木餐桌", "quantity": 4, "priority": 2, "due_date": 450, "arrival_time": 20},  
+    {"product": "橡木书柜", "quantity": 6, "priority": 1, "due_date": 320, "arrival_time": 10},      
+    {"product": "松木床架", "quantity": 4, "priority": 2, "due_date": 380, "arrival_time": 90},      
+    {"product": "樱桃木椅子", "quantity": 6, "priority": 1, "due_date": 250, "arrival_time": 0}    
 ]
 
 # 队列容量配置
@@ -472,12 +476,44 @@ def generate_random_orders() -> List[Dict[str, Any]]:
     
     config = TRAINING_FLOW_CONFIG["generalization_phase"]["random_orders_config"]
     product_types = list(PRODUCT_ROUTES.keys())
+
+    def _sample_arrival_time_minutes(cfg: Dict[str, Any]) -> float:
+        try:
+            dist = str(cfg.get('arrival_time_dist', 'uniform')).lower()
+        except Exception:
+            dist = 'uniform'
+        try:
+            a_min, a_max = cfg.get('arrival_time_range', (0.0, 0.0))
+            a_min = float(a_min)
+            a_max = float(a_max)
+        except Exception:
+            a_min, a_max = 0.0, 0.0
+        if a_max < a_min:
+            a_min, a_max = a_max, a_min
+
+        if dist == 'exponential':
+            mean = float(cfg.get('arrival_time_mean', max(1e-6, (a_min + a_max) * 0.5)))
+            x = float(np.random.exponential(mean))
+            if a_max > 0:
+                x = float(np.clip(x, a_min, a_max))
+            else:
+                x = float(max(a_min, x))
+            return x
+
+        if dist == 'triangular':
+            mode = float(cfg.get('arrival_time_mode', (a_min + a_max) * 0.5))
+            x = float(np.random.triangular(a_min, mode, a_max))
+            return float(np.clip(x, a_min, a_max))
+
+        x = float(np.random.uniform(a_min, a_max))
+        return float(np.clip(x, a_min, a_max))
     
     # 随机订单数量
     num_orders = random.randint(config["min_orders"], config["max_orders"])
     
     generated_orders = []
     for i in range(num_orders):
+
         # 随机产品类型
         product = random.choice(product_types)
         
@@ -492,12 +528,15 @@ def generate_random_orders() -> List[Dict[str, Any]]:
         
         # 随机交期
         due_date = random.uniform(*config["due_date_range"])
+
+        arrival_time = float(_sample_arrival_time_minutes(config))
         
         generated_orders.append({
             "product": product,
             "quantity": quantity,
             "priority": priority,
-            "due_date": due_date
+            "due_date": due_date,
+            "arrival_time": arrival_time,
         })
     
     return generated_orders

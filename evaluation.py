@@ -139,7 +139,7 @@ def load_actor_model_robust(model_path: str):
                     for item in mismatches:
                         print(f"   - {item}", flush=True)
                     print("📌 请确保训练与评估环境/网络配置完全一致，或重新训练生成匹配的模型。", flush=True)
-                    raise RuntimeError("模型元数据与当前环境不一致")
+                    print("⚠️ 将继续尝试加载模型（推理侧会做观测维度对齐）；若仍失败，请重新训练生成匹配维度的模型。", flush=True)
             except Exception as _cmp_e:
                 # 若对比过程自身出错，也打印出来便于定位
                 print(f"⚠️ 维度对比过程异常: {_cmp_e}", flush=True)
@@ -356,9 +356,35 @@ def evaluate_marl_model(model_path: str, config: dict = STATIC_EVAL_CONFIG, gene
     # 10201530 修复：MARL策略适配MultiDiscrete，按“共享分布×并行设备数”输出动作数组
     def marl_policy(obs, env, info, step_count):
         actions = {}
+
+        def _align_obs_dim(vec: np.ndarray, target_dim: int) -> np.ndarray:
+            arr = np.asarray(vec, dtype=np.float32).reshape(-1)
+            td = int(target_dim)
+            if td <= 0:
+                return arr
+            if arr.shape[0] == td:
+                return arr
+            if arr.shape[0] > td:
+                return arr[:td]
+            out = np.zeros((td,), dtype=np.float32)
+            out[:arr.shape[0]] = arr
+            return out
+
+        model_in_dim = None
+        try:
+            ish = getattr(actor_model, 'input_shape', None)
+            if isinstance(ish, (list, tuple)) and len(ish) > 0:
+                model_in_dim = int(ish[-1]) if ish[-1] is not None else None
+        except Exception:
+            model_in_dim = None
+
         for agent in env.agents:
             if agent in obs:
-                state = tf.expand_dims(obs[agent], 0)
+                if model_in_dim is not None:
+                    aligned = _align_obs_dim(obs[agent], model_in_dim)
+                else:
+                    aligned = np.asarray(obs[agent], dtype=np.float32)
+                state = tf.expand_dims(aligned, 0)
                 # 10-25-14-30 兼容多头/单头输出，推理模式
                 model_out = actor_model(state, training=False)
                 if isinstance(model_out, (list, tuple)):

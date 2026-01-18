@@ -197,6 +197,19 @@ def run_simulation_worker(network_weights: Dict[str, List[np.ndarray]],
         total_episode_reward = 0
         terminated_by_graduation = False
 
+        def _align_state_dim(vec: Any, target_dim: int) -> np.ndarray:
+            arr = np.asarray(vec, dtype=np.float32).reshape(-1)
+            td = int(target_dim)
+            if td <= 0:
+                return arr
+            if arr.shape[0] == td:
+                return arr
+            if arr.shape[0] > td:
+                return arr[:td]
+            out = np.zeros((td,), dtype=np.float32)
+            out[:arr.shape[0]] = arr
+            return out
+
         for step in range(num_steps):
             actions = {}
             values = {}
@@ -206,7 +219,8 @@ def run_simulation_worker(network_weights: Dict[str, List[np.ndarray]],
             active_agents_in_step = list(env.agents)
             for agent in active_agents_in_step:
                 if agent in observations:
-                    state = tf.expand_dims(observations[agent], 0)
+                    obs_aligned = _align_state_dim(observations[agent], state_dim)
+                    state = tf.expand_dims(obs_aligned, 0)
                     # 使用智能体条件化的全局状态
                     conditioned_global = _condition_global_state(infos[agent]['global_state'], agent)
                     global_state = tf.expand_dims(conditioned_global, 0)
@@ -236,7 +250,7 @@ def run_simulation_worker(network_weights: Dict[str, List[np.ndarray]],
             for agent in active_agents_in_step:
                 if agent in observations:
                     buffers[agent].store(
-                        observations[agent], 
+                        _align_state_dim(observations[agent], state_dim), 
                         _condition_global_state(infos[agent]['global_state'], agent), 
                         actions[agent], 
                         rewards[agent], 
