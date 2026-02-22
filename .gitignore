@@ -46,3 +46,4 @@
 .streamlit/secrets.toml
 
 !outline.md
+!mermaid.txt

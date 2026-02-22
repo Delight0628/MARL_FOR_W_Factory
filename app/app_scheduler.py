@@ -2376,59 +2376,59 @@ def main():
         )
         
         # 12-02 新增：动态环境配置
-        st.subheader("动态环境配置")
+        st.subheader(get_text("dynamic_env_config", lang))
         col_d1, col_d2 = st.columns(2)
         with col_d1:
             enable_failure = st.checkbox(
-                "启用设备故障模拟", 
+                get_text("enable_failure_sim", lang), 
                 value=st.session_state.get('enable_failure', False), 
-                help="模拟设备随机停机故障",
+                help=get_text("enable_failure_sim_help", lang),
                 key="enable_failure"
             )
         with col_d2:
             enable_emergency = st.checkbox(
-                "启用紧急插单模拟", 
+                get_text("enable_emergency_sim", lang), 
                 value=st.session_state.get('enable_emergency', False), 
-                help="模拟运行过程中随机插入紧急订单",
+                help=get_text("enable_emergency_sim_help", lang),
                 key="enable_emergency"
             )
 
         # 设备故障高级参数配置
         failure_config = {}
         if enable_failure:
-            with st.expander("⚙️ 设备故障模拟参数配置", expanded=False):
-                st.markdown("**调整设备故障的强度和频率**")
+            with st.expander(get_text("failure_params_expander", lang), expanded=False):
+                st.markdown(get_text("failure_params_desc", lang))
                 
                 fcol1, fcol2, fcol3 = st.columns(3)
                 with fcol1:
                     mtbf_hours = st.number_input(
-                        "平均无故障时间 MTBF (小时)",
+                        get_text("mtbf_hours", lang),
                         min_value=10.0,
                         max_value=60.0,
                         value=st.session_state.get('mtbf_hours', 24.0),
                         step=2.0,
-                        help="设备正常运行的平均时间间隔，越大故障越少",
+                        help=get_text("mtbf_hours_help", lang),
                         key="mtbf_hours"
                     )
                 with fcol2:
                     mttr_minutes = st.number_input(
-                        "平均修复时间 MTTR (分钟)",
+                        get_text("mttr_minutes", lang),
                         min_value=10.0,
                         max_value=120.0,
                         value=st.session_state.get('mttr_minutes', 30.0),
                         step=5.0,
-                        help="设备故障后平均修复时间，越大影响越严重",
+                        help=get_text("mttr_minutes_help", lang),
                         key="mttr_minutes"
                     )
                 with fcol3:
                     failure_prob = st.number_input(
-                        "故障发生概率",
+                        get_text("failure_probability", lang),
                         min_value=0.01,
                         max_value=0.10,
                         value=st.session_state.get('failure_prob', 0.02),
                         step=0.01,
                         format="%.2f",
-                        help="每个时间窗口内发生故障的概率",
+                        help=get_text("failure_probability_help", lang),
                         key="failure_prob"
                     )
                 
@@ -2443,38 +2443,38 @@ def main():
         # 紧急插单高级参数配置
         emergency_config = {}
         if enable_emergency:
-            with st.expander("📦 紧急插单模拟参数配置", expanded=False):
-                st.markdown("**调整紧急订单的频率和紧急程度**")
+            with st.expander(get_text("emergency_params_expander", lang), expanded=False):
+                st.markdown(get_text("emergency_params_desc", lang))
                 
                 ecol1, ecol2, ecol3 = st.columns(3)
                 with ecol1:
                     arrival_rate = st.number_input(
-                        "到达率 (单/小时)",
+                        get_text("emergency_arrival_rate", lang),
                         min_value=0.05,
                         max_value=0.5,
                         value=st.session_state.get('arrival_rate', 0.1),
                         step=0.05,
-                        help="每小时平均到达的紧急订单数量",
+                        help=get_text("emergency_arrival_rate_help", lang),
                         key="arrival_rate"
                     )
                 with ecol2:
                     priority_boost = st.number_input(
-                        "优先级提升",
+                        get_text("emergency_priority_boost", lang),
                         min_value=0,
                         max_value=3,
                         value=st.session_state.get('priority_boost', 0),
                         step=1,
-                        help="紧急订单的优先级额外提升值 (0-3)",
+                        help=get_text("emergency_priority_boost_help", lang),
                         key="priority_boost"
                     )
                 with ecol3:
                     due_reduction = st.slider(
-                        "交期缩短比例",
+                        get_text("emergency_due_date_reduction", lang),
                         min_value=0.4,
                         max_value=0.85,
                         value=st.session_state.get('due_reduction', 0.7),
                         step=0.05,
-                        help="紧急订单的交期相对正常订单缩短的比例，越小越紧急",
+                        help=get_text("emergency_due_date_reduction_help", lang),
                         key="due_reduction"
                     )
                 
@@ -2505,12 +2505,21 @@ def main():
                 orders = st.session_state['orders']
                 custom_products = st.session_state.get('custom_products', {})
                 
+                # 验证动态事件配置的完整性
+                if enable_failure and (not failure_config or len(failure_config) == 0):
+                    st.error("设备故障已启用但配置不完整，请检查配置参数")
+                    st.stop()
+                
+                if enable_emergency and (not emergency_config or len(emergency_config) == 0):
+                    st.error("紧急插单已启用但配置不完整，请检查配置参数")
+                    st.stop()
+                
                 # 创建进度条和状态文本
                 progress_bar = st.progress(0)
                 status_text = st.empty()
                 
                 # 运行MARL模型
-                status_text.text("🧠 运行MARL模型...")
+                status_text.text(get_text("running_marl", lang))
                 final_stats, gantt_history, score, total_reward = run_scheduling(
                     actor_model, orders, custom_products, 
                     max_steps=int(max_steps_single),
@@ -2518,8 +2527,8 @@ def main():
                     status_text=status_text,
                     enable_failure=enable_failure,
                     enable_emergency=enable_emergency,
-                    failure_config=failure_config,
-                    emergency_config=emergency_config,
+                    failure_config=failure_config or {},
+                    emergency_config=emergency_config or {},
                     seed=int(base_seed_single)
                 )
                 
@@ -2536,7 +2545,7 @@ def main():
                     heuristic_results = {}
                     
                     for heuristic in ['FIFO', 'EDD', 'SPT', 'ATC']:
-                        status_text.text(f"⚙️ 运行 {heuristic} 启发式算法...")
+                        status_text.text(get_text("running_heuristic", lang, heuristic))
                         progress_bar.progress(0)
                         
                         h_stats, h_history, h_score = run_heuristic_scheduling(
@@ -2825,7 +2834,7 @@ def main():
                 enabled_emergency = bool(st.session_state.get('enable_emergency', False))
                 ablation_ready = bool(enabled_failure or enabled_emergency)
                 if not ablation_ready:
-                    st.warning("请至少勾选一个动态事件（设备故障/紧急插单）后才能运行消融测试")
+                    st.warning(get_text("warn_select_at_least_one_dynamic_event", lang))
 
                 if st.button(get_text("start_dynamic_event_ablation", lang), type="primary", use_container_width=True, disabled=(not ablation_ready)):
                     try:
@@ -2835,9 +2844,9 @@ def main():
                         else:
                             seeds_used = [int(ablation_base_seed)]
 
-                        # 读取当前动态事件配置作为“启用组”配置
-                        enabled_failure_cfg = st.session_state.get('failure_config')
-                        enabled_emergency_cfg = st.session_state.get('emergency_config')
+                        # 读取当前动态事件配置作为"启用组"配置
+                        enabled_failure_cfg = st.session_state.get('failure_config', {})
+                        enabled_emergency_cfg = st.session_state.get('emergency_config', {})
 
                         model_path = ablation_model_options[selected_ablation_model]
                         actor_model, message = load_model(model_path)
@@ -3389,6 +3398,8 @@ def main():
                                         max_steps=max_steps_comparison,
                                         enable_failure=st.session_state.get('enable_failure', False),
                                         enable_emergency=st.session_state.get('enable_emergency', False),
+                                        failure_config=st.session_state.get('failure_config', {}),
+                                        emergency_config=st.session_state.get('emergency_config', {}),
                                         progress_bar=None,  # 不显示子进度条
                                         status_text=None,
                                         seed=current_seed,
@@ -3437,8 +3448,8 @@ def main():
                                             status_text=None,
                                             enable_failure=st.session_state.get('enable_failure', False),
                                             enable_emergency=st.session_state.get('enable_emergency', False),
-                                            failure_config=st.session_state.get('failure_config'),
-                                            emergency_config=st.session_state.get('emergency_config'),
+                                            failure_config=st.session_state.get('failure_config', {}),
+                                            emergency_config=st.session_state.get('emergency_config', {}),
                                             seed=current_seed,
                                             progress_callback=_h_step_cb,
                                             progress_callback_interval=10

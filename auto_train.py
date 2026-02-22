@@ -68,6 +68,17 @@ def start_log_parser_watcher(log_file_path: str, cwd: str = None, poll_interval_
     last_size = None
     last_run_ts = 0.0
 
+    base_dir = cwd or os.getcwd()
+    try:
+        base_dir = os.path.abspath(base_dir)
+    except (OSError, TypeError) as e:
+        print(f"Warning: Failed to resolve absolute path for base_dir: {e}", flush=True)
+    script_path = os.path.join(base_dir, "log_parser.py")
+    try:
+        script_path = os.path.abspath(script_path)
+    except (OSError, TypeError) as e:
+        print(f"Warning: Failed to resolve absolute path for script_path: {e}", flush=True)
+
     def _worker():
         nonlocal last_mtime, last_size, last_run_ts
         while True:
@@ -85,9 +96,14 @@ def start_log_parser_watcher(log_file_path: str, cwd: str = None, poll_interval_
                     if now_ts - last_run_ts >= max(5, poll_interval_s):
                         last_run_ts = now_ts
                         try:
+                            abs_log_file_path = log_file_path
+                            try:
+                                abs_log_file_path = os.path.abspath(abs_log_file_path)
+                            except (OSError, TypeError) as e:
+                                print(f"Warning: Failed to resolve absolute path for log file: {e}", flush=True)
                             r = subprocess.run(
-                                [sys.executable, "log_parser.py", log_file_path],
-                                cwd=cwd,
+                                [sys.executable, script_path, abs_log_file_path],
+                                cwd=base_dir,
                                 stdout=subprocess.PIPE,
                                 stderr=subprocess.PIPE,
                                 check=False,
@@ -96,7 +112,7 @@ def start_log_parser_watcher(log_file_path: str, cwd: str = None, poll_interval_
                                 errors='ignore'
                             )
                             if r.returncode != 0:
-                                print(f"🔴 log_parser 执行失败(返回码={r.returncode})，日志: {log_file_path}", flush=True)
+                                print(f"🔴 log_parser 执行失败(返回码={r.returncode})，日志: {abs_log_file_path}", flush=True)
                                 if r.stdout:
                                     print(r.stdout[-2000:], flush=True)
                                 if r.stderr:
@@ -110,15 +126,15 @@ def start_log_parser_watcher(log_file_path: str, cwd: str = None, poll_interval_
     t = threading.Thread(target=_worker, daemon=True)
     t.start()
 
-def monitor_and_launch(model_run_dir, main_dir_name, folder_name, timeout_hours=24):
+def monitor_and_launch(model_run_dir, main_dir_abs, folder_name, timeout_hours=24):
     """
     监控模型目录，并为每个新生成的模型启动评估和调试脚本。
     """
     print(f"👀 开始监控目录: {model_run_dir}", flush=True)
 
     # 创建用于存放日志和结果的子目录
-    debug_dir = os.path.join(main_dir_name, "debug_marl_behavior")
-    eval_dir = os.path.join(main_dir_name, "evaluation")
+    debug_dir = os.path.join(main_dir_abs, "debug_marl_behavior")
+    eval_dir = os.path.join(main_dir_abs, "evaluation")
     os.makedirs(debug_dir, exist_ok=True)
     os.makedirs(eval_dir, exist_ok=True)
     
@@ -173,21 +189,17 @@ def monitor_and_launch(model_run_dir, main_dir_name, folder_name, timeout_hours=
                 
                 model_path = all_models[model_file]  # 🔧 使用完整路径
                 base_name = model_file.replace('.keras', '')
-
-                # 为当前模型创建一个专属的评估子目录
-                marl_eval_subdir = os.path.join(eval_dir, f'ev_{base_name}')
-                os.makedirs(marl_eval_subdir, exist_ok=True)
                 
                 # 将日志文件和输出都指向这个新目录
-                eval_log = os.path.join(marl_eval_subdir, f'ev_{base_name}.log')
+                eval_log = os.path.join(eval_dir, f'ev_{base_name}.log')
                 eval_cmd_list = [
                     sys.executable, "-u", "evaluation.py",
                     "--model_path", model_path,
                     "--generalization", "--gantt",
                     "--run_name", folder_name,
-                    "--output_dir", marl_eval_subdir,
+                    "--output_dir", eval_dir,
                 ]
-                launch_detached_python(eval_cmd_list, eval_log, cwd=main_dir_name)
+                launch_detached_python(eval_cmd_list, eval_log, cwd=main_dir_abs)
 
                 # 启动 debug_marl_behavior.py (保持不变)
                 debug_log = os.path.join(debug_dir, f'db_{base_name}.log')
@@ -195,7 +207,7 @@ def monitor_and_launch(model_run_dir, main_dir_name, folder_name, timeout_hours=
                     sys.executable, "-u", "debug_marl_behavior.py",
                     "--model_path", model_path,
                 ]
-                launch_detached_python(debug_cmd_list, debug_log, cwd=main_dir_name)
+                launch_detached_python(debug_cmd_list, debug_log, cwd=main_dir_abs)
                 
                 processed_models.add(model_file)
                 print(f"✅ 已为模型 '{model_file}' 触发评估和调试任务。", flush=True)
@@ -295,19 +307,25 @@ def run_background_tasks(args):
     folder_name = args.folder_name
     safe_folder_name = folder_name.replace(" ", "_").replace("/", "-")
 
+    main_dir_abs = main_dir_name
+    try:
+        main_dir_abs = os.path.abspath(main_dir_abs)
+    except (OSError, TypeError) as e:
+        print(f"Warning: Failed to resolve absolute path for main directory: {e}", flush=True)
+
     print(f"✨ 自动化工作进程已启动，PID: {os.getpid()}", flush=True)
     print(f"📂 主运行目录: {main_dir_name}", flush=True)
 
     try:
-        os.chdir(main_dir_name)
-    except Exception:
-        pass
+        os.chdir(main_dir_abs)
+    except OSError as e:
+        print(f"Warning: Failed to change directory to {main_dir_abs}: {e}", flush=True)
 
-    start_log_parser_watcher(os.path.join(main_dir_name, "auto_train_monitor.log"), cwd=main_dir_name)
+    start_log_parser_watcher(os.path.join(main_dir_abs, "auto_train_monitor.log"), cwd=main_dir_abs)
     
     # 定义模型和日志的输出目录
-    models_dir = os.path.join(main_dir_name, "models")
-    logs_dir = os.path.join(main_dir_name, "logs")
+    models_dir = os.path.join(main_dir_abs, "models")
+    logs_dir = os.path.join(main_dir_abs, "logs")
     os.makedirs(models_dir, exist_ok=True)
     os.makedirs(logs_dir, exist_ok=True)
     
@@ -317,14 +335,14 @@ def run_background_tasks(args):
     # 启动训练 (使用包含时间戳和实验名的详细日志)
     now = datetime.datetime.now()
     train_log_name = f"{now.strftime('%m%d_%H%M%S')}_{safe_folder_name}.log"
-    train_log = os.path.join(main_dir_name, train_log_name)
-    start_log_parser_watcher(train_log, cwd=main_dir_name)
+    train_log = os.path.join(main_dir_abs, train_log_name)
+    start_log_parser_watcher(train_log, cwd=main_dir_abs)
     train_cmd_list = [
         sys.executable, "-u", "mappo/ppo_marl_train.py",
         "--models-dir", models_dir,
         "--logs-dir", logs_dir
     ]
-    launch_and_monitor_child(train_cmd_list, train_log, cwd=main_dir_name)
+    launch_and_monitor_child(train_cmd_list, train_log, cwd=main_dir_abs)
     
     time.sleep(10) 
 
@@ -333,7 +351,7 @@ def run_background_tasks(args):
 
     if model_run_dir:
         # 监控目录并启动其他脚本
-        monitor_and_launch(model_run_dir, main_dir_name, folder_name)
+        monitor_and_launch(model_run_dir, main_dir_abs, folder_name)
     else:
         print("❌ 未能找到训练输出目录。正在中止监控。", flush=True)
         print(f"   请检查训练日志以获取错误信息: {train_log}", flush=True)

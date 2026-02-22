@@ -140,6 +140,129 @@ TEXTS = {
         "zh-TW": "保存失敗：{}",
         "en": "Save failed: {}"
     },
+
+    "dynamic_env_config": {
+        "zh-CN": "动态环境配置",
+        "zh-TW": "動態環境配置",
+        "en": "Dynamic Environment Configuration"
+    },
+    "enable_failure_sim": {
+        "zh-CN": "启用设备故障模拟",
+        "zh-TW": "啟用設備故障模擬",
+        "en": "Enable equipment failure simulation"
+    },
+    "enable_failure_sim_help": {
+        "zh-CN": "模拟设备随机停机故障",
+        "zh-TW": "模擬設備隨機停機故障",
+        "en": "Simulate random equipment downtime failures"
+    },
+    "enable_emergency_sim": {
+        "zh-CN": "启用紧急插单模拟",
+        "zh-TW": "啟用緊急插單模擬",
+        "en": "Enable emergency order insertion simulation"
+    },
+    "enable_emergency_sim_help": {
+        "zh-CN": "模拟运行过程中随机插入紧急订单",
+        "zh-TW": "模擬運行過程中隨機插入緊急訂單",
+        "en": "Simulate randomly inserting emergency orders during execution"
+    },
+    "failure_params_expander": {
+        "zh-CN": "⚙️ 设备故障模拟参数配置",
+        "zh-TW": "⚙️ 設備故障模擬參數配置",
+        "en": "⚙️ Equipment Failure Parameters"
+    },
+    "failure_params_desc": {
+        "zh-CN": "**调整设备故障的强度和频率**",
+        "zh-TW": "**調整設備故障的強度和頻率**",
+        "en": "**Adjust failure intensity and frequency**"
+    },
+    "mtbf_hours": {
+        "zh-CN": "平均无故障时间 MTBF (小时)",
+        "zh-TW": "平均無故障時間 MTBF (小時)",
+        "en": "Mean time between failures (MTBF, hours)"
+    },
+    "mtbf_hours_help": {
+        "zh-CN": "设备正常运行的平均时间间隔，越大故障越少",
+        "zh-TW": "設備正常運行的平均時間間隔，越大故障越少",
+        "en": "Average operating time between failures; larger means fewer failures"
+    },
+    "mttr_minutes": {
+        "zh-CN": "平均修复时间 MTTR (分钟)",
+        "zh-TW": "平均修復時間 MTTR (分鐘)",
+        "en": "Mean time to repair (MTTR, minutes)"
+    },
+    "mttr_minutes_help": {
+        "zh-CN": "设备故障后平均修复时间，越大影响越严重",
+        "zh-TW": "設備故障後平均修復時間，越大影響越嚴重",
+        "en": "Average repair time after failure; larger means stronger impact"
+    },
+    "failure_probability": {
+        "zh-CN": "故障发生概率",
+        "zh-TW": "故障發生概率",
+        "en": "Failure probability"
+    },
+    "failure_probability_help": {
+        "zh-CN": "每个时间窗口内发生故障的概率",
+        "zh-TW": "每個時間窗口內發生故障的概率",
+        "en": "Probability of a failure occurring within each time window"
+    },
+    "emergency_params_expander": {
+        "zh-CN": "📦 紧急插单模拟参数配置",
+        "zh-TW": "📦 緊急插單模擬參數配置",
+        "en": "📦 Emergency Order Parameters"
+    },
+    "emergency_params_desc": {
+        "zh-CN": "**调整紧急订单的频率和紧急程度**",
+        "zh-TW": "**調整緊急訂單的頻率和緊急程度**",
+        "en": "**Adjust emergency order frequency and urgency**"
+    },
+    "warn_select_at_least_one_dynamic_event": {
+        "zh-CN": "请至少勾选一个动态事件（设备故障/紧急插单）后才能运行消融测试",
+        "zh-TW": "請至少勾選一個動態事件（設備故障/緊急插單）後才能運行消融測試",
+        "en": "Please enable at least one dynamic event (equipment failure / emergency orders) before running the ablation test"
+    },
+
+    "emergency_arrival_rate": {
+        "zh-CN": "到达率 (单/小时)",
+        "zh-TW": "到達率 (單/小時)",
+        "en": "Arrival rate (orders/hour)"
+    },
+    "emergency_arrival_rate_help": {
+        "zh-CN": "每小时平均到达的紧急订单数量",
+        "zh-TW": "每小時平均到達的緊急訂單數量",
+        "en": "Average number of emergency orders arriving per hour"
+    },
+    "emergency_priority_boost": {
+        "zh-CN": "优先级提升",
+        "zh-TW": "優先級提升",
+        "en": "Priority boost"
+    },
+    "emergency_priority_boost_help": {
+        "zh-CN": "紧急订单的优先级额外提升值 (0-3)",
+        "zh-TW": "緊急訂單的優先級額外提升值 (0-3)",
+        "en": "Additional priority boost for emergency orders (0-3)"
+    },
+    "emergency_due_date_reduction": {
+        "zh-CN": "交期缩短比例",
+        "zh-TW": "交期縮短比例",
+        "en": "Due date reduction ratio"
+    },
+    "emergency_due_date_reduction_help": {
+        "zh-CN": "紧急订单交期缩短比例（例如 0.7 表示缩短 30%）",
+        "zh-TW": "緊急訂單交期縮短比例（例如 0.7 表示縮短 30%）",
+        "en": "Due date reduction ratio for emergency orders (e.g., 0.7 means 30% shorter)"
+    },
+
+    "running_marl": {
+        "zh-CN": "🧠 运行MARL模型...",
+        "zh-TW": "🧠 運行MARL模型...",
+        "en": "🧠 Running MARL model..."
+    },
+    "running_heuristic": {
+        "zh-CN": "⚙️ 运行 {} 启发式算法...",
+        "zh-TW": "⚙️ 運行 {} 啟發式算法...",
+        "en": "⚙️ Running {} heuristic..."
+    },
     
     # 自定义产品
     "custom_products": {
