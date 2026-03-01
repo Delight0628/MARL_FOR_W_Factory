@@ -399,4 +399,3 @@ flowchart LR
   A --> A2["No Anchor"]
   A --> A3["No Mask"]
   A --> A4["No SWR"]
-  A --> A5["No Clip/No Norm (optional)"]

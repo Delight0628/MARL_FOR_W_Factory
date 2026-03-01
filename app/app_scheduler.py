@@ -984,18 +984,87 @@ def normalize_orders_list(orders):
         })
     return normalized
 
+def _load_model_meta_robust(model_path: str):
+    """尽可能从磁盘找到与模型对应的 meta.json（兼容多种目录/命名结构）。"""
+    if not model_path:
+        return None
+
+    def _try_load(path: str):
+        if path and os.path.exists(path):
+            try:
+                with open(path, 'r', encoding='utf-8') as f:
+                    return json.load(f)
+            except Exception:
+                return None
+        return None
+
+    # 规则1：按约定的 base_path_meta.json
+    base_path = model_path.replace('.keras', '').replace('.h5', '').replace('_actor', '')
+    meta = _try_load(f"{base_path}_meta.json")
+    if meta is not None:
+        return meta
+
+    # 规则2：同目录下找与文件名前缀最匹配的 *_meta.json
+    try:
+        model_dir = os.path.dirname(model_path)
+        model_file = os.path.basename(model_path)
+        model_stem = model_file
+        if model_stem.endswith('.keras'):
+            model_stem = model_stem[:-6]
+        if model_stem.endswith('.h5'):
+            model_stem = model_stem[:-3]
+        if model_stem.endswith('_actor'):
+            model_stem = model_stem[:-6]
+
+        candidates = [
+            os.path.join(model_dir, f)
+            for f in (os.listdir(model_dir) if os.path.isdir(model_dir) else [])
+            if f.endswith('_meta.json')
+        ]
+        # 优先：同名
+        for p in candidates:
+            if os.path.basename(p) == f"{model_stem}_meta.json":
+                meta = _try_load(p)
+                if meta is not None:
+                    return meta
+        # 次优：以 model_stem 开头
+        for p in candidates:
+            if os.path.basename(p).startswith(model_stem):
+                meta = _try_load(p)
+                if meta is not None:
+                    return meta
+        # 兜底：目录里任意一个 meta
+        for p in candidates:
+            meta = _try_load(p)
+            if meta is not None:
+                return meta
+    except Exception:
+        pass
+
+    return None
+
 @st.cache_resource
 def load_model(model_path):
-    """加载训练好的模型"""
+    """加载训练好的模型，同时返回元数据"""
     try:
         # 10-26-16-00 使用健壮的加载函数
         actor_model = load_actor_model_robust(model_path)
         if actor_model is None:
-            return None, get_text("error_load_model_failed", get_language(), "所有加载策略均失败")
+            return None, None, get_text("error_load_model_failed", get_language(), "所有加载策略均失败")
         
-        return actor_model, get_text("model_loaded_successfully", get_language())
+        # 尝试加载元数据文件（健壮模式）
+        meta_data = _load_model_meta_robust(model_path)
+
+        # 兼容：历史字段名
+        if isinstance(meta_data, dict):
+            if ('environment_config' not in meta_data) and isinstance(meta_data.get('env_config'), dict):
+                meta_data['environment_config'] = meta_data.get('env_config')
+            if ('save_timestamp' not in meta_data) and meta_data.get('timestamp'):
+                meta_data['save_timestamp'] = meta_data.get('timestamp')
+        
+        return actor_model, meta_data, get_text("model_loaded_successfully", get_language())
     except Exception as e:
-        return None, get_text("error_load_model_failed", get_language(), str(e))
+        return None, None, get_text("error_load_model_failed", get_language(), str(e))
 
 def find_available_models():
     """
@@ -1826,9 +1895,10 @@ def main():
             # 如果有保存的模型路径，尝试重新加载模型
             if saved_state.get('model_loaded') and saved_state.get('model_path'):
                 try:
-                    model, msg = load_model(saved_state['model_path'])
+                    model, meta_data, msg = load_model(saved_state['model_path'])
                     if model is not None:
                         st.session_state['actor_model'] = model
+                        st.session_state['model_meta'] = meta_data
                 except:
                     pass
         
@@ -1956,10 +2026,11 @@ def main():
         if st.button(get_text("load_model", lang), type="primary", use_container_width=True):
             if model_path:
                 with st.spinner(get_text("loading_model", lang)):
-                    actor_model, message = load_model(model_path)
+                    actor_model, meta_data, message = load_model(model_path)
                     if actor_model is not None:
                         st.session_state['actor_model'] = actor_model
                         st.session_state['model_path'] = model_path
+                        st.session_state['model_meta'] = meta_data
                         st.session_state['model_loaded'] = True
                         save_app_state()  # 💾 保存状态
                         st.success(message)
@@ -1972,6 +2043,250 @@ def main():
     # 显示已加载的模型状态
     if 'actor_model' in st.session_state:
         st.success(f"{get_text('model_loaded', lang)}{st.session_state.get('model_path', 'Unknown')}")
+        
+        # 显示模型训练配置信息
+        meta_data = st.session_state.get('model_meta')
+        if (not meta_data) or (not isinstance(meta_data, dict)):
+            st.info("模型元数据(meta.json)未找到，无法展示训练配置 / model meta.json not found, training config is unavailable")
+
+        # 兼容：meta.json 可能没有 environment_config（仅保存网络/空间信息）
+        env_config = {}
+        if isinstance(meta_data, dict):
+            env_config = meta_data.get('environment_config') or meta_data.get('env_config') or {}
+
+        if isinstance(meta_data, dict) and (not env_config):
+            st.warning("meta.json 未包含 environment_config（工作站/仿真时长等），因此无法对比训练环境与当前环境；仅展示网络与动作空间信息")
+
+        # 即使没有环境配置，也至少展示一次模型训练配置面板（网络结构/动作空间/版本等）
+        if isinstance(meta_data, dict):
+            with st.expander("🔧 " + get_text("model_training_config", lang), expanded=False):
+                # 基础信息卡片
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.metric(
+                        label="🤖 " + get_text('num_agents', lang),
+                        value=meta_data.get('num_agents', 'N/A')
+                    )
+                with col2:
+                    st.metric(
+                        label="🧠 TensorFlow",
+                        value=meta_data.get('tensorflow_version', 'N/A')
+                    )
+                with col3:
+                    st.metric(
+                        label="📊 State Dim",
+                        value=meta_data.get('state_dim', 'N/A')
+                    )
+
+                st.divider()
+
+                # 动作空间信息
+                try:
+                    action_space = meta_data.get('action_space') or {}
+                    if action_space:
+                        st.markdown("### 🎯 动作空间配置")
+                        col1, col2 = st.columns([1, 2])
+                        with col1:
+                            st.markdown(f"**类型**: `{action_space.get('type', 'N/A')}`")
+                            if action_space.get('type') == 'MultiDiscrete':
+                                nvec = action_space.get('nvec', [])
+                                st.markdown(f"**维度数**: {len(nvec)}")
+                                st.markdown(f"**每维大小**: {nvec}")
+                            else:
+                                st.markdown(f"**动作数**: {action_space.get('n', 'N/A')}")
+                        with col2:
+                            if action_space.get('type') == 'MultiDiscrete':
+                                nvec = action_space.get('nvec', [])
+                                if nvec:
+                                    import plotly.graph_objects as go
+                                    fig = go.Figure(data=[
+                                        go.Bar(
+                                            x=[f"Agent {i+1}" for i in range(len(nvec))],
+                                            y=nvec,
+                                            text=nvec,
+                                            textposition='auto',
+                                            marker_color='lightblue'
+                                        )
+                                    ])
+                                    fig.update_layout(
+                                        title="各智能体动作空间大小",
+                                        height=300,
+                                        showlegend=False
+                                    )
+                                    st.plotly_chart(fig, use_container_width=True)
+                except Exception:
+                    pass
+
+                st.divider()
+
+                # 网络配置
+                try:
+                    net_cfg = meta_data.get('network_config') or {}
+                    if net_cfg:
+                        st.markdown("### 🧠 网络架构配置")
+                        
+                        # 网络结构
+                        col1, col2 = st.columns(2)
+                        with col1:
+                            st.markdown("**🏗️ 网络结构**")
+                            hidden_sizes = net_cfg.get('hidden_sizes', [])
+                            if hidden_sizes:
+                                st.markdown(f"- 隐藏层: {' → '.join(map(str, hidden_sizes))}")
+                            st.markdown(f"- Dropout率: {net_cfg.get('dropout_rate', 'N/A')}")
+                            
+                        with col2:
+                            st.markdown("**⚙️ PPO参数**")
+                            st.markdown(f"- Clip比率: {net_cfg.get('clip_ratio', 'N/A')}")
+                            st.markdown(f"- 熵系数: {net_cfg.get('entropy_coeff', 'N/A')}")
+                            st.markdown(f"- PPO轮数: {net_cfg.get('ppo_epochs', 'N/A')}")
+                            st.markdown(f"- 小批次数: {net_cfg.get('num_minibatches', 'N/A')}")
+
+                        # 高级配置
+                        with st.expander("🔬 高级配置", expanded=False):
+                            adv_col1, adv_col2 = st.columns(2)
+                            with adv_col1:
+                                st.markdown("**梯度与优势**")
+                                st.markdown(f"- 梯度裁剪: {net_cfg.get('grad_clip_norm', 'N/A')}")
+                                st.markdown(f"- 优势裁剪: {net_cfg.get('advantage_clip_val', 'N/A')}")
+                                st.markdown(f"- Gamma: {net_cfg.get('gamma', 'N/A')}")
+                                st.markdown(f"- Lambda GAE: {net_cfg.get('lambda_gae', 'N/A')}")
+                            
+                            with adv_col2:
+                                st.markdown("**启发式混合**")
+                                hm_enabled = net_cfg.get('heuristic_mixture_enabled', False)
+                                st.markdown(f"- 启用: {'✅' if hm_enabled else '❌'}")
+                                if hm_enabled:
+                                    st.markdown(f"- Beta: {net_cfg.get('heuristic_mixture_beta', 'N/A')}")
+                                
+                                st.markdown("**教师网络**")
+                                bc_enabled = net_cfg.get('teacher_bc_enabled', False)
+                                st.markdown(f"- 启用: {'✅' if bc_enabled else '❌'}")
+                                if bc_enabled:
+                                    st.markdown(f"- 模式: {net_cfg.get('teacher_bc_mode', 'N/A')}")
+                except Exception:
+                    pass
+
+                # 环境配置（如果存在）
+                if env_config:
+                    st.divider()
+                    st.markdown("### ⚙️ 环境配置")
+                    
+                    # 显示工作站配置
+                    st.markdown(f"**{get_text('workstation_config', lang)}**")
+                    workstations_df = pd.DataFrame([
+                        {
+                            get_text('workstation_name', lang): get_text(ws_name, lang),
+                            get_text('equipment_count', lang): ws_config['count'],
+                            get_text('capacity', lang): ws_config['capacity']
+                        }
+                        for ws_name, ws_config in env_config.get('workstations', {}).items()
+                    ])
+                    st.dataframe(workstations_df, use_container_width=True, hide_index=True)
+                    
+                    # 显示其他环境配置信息
+                    col1, col2, col3 = st.columns(3)
+                    with col1:
+                        st.metric(
+                            get_text('simulation_time', lang),
+                            f"{env_config.get('simulation_time', 'N/A')} {env_config.get('time_unit', '')}"
+                        )
+                    with col2:
+                        st.metric(
+                            get_text('num_product_types', lang),
+                            env_config.get('num_product_types', 'N/A')
+                        )
+                    with col3:
+                        pass  # 预留位置
+
+                # 保存时间
+                if 'save_timestamp' in meta_data:
+                    try:
+                        timestamp = datetime.fromisoformat(meta_data['save_timestamp'])
+                        st.divider()
+                        st.caption(f"💾 {get_text('model_save_time', lang)}{timestamp.strftime('%Y-%m-%d %H:%M:%S')}")
+                    except:
+                        pass
+
+        if isinstance(meta_data, dict) and env_config:
+            trained_ws = env_config.get('workstations') or {}
+
+            current_ws = WORKSTATIONS or {}
+            mismatch_details = {
+                'missing_in_current': [],
+                'extra_in_current': [],
+                'changed': []
+            }
+
+            try:
+                trained_keys = set(trained_ws.keys())
+                current_keys = set(current_ws.keys())
+
+                mismatch_details['missing_in_current'] = sorted(list(trained_keys - current_keys))
+                mismatch_details['extra_in_current'] = sorted(list(current_keys - trained_keys))
+
+                for k in sorted(list(trained_keys & current_keys)):
+                    tcfg = trained_ws.get(k) or {}
+                    ccfg = current_ws.get(k) or {}
+                    t_count = int(tcfg.get('count', 0))
+                    c_count = int(ccfg.get('count', 0))
+                    t_cap = int(tcfg.get('capacity', 0))
+                    c_cap = int(ccfg.get('capacity', 0))
+                    if (t_count != c_count) or (t_cap != c_cap):
+                        mismatch_details['changed'].append({
+                            'name': k,
+                            'trained': {'count': t_count, 'capacity': t_cap},
+                            'current': {'count': c_count, 'capacity': c_cap}
+                        })
+            except Exception:
+                mismatch_details = None
+
+            time_mismatch = False
+            try:
+                trained_sim_time = env_config.get('simulation_time', None)
+                if trained_sim_time is not None:
+                    time_mismatch = float(trained_sim_time) != float(SIMULATION_TIME)
+            except Exception:
+                time_mismatch = False
+
+            has_ws_mismatch = bool(mismatch_details) and (
+                bool(mismatch_details.get('missing_in_current')) or
+                bool(mismatch_details.get('extra_in_current')) or
+                bool(mismatch_details.get('changed'))
+            )
+
+            if has_ws_mismatch or bool(time_mismatch):
+                st.warning(get_text('model_env_config_mismatch_warning', lang))
+                with st.expander(get_text('model_env_config_mismatch_details', lang), expanded=False):
+                    if bool(time_mismatch):
+                        _time_unit = globals().get('TIME_UNIT', '')
+                        st.markdown(
+                            f"**{get_text('simulation_time', lang)}**: "
+                            f"{get_text('trained_config', lang)} {env_config.get('simulation_time', 'N/A')} {env_config.get('time_unit', '')} / "
+                            f"{get_text('current_config', lang)} {SIMULATION_TIME} {_time_unit}"
+                        )
+
+                    if mismatch_details:
+                        if mismatch_details.get('missing_in_current'):
+                            st.markdown(f"**{get_text('missing_workstations_in_current', lang)}**")
+                            st.write([get_text(x, lang) for x in mismatch_details['missing_in_current']])
+
+                        if mismatch_details.get('extra_in_current'):
+                            st.markdown(f"**{get_text('extra_workstations_in_current', lang)}**")
+                            st.write([get_text(x, lang) for x in mismatch_details['extra_in_current']])
+
+                        if mismatch_details.get('changed'):
+                            st.markdown(f"**{get_text('changed_workstations', lang)}**")
+                            changed_rows = []
+                            for item in mismatch_details['changed']:
+                                name = item.get('name')
+                                t = item.get('trained') or {}
+                                c = item.get('current') or {}
+                                changed_rows.append({
+                                    get_text('workstation_name', lang): get_text(name, lang),
+                                    get_text('trained_config', lang): f"count={t.get('count')}, capacity={t.get('capacity')}",
+                                    get_text('current_config', lang): f"count={c.get('count')}, capacity={c.get('capacity')}"
+                                })
+                            st.dataframe(pd.DataFrame(changed_rows), use_container_width=True, hide_index=True)
     
     # 自定义产品工艺路线管理（系统配置的一部分）
     with st.expander(get_text("custom_products", lang), expanded=False):
@@ -2396,7 +2711,11 @@ def main():
         # 设备故障高级参数配置
         failure_config = {}
         if enable_failure:
-            with st.expander(get_text("failure_params_expander", lang), expanded=False):
+            # 初始化expander展开状态
+            if 'failure_expander_expanded' not in st.session_state:
+                st.session_state['failure_expander_expanded'] = True
+            
+            with st.expander(get_text("failure_params_expander", lang), expanded=st.session_state['failure_expander_expanded']):
                 st.markdown(get_text("failure_params_desc", lang))
                 
                 fcol1, fcol2, fcol3 = st.columns(3)
@@ -2443,7 +2762,11 @@ def main():
         # 紧急插单高级参数配置
         emergency_config = {}
         if enable_emergency:
-            with st.expander(get_text("emergency_params_expander", lang), expanded=False):
+            # 初始化expander展开状态
+            if 'emergency_expander_expanded' not in st.session_state:
+                st.session_state['emergency_expander_expanded'] = True
+            
+            with st.expander(get_text("emergency_params_expander", lang), expanded=st.session_state['emergency_expander_expanded']):
                 st.markdown(get_text("emergency_params_desc", lang))
                 
                 ecol1, ecol2, ecol3 = st.columns(3)
@@ -2849,7 +3172,7 @@ def main():
                         enabled_emergency_cfg = st.session_state.get('emergency_config', {})
 
                         model_path = ablation_model_options[selected_ablation_model]
-                        actor_model, message = load_model(model_path)
+                        actor_model, _, message = load_model(model_path)
                         if actor_model is None:
                             st.error(f"{get_text('load_model_failed', lang, selected_ablation_model)}: {message}")
                         else:
@@ -3376,7 +3699,7 @@ def main():
                                 current_seed = int(seeds_used[min(run_idx, len(seeds_used) - 1)])
                                 
                                 # 加载模型
-                                actor_model, message = load_model(model_path)
+                                actor_model, _, message = load_model(model_path)
                                 if actor_model is None:
                                     st.error(f"{get_text('load_model_failed', lang, model_name)}: {message}")
                                     continue

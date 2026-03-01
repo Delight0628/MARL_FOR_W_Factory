@@ -23,6 +23,7 @@ import gymnasium as gym
 from typing import Dict, List, Tuple, Any, Optional
 from datetime import datetime
 from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures.process import BrokenProcessPool
 
 # 添加环境路径
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -40,7 +41,7 @@ TENSORBOARD_AVAILABLE = hasattr(tf.summary, "create_file_writer")
 
 class RunningMeanStd:
     """
-    🔧 新增：运行均值和标准差归一化器
+    新增：运行均值和标准差归一化器
     用于对观测、回报等进行在线归一化，提升训练稳定性
     """
     def __init__(self, shape: tuple, epsilon: float = 1e-8):
@@ -263,30 +264,54 @@ class SimplePPOTrainer:
             pass
         self.pool = ProcessPoolExecutor(max_workers=self.num_workers)
 
+        # 并行池健壮性：记录连续崩溃次数，避免进入“假训练”循环
+        self._pool_broken_consecutive = 0
+
         # 🔧 初始化训练所需的关键成员
         self.seed = RANDOM_SEED
+
+        # 🔧 关键训练状态：用于多任务混合/随机种子多样化/日志统计
         self.total_steps = 0
         self.network_config = PPO_NETWORK_CONFIG
-        
-        # 🔧 新增：归一化器（观测、回报归一化，优势白化）
+
+        # 🔧 新增：归一化器（观测、回报归一化）
         self.obs_normalizer = RunningMeanStd(shape=(self.state_dim,))
         self.global_obs_normalizer = RunningMeanStd(shape=(self.global_state_dim,))
         self.reward_normalizer = RunningMeanStd(shape=(1,))
         self.normalize_obs = True
         self.normalize_rewards = True
-        self.normalize_advantages = True  # 优势白化（已在buffer中实现，这里只是标志）
-        
+        self.normalize_advantages = True
+
         # 10-23-18-00 核心改进：多任务混合机制贯穿两个阶段
         # 从foundation_phase和generalization_phase分别读取配置
         # 两阶段都使用25% BASE_ORDERS worker作为稳定锚点
-        self.foundation_multi_task_config = TRAINING_FLOW_CONFIG["foundation_phase"].get("multi_task_mixing", {"enabled": False, "base_worker_fraction": 0.0, "randomize_base_env": False})
-        self.generalization_multi_task_config = TRAINING_FLOW_CONFIG["generalization_phase"].get("multi_task_mixing", {"enabled": False, "base_worker_fraction": 0.0, "randomize_base_env": False})
+        self.foundation_multi_task_config = TRAINING_FLOW_CONFIG["foundation_phase"].get(
+            "multi_task_mixing",
+            {"enabled": False, "base_worker_fraction": 0.0, "randomize_base_env": False},
+        )
+        self.generalization_multi_task_config = TRAINING_FLOW_CONFIG["generalization_phase"].get(
+            "multi_task_mixing",
+            {"enabled": False, "base_worker_fraction": 0.0, "randomize_base_env": False},
+        )
         
         # 计算BASE_ORDERS worker数量（两阶段使用相同配置）
         base_fraction = float(self.foundation_multi_task_config.get("base_worker_fraction", 0.0))
         base_fraction = min(max(base_fraction, 0.0), 1.0)
- 
-    
+
+    def _recreate_process_pool(self):
+        """重建并行进程池。
+        注意：该函数只负责恢复 pool 可用性，不应重置训练过程中的统计/归一化器/总步数，
+        否则会导致训练状态被意外清空，进而出现日志与进度异常。
+        """
+        try:
+            if getattr(self, 'pool', None) is not None:
+                try:
+                    self.pool.shutdown(wait=False, cancel_futures=True)
+                except Exception:
+                    pass
+        finally:
+            self.pool = ProcessPoolExecutor(max_workers=self.num_workers)
+
     def should_continue_training(self, episode: int, current_score: float, completion_rate: float) -> tuple:
         """基于训练流程配置的阶段标准评估是否继续训练"""
         general = self.training_flow_config["general_params"]
@@ -588,6 +613,7 @@ class SimplePPOTrainer:
                 }
         
         # --- 1. 并行运行worker收集数据 ---
+        results = None
         try:
             # 10-22-10-55 修复：使用模块级别包装函数（线程池模式）
             worker_args_list = []
@@ -636,10 +662,49 @@ class SimplePPOTrainer:
             futures = [self.pool.submit(_collect_experience_wrapper, args) for args in worker_args_list]
             results = [f.result() for f in futures]
 
+            # 采样成功则清空连续失败计数
+            self._pool_broken_consecutive = 0
+
+        except BrokenProcessPool as e:
+            # 子进程异常退出：进程池不可用。必须重建，否则后续每回合都只会报错并导致日志复用旧值。
+            self._pool_broken_consecutive = int(getattr(self, '_pool_broken_consecutive', 0)) + 1
+            print(f"❌ 并行工作进程失败(BrokenProcessPool): {e}")
+            import traceback
+            traceback.print_exc()
+
+            # 先刷新本回合采集统计，避免外层日志复用上一回合的worker奖励/完成数
+            self._last_collect_finished_workers = self.num_workers
+            self._last_collect_completed_workers = 0
+            self._last_collect_worker_rewards = []
+
+            # 连续失败过多：直接中止训练（否则会出现你看到的‘训练完成/进度’错误输出）
+            if self._pool_broken_consecutive >= 2:
+                raise RuntimeError("ProcessPoolExecutor连续崩溃，已中止训练以避免假训练输出")
+
+            # 第一次崩溃：重建进程池，并降级为串行采样兜底（尽量不中断实验）
+            try:
+                self._recreate_process_pool()
+            except Exception:
+                pass
+
+            try:
+                results = []
+                for args in worker_args_list:
+                    results.append(_collect_experience_wrapper(args))
+            except Exception as ee:
+                print(f"❌ 串行兜底采样仍失败: {ee}")
+                traceback.print_exc()
+                return 0.0, None
+
         except Exception as e:
             print(f"❌ 并行工作进程失败: {e}")
             import traceback
             traceback.print_exc()
+
+            # 刷新本回合采集统计，避免复用旧值
+            self._last_collect_finished_workers = self.num_workers
+            self._last_collect_completed_workers = 0
+            self._last_collect_worker_rewards = []
             return 0.0, None
 
         # 10-27-16-30 修复：更健壮地处理worker失败返回空缓冲的情况
@@ -1952,7 +2017,16 @@ class SimplePPOTrainer:
                     'network_config': self.shared_network.config,
                     'num_agents': len(self.agent_ids),
                     'tensorflow_version': tf.__version__,
-                    'save_timestamp': datetime.now().isoformat()
+                    'save_timestamp': datetime.now().isoformat(),
+                    # 新增：环境配置信息，用于UI展示和环境一致性检查
+                    'environment_config': {
+                        'workstations': dict(WORKSTATIONS),
+                        'simulation_time': SIMULATION_TIME,
+                        'time_unit': 'minutes',
+                        'num_product_types': len(PRODUCT_ROUTES),
+                        'product_routes': dict(PRODUCT_ROUTES),
+                        'system_config': dict(SYSTEM_CONFIG)
+                    }
                 }
                 
                 meta_path = f"{base_path}_meta.json"

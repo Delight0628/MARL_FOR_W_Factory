@@ -22,6 +22,10 @@ import os
 os.environ.setdefault('DETERMINISTIC_INIT', '0')
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 
+# 🔧 强制worker子进程使用CPU，避免多进程GPU资源竞争导致BrokenProcessPool
+# 主进程（训练器）仍使用GPU进行模型更新，子进程（采样）用CPU
+os.environ['FORCE_WORKER_CPU'] = '1'
+
 import sys
 import random
 import numpy as np

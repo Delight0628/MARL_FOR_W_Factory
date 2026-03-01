@@ -134,7 +134,19 @@ class WFactorySim:
             self._max_sim_time = float(self.config.get('MAX_SIM_TIME', default_max_time))
         except Exception:
             self._max_sim_time = float(SIMULATION_TIME) * float(SIMULATION_TIMEOUT_MULTIPLIER)
-        
+
+        try:
+            _max_machine_count = max(int(v.get('count', 1)) for v in WORKSTATIONS.values()) if WORKSTATIONS else 1
+        except Exception:
+            _max_machine_count = 1
+        self._capacity_norm_denom = float(max(1, _max_machine_count))
+
+        try:
+            _default_queue_len_norm = max(10.0, float(QUEUE_CAPACITY) / float(max(1, len(WORKSTATIONS))))
+            self._queue_len_norm = float(self.config.get('w_station_capacity_norm', _default_queue_len_norm))
+        except Exception:
+            self._queue_len_norm = float(ENHANCED_OBS_CONFIG.get("w_station_capacity_norm", 10.0))
+
         # 定义智能体列表
         self.agents = [f"agent_{station}" for station in WORKSTATIONS.keys()]
         
@@ -719,7 +731,7 @@ class WFactorySim:
         agent_features_list.extend([1.0 if i == station_index else 0.0 for i in range(len(station_types))])
         
         capacity = WORKSTATIONS[station_name]['count']
-        agent_features_list.append(capacity / 5.0)  # 归一化能力
+        agent_features_list.append(float(capacity) / float(self._capacity_norm_denom))  # 归一化能力
         
         busy_ratio = self.equipment_status[station_name]['busy_count'] / capacity
         agent_features_list.append(busy_ratio)
@@ -735,11 +747,11 @@ class WFactorySim:
         
         # 瓶颈工作站拥堵度
         max_queue_len = max(len(self.queues[s].items) for s in WORKSTATIONS.keys())
-        bottleneck_congestion = max_queue_len / ENHANCED_OBS_CONFIG["w_station_capacity_norm"]
+        bottleneck_congestion = float(max_queue_len) / float(self._queue_len_norm)
         
         # 当前队列长度
         current_queue_len = len(self.queues[station_name].items)
-        queue_len_normalized = current_queue_len / ENHANCED_OBS_CONFIG["w_station_capacity_norm"]
+        queue_len_normalized = float(current_queue_len) / float(self._queue_len_norm)
         
         global_features = np.array([
             time_normalized,
@@ -873,7 +885,7 @@ class WFactorySim:
         features.extend(compute_stats(time_norm))
         
         # 4. 下游拥堵统计
-        cong_norm = [c / ENHANCED_OBS_CONFIG["w_station_capacity_norm"] for c in downstream_congestions]
+        cong_norm = [float(c) / float(self._queue_len_norm) for c in downstream_congestions]
         features.extend(compute_stats(cong_norm))
         
         # 5. 优先级统计
@@ -1234,12 +1246,18 @@ class WFactorySim:
         for station_name in WORKSTATIONS.keys():
             # 队列长度归一化
             queue_len = len(self.queues[station_name].items)
-            queue_len_norm = queue_len / ENHANCED_OBS_CONFIG["w_station_capacity_norm"]
-            global_features.append(np.clip(queue_len_norm, 0, 1.0))
+            denom = float(getattr(self, "_queue_len_norm", 1.0))
+            if denom <= 0:
+                denom = 1.0
+            queue_len_norm = float(queue_len) / denom
+            global_features.append(np.clip(queue_len_norm, 0.0, 1.0))
             
             # 设备忙碌率
             capacity = WORKSTATIONS[station_name]['count']
-            busy_ratio = self.equipment_status[station_name]['busy_count'] / capacity
+            if capacity and capacity > 0:
+                busy_ratio = self.equipment_status[station_name]['busy_count'] / capacity
+            else:
+                busy_ratio = 0.0
             global_features.append(busy_ratio)
             
             # 设备故障状态

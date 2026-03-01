@@ -61,8 +61,13 @@ class PPONetwork:
         else:
             self.action_dims = [self.action_space.n]
             
-        # 确定性初始化标志（评估模式使用，避免随机数问题）
-        self._deterministic_init = (lr is None) or bool(int(os.environ.get("DETERMINISTIC_INIT", "1")))
+        # 确定性初始化标志：
+        # - 推理/评估（lr is None）默认启用（Zeros init），便于复现实验
+        # - 训练（lr is not None）默认禁用（Glorot init），避免全零初始化导致数值不稳定
+        if lr is None:
+            self._deterministic_init = bool(int(os.environ.get("DETERMINISTIC_INIT", "1")))
+        else:
+            self._deterministic_init = bool(int(os.environ.get("DETERMINISTIC_INIT", "0")))
 
         self.actor, self.critic = self._build_networks()
         
@@ -556,6 +561,12 @@ class PPONetwork:
         advantages = tf.convert_to_tensor(advantages, dtype=tf.float32)
         returns = tf.convert_to_tensor(returns, dtype=tf.float32)
 
+        actor_weights_before = None
+        critic_weights_before = None
+        if (self.actor_optimizer is not None) and (self.critic_optimizer is not None):
+            actor_weights_before = self.actor.get_weights()
+            critic_weights_before = self.critic.get_weights()
+
         with tf.GradientTape() as tape:
             # ========== Actor损失计算 ==========
             # 前向传播：与采样一致，禁用Dropout等正则化
@@ -678,10 +689,45 @@ class PPONetwork:
             if bc_coeff > 0.0:
                 actor_loss += tf.cast(bc_coeff, tf.float32) * tf.cast(bc_loss, tf.float32)
             
+        grad_clip_norm = self.config.get("grad_clip_norm", 1.0)
+
+        # NaN/Inf 防护：若 actor_loss 非有限，跳过本次更新并回滚
+        if not bool(tf.reduce_all(tf.math.is_finite(actor_loss)).numpy()):
+            if (actor_weights_before is not None) and (critic_weights_before is not None):
+                self.actor.set_weights(actor_weights_before)
+                self.critic.set_weights(critic_weights_before)
+            return {
+                "actor_loss": float(actor_loss.numpy()) if isinstance(actor_loss, tf.Tensor) else float(actor_loss),
+                "critic_loss": 0.0,
+                "entropy": float(entropy_mean.numpy()) if isinstance(entropy_mean, tf.Tensor) else float(entropy_mean),
+                "bc_loss": float(bc_loss.numpy()) if isinstance(bc_loss, tf.Tensor) else float(bc_loss),
+                "bc_coeff": float(bc_coeff),
+                "approx_kl": 0.0,
+                "clip_fraction": float(clip_fraction.numpy()) if isinstance(clip_fraction, tf.Tensor) else float(clip_fraction),
+                "skipped_update": 1.0,
+                "skip_reason": "non_finite_actor_loss",
+            }
+
         # Actor梯度更新
         actor_grads = tape.gradient(actor_loss, self.actor.trainable_variables)
-        grad_clip_norm = self.config.get("grad_clip_norm", 1.0)
         actor_grads, _ = tf.clip_by_global_norm(actor_grads, grad_clip_norm)
+        actor_grads = [tf.zeros_like(v) if (g is None) else g for g, v in zip(actor_grads, self.actor.trainable_variables)]
+        if not bool(tf.reduce_all([tf.reduce_all(tf.math.is_finite(g)) for g in actor_grads]).numpy()):
+            if (actor_weights_before is not None) and (critic_weights_before is not None):
+                self.actor.set_weights(actor_weights_before)
+                self.critic.set_weights(critic_weights_before)
+            return {
+                "actor_loss": float(actor_loss.numpy()),
+                "critic_loss": 0.0,
+                "entropy": float(entropy_mean.numpy()),
+                "bc_loss": float(bc_loss.numpy()) if isinstance(bc_loss, tf.Tensor) else float(bc_loss),
+                "bc_coeff": float(bc_coeff),
+                "approx_kl": 0.0,
+                "clip_fraction": float(clip_fraction.numpy()),
+                "skipped_update": 1.0,
+                "skip_reason": "non_finite_actor_grads",
+            }
+
         self.actor_optimizer.apply_gradients(zip(actor_grads, self.actor.trainable_variables))
         
         # ========== Critic损失计算 ==========
@@ -693,10 +739,67 @@ class PPONetwork:
             returns_expanded = tf.cast(returns_expanded, tf.float32)
             critic_loss = tf.reduce_mean(tf.square(returns_expanded - values))
         
+        # NaN/Inf 防护：若 critic_loss 非有限，跳过并回滚
+        if not bool(tf.reduce_all(tf.math.is_finite(critic_loss)).numpy()):
+            if (actor_weights_before is not None) and (critic_weights_before is not None):
+                self.actor.set_weights(actor_weights_before)
+                self.critic.set_weights(critic_weights_before)
+            return {
+                "actor_loss": float(actor_loss.numpy()),
+                "critic_loss": float(critic_loss.numpy()),
+                "entropy": float(entropy_mean.numpy()),
+                "bc_loss": float(bc_loss.numpy()) if isinstance(bc_loss, tf.Tensor) else float(bc_loss),
+                "bc_coeff": float(bc_coeff),
+                "approx_kl": 0.0,
+                "clip_fraction": float(clip_fraction.numpy()),
+                "skipped_update": 1.0,
+                "skip_reason": "non_finite_critic_loss",
+            }
+
         # Critic梯度更新
         critic_grads = tape.gradient(critic_loss, self.critic.trainable_variables)
         critic_grads, _ = tf.clip_by_global_norm(critic_grads, grad_clip_norm)
+        critic_grads = [tf.zeros_like(v) if (g is None) else g for g, v in zip(critic_grads, self.critic.trainable_variables)]
+        if not bool(tf.reduce_all([tf.reduce_all(tf.math.is_finite(g)) for g in critic_grads]).numpy()):
+            if (actor_weights_before is not None) and (critic_weights_before is not None):
+                self.actor.set_weights(actor_weights_before)
+                self.critic.set_weights(critic_weights_before)
+            return {
+                "actor_loss": float(actor_loss.numpy()),
+                "critic_loss": float(critic_loss.numpy()),
+                "entropy": float(entropy_mean.numpy()),
+                "bc_loss": float(bc_loss.numpy()) if isinstance(bc_loss, tf.Tensor) else float(bc_loss),
+                "bc_coeff": float(bc_coeff),
+                "approx_kl": 0.0,
+                "clip_fraction": float(clip_fraction.numpy()),
+                "skipped_update": 1.0,
+                "skip_reason": "non_finite_critic_grads",
+            }
+
         self.critic_optimizer.apply_gradients(zip(critic_grads, self.critic.trainable_variables))
+
+        # 更新后权重有限性检查：发现污染则回滚
+        try:
+            actor_w_ok = all(np.all(np.isfinite(w)) for w in self.actor.get_weights())
+            critic_w_ok = all(np.all(np.isfinite(w)) for w in self.critic.get_weights())
+        except Exception:
+            actor_w_ok = True
+            critic_w_ok = True
+        if not (actor_w_ok and critic_w_ok):
+            if (actor_weights_before is not None) and (critic_weights_before is not None):
+                self.actor.set_weights(actor_weights_before)
+                self.critic.set_weights(critic_weights_before)
+            return {
+                "actor_loss": float(actor_loss.numpy()),
+                "critic_loss": float(critic_loss.numpy()),
+                "entropy": float(entropy_mean.numpy()),
+                "bc_loss": float(bc_loss.numpy()) if isinstance(bc_loss, tf.Tensor) else float(bc_loss),
+                "bc_coeff": float(bc_coeff),
+                "approx_kl": 0.0,
+                "clip_fraction": float(clip_fraction.numpy()),
+                "skipped_update": 1.0,
+                "skip_reason": "non_finite_weights_after_update",
+            }
         
         # 近似KL：E[old_logp - new_logp]
         approx_kl = tf.reduce_mean(old_probs - current_probs)
@@ -707,6 +810,8 @@ class PPONetwork:
             "bc_loss": float(bc_loss.numpy()) if isinstance(bc_loss, tf.Tensor) else float(bc_loss),
             "bc_coeff": float(bc_coeff),
             "approx_kl": float(approx_kl.numpy()),
-            "clip_fraction": clip_fraction.numpy()
+            "clip_fraction": clip_fraction.numpy(),
+            "skipped_update": 0.0,
+            "skip_reason": "",
         }
 

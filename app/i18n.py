@@ -100,6 +100,86 @@ TEXTS = {
         "zh-TW": "✅ 模型已加載：",
         "en": "✅ Model Loaded: "
     },
+    "model_training_config": {
+        "zh-CN": "模型训练配置",
+        "zh-TW": "模型訓練配置",
+        "en": "Model Training Configuration"
+    },
+    "workstation_config": {
+        "zh-CN": "工作站配置",
+        "zh-TW": "工作站配置",
+        "en": "Workstation Configuration"
+    },
+    "workstation_name": {
+        "zh-CN": "工作站名称",
+        "zh-TW": "工作站名稱",
+        "en": "Workstation Name"
+    },
+    "equipment_count": {
+        "zh-CN": "设备数量",
+        "zh-TW": "設備數量",
+        "en": "Equipment Count"
+    },
+    "capacity": {
+        "zh-CN": "处理能力",
+        "zh-TW": "處理能力",
+        "en": "Capacity"
+    },
+    "simulation_time": {
+        "zh-CN": "仿真时间",
+        "zh-TW": "仿真時間",
+        "en": "Simulation Time"
+    },
+    "num_agents": {
+        "zh-CN": "智能体数量",
+        "zh-TW": "智能體數量",
+        "en": "Number of Agents"
+    },
+    "num_product_types": {
+        "zh-CN": "产品种类",
+        "zh-TW": "產品種類",
+        "en": "Product Types"
+    },
+    "model_save_time": {
+        "zh-CN": "模型保存时间：",
+        "zh-TW": "模型保存時間：",
+        "en": "Model Save Time: "
+    },
+    "model_env_config_mismatch_warning": {
+        "zh-CN": "⚠️ 当前环境配置与模型训练配置不一致：该模型可能无法正常推理或调度效果会显著下降（通常需要使用匹配配置或重新训练）。",
+        "zh-TW": "⚠️ 當前環境配置與模型訓練配置不一致：該模型可能無法正常推理或調度效果會顯著下降（通常需要使用匹配配置或重新訓練）。",
+        "en": "⚠️ Current environment config differs from the model's training config. The model may not run correctly or performance may degrade (use matching config or retrain)."
+    },
+    "model_env_config_mismatch_details": {
+        "zh-CN": "查看不匹配详情",
+        "zh-TW": "查看不匹配詳情",
+        "en": "View mismatch details"
+    },
+    "trained_config": {
+        "zh-CN": "训练配置:",
+        "zh-TW": "訓練配置:",
+        "en": "Trained:"
+    },
+    "current_config": {
+        "zh-CN": "当前配置:",
+        "zh-TW": "當前配置:",
+        "en": "Current:"
+    },
+    "missing_workstations_in_current": {
+        "zh-CN": "当前环境缺失的工作站（模型训练时存在）",
+        "zh-TW": "當前環境缺失的工作站（模型訓練時存在）",
+        "en": "Workstations missing in current env (present during training)"
+    },
+    "extra_workstations_in_current": {
+        "zh-CN": "当前环境新增的工作站（模型训练时不存在）",
+        "zh-TW": "當前環境新增的工作站（模型訓練時不存在）",
+        "en": "Extra workstations in current env (not present during training)"
+    },
+    "changed_workstations": {
+        "zh-CN": "工作站参数变化（数量/容量不一致）",
+        "zh-TW": "工作站參數變化（數量/容量不一致）",
+        "en": "Changed workstation parameters (count/capacity differ)"
+    },
     "uploaded_model_path": {
         "zh-CN": "📂 已上传模型保存路径：",
         "zh-TW": "📂 已上傳模型保存路徑：",
