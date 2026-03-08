@@ -219,7 +219,7 @@ SYSTEM_PRODUCT_TYPES = tuple(sorted(PRODUCT_ROUTES.keys()))
 
 # 基础订单模板
 BASE_ORDERS = [
-    {"product": "黑胡桃木餐桌", "quantity": 6, "priority": 1, "due_date": 300, "arrival_time": 0},  # 数量6个，优先级1，交期时间300分钟
+    {"product": "黑胡桃木餐桌", "quantity": 6, "priority": 1, "due_date": 300, "arrival_time": 0}, 
     {"product": "橡木书柜", "quantity": 6, "priority": 2, "due_date": 400, "arrival_time": 80},      
     {"product": "松木床架", "quantity": 6, "priority": 1, "due_date": 350, "arrival_time": 50},      
     {"product": "樱桃木椅子", "quantity": 4, "priority": 3, "due_date": 280, "arrival_time": 60},    
@@ -431,6 +431,22 @@ EVALUATION_CONFIG = {
     "exploration_rate": 0.0,  # 评估时使用的随机探索率，设置为0则为纯粹的确定性评估
     "deterministic_candidates": True, # 在评估时使用确定性候选，确保启发式基线可复现
 }
+
+def build_evaluation_config(base_config: Optional[Dict[str, Any]] = None, overrides: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """
+    构造统一的评估环境配置。
+
+    口径约定：
+    1. 始终以 EVALUATION_CONFIG 作为评估默认基线；
+    2. 再叠加当前场景配置（订单、动态事件、步长等）；
+    3. 最后叠加显式覆盖项（用于训练期快速评估/调试场景）。
+    """
+    final_config = dict(EVALUATION_CONFIG)
+    if isinstance(base_config, dict):
+        final_config.update(base_config)
+    if isinstance(overrides, dict):
+        final_config.update(overrides)
+    return final_config
 
 # 说明：
 # - evaluation.py 会将 EVALUATION_CONFIG 合并进评估环境，因此默认评估为确定性候选。

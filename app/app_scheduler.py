@@ -37,12 +37,23 @@ project_root = os.path.dirname(app_dir)
 if project_root not in sys.path:
     sys.path.append(project_root)
 
+from environments import w_factory_config
 from environments.w_factory_env import WFactoryEnv
 from environments.w_factory_config import (
     PRODUCT_ROUTES, WORKSTATIONS, SIMULATION_TIME,
     get_total_parts_count, calculate_episode_score, generate_random_orders
 )
 from mappo.sampling_utils import choose_parallel_actions_multihead
+
+build_evaluation_config = getattr(
+    w_factory_config,
+    'build_evaluation_config',
+    lambda base_config=None, overrides=None: {
+        **getattr(w_factory_config, 'EVALUATION_CONFIG', {}),
+        **(base_config or {}),
+        **(overrides or {}),
+    }
+)
 
 # ============================================================================
 # TensorFlow 2.15.0 兼容：健壮的模型加载函数
@@ -397,6 +408,13 @@ def save_app_state():
                 # 动态环境配置开关
                 'enable_failure': st.session_state.get('enable_failure', False),
                 'enable_emergency': st.session_state.get('enable_emergency', False),
+                # 动态环境具体参数配置
+                'mtbf_hours': st.session_state.get('mtbf_hours', 24.0),
+                'mttr_minutes': st.session_state.get('mttr_minutes', 30.0),
+                'failure_prob': st.session_state.get('failure_prob', 0.02),
+                'arrival_rate': st.session_state.get('arrival_rate', 0.1),
+                'priority_boost': st.session_state.get('priority_boost', 0),
+                'due_reduction': st.session_state.get('due_reduction', 0.7),
                 # 是否启用启发式算法对比
                 'compare_heuristics': st.session_state.get('compare_heuristics', True),
             },
@@ -1149,8 +1167,6 @@ def run_heuristic_scheduling(heuristic_name, orders_config, custom_products=None
     """
     from environments import w_factory_config
     from environments.w_factory_env import calculate_slack_time
-    import copy
-    from environments.w_factory_config import EVALUATION_CONFIG
     
     original_routes = None
     if custom_products:
@@ -1181,9 +1197,7 @@ def run_heuristic_scheduling(heuristic_name, orders_config, custom_products=None
         if status_text:
             status_text.text(f"初始化{heuristic_name}算法...")
         
-        # 🔧 与 evaluation.py 保持一致：合并基础配置
-        final_config = copy.deepcopy(EVALUATION_CONFIG)
-        final_config.update(config)
+        final_config = build_evaluation_config(config)
         
         env = WFactoryEnv(config=final_config)
         obs, info = env.reset(seed=seed)
@@ -1223,7 +1237,7 @@ def run_heuristic_scheduling(heuristic_name, orders_config, custom_products=None
                 'FIFO': 'FIFO',
                 'EDD': 'URGENT_EDD',
                 'SPT': 'SHORT_SPT',
-                'ATC': 'ATC',
+                # 'ATC': 'ATC',  # 暂时注释掉ATC算法
             }
             
             target_action_name = heuristic_to_action_map.get(heuristic_name)
@@ -1260,20 +1274,20 @@ def run_heuristic_scheduling(heuristic_name, orders_config, custom_products=None
                     selected_parts = sorted(queue, key=lambda p: calculate_slack_time(p, sim.env.now, sim.queues))
                 elif heuristic_name == 'SPT':
                     selected_parts = sorted(queue, key=lambda p: p.get_processing_time())
-                elif heuristic_name == 'ATC':
-                    now = float(sim.env.now)
-                    procs = [max(1e-6, float(p.get_processing_time())) for p in queue]
-                    p_bar = float(np.mean(procs)) if procs else 1.0
-                    k = 2.0
-                    scored = []
-                    for p in queue:
-                        proc = max(1e-6, float(p.get_processing_time()))
-                        slack = float(calculate_slack_time(p, sim.env.now, sim.queues))
-                        slack_pos = max(0.0, slack)
-                        score = float(np.exp(-slack_pos / max(1e-6, k * p_bar))) / proc
-                        scored.append((p, score))
-                    scored.sort(key=lambda x: x[1], reverse=True)
-                    selected_parts = [p for p, _ in scored]
+                # elif heuristic_name == 'ATC':  # 暂时注释掉ATC算法
+                #     now = float(sim.env.now)
+                #     procs = [max(1e-6, float(p.get_processing_time())) for p in queue]
+                #     p_bar = float(np.mean(procs)) if procs else 1.0
+                #     k = 2.0
+                #     scored = []
+                #     for p in queue:
+                #         proc = max(1e-6, float(p.get_processing_time()))
+                #         slack = float(calculate_slack_time(p, sim.env.now, sim.queues))
+                #         slack_pos = max(0.0, slack)
+                #         score = float(np.exp(-slack_pos / max(1e-6, k * p_bar))) / proc
+                #         scored.append((p, score))
+                #     scored.sort(key=lambda x: x[1], reverse=True)
+                #     selected_parts = [p for p, _ in scored]
                 else:
                     raise ValueError(f"未知的启发式规则: {heuristic_name}")
                 
@@ -1426,7 +1440,9 @@ def run_scheduling(actor_model, orders_config, custom_products=None, max_steps=1
         if status_text:
             status_text.text(get_text("initializing", get_language()))
         
-        env = WFactoryEnv(config=config)
+        final_config = build_evaluation_config(config)
+
+        env = WFactoryEnv(config=final_config)
         obs, info = env.reset(seed=seed)
         
         step_count = 0
@@ -1460,6 +1476,15 @@ def run_scheduling(actor_model, orders_config, custom_products=None, max_steps=1
                         head_probs_list = [np.squeeze(h.numpy()) for h in action_probs_tensor]
                     else:
                         head_probs_list = [np.squeeze(action_probs_tensor.numpy()[0])]
+
+                    # 方案4.1：Actor 可能额外输出 mixture_weights（不属于动作头），需剥离后再做动作选择
+                    if isinstance(head_probs_list, list) and len(head_probs_list) > 1:
+                        try:
+                            tail = np.asarray(head_probs_list[-1]).squeeze()
+                            if tail.shape == (2,):
+                                head_probs_list = head_probs_list[:-1]
+                        except Exception:
+                            pass
                     
                     # 11-26 修复：应用动作掩码 (与 evaluation.py 保持一致)
                     # 解决离线评估0完成问题：若无掩码，策略容易选到被收紧的IDLE
@@ -1519,7 +1544,7 @@ def run_scheduling(actor_model, orders_config, custom_products=None, max_steps=1
         
         final_stats = env.sim.get_final_stats()
         gantt_history = env.sim.gantt_chart_history
-        score = calculate_episode_score(final_stats, config)
+        score = calculate_episode_score(final_stats, final_config)
 
         try:
             last_info = info or {}
@@ -1840,11 +1865,16 @@ def main():
                     st.session_state['arrival_max'] = ui_config.get('max_arrival', 50)
                 if 'max_steps_single' not in st.session_state:
                     st.session_state['max_steps_single'] = ui_config.get('max_steps_single', 1500)
-                # 恢复动态环境配置开关
-                if 'enable_failure' not in st.session_state:
-                    st.session_state['enable_failure'] = ui_config.get('enable_failure', False)
-                if 'enable_emergency' not in st.session_state:
-                    st.session_state['enable_emergency'] = ui_config.get('enable_emergency', False)
+                # 恢复动态环境配置开关（强制从保存文件恢复，避免与checkbox的key冲突）
+                st.session_state['enable_failure'] = ui_config.get('enable_failure', False)
+                st.session_state['enable_emergency'] = ui_config.get('enable_emergency', False)
+                # 恢复动态环境具体参数配置
+                st.session_state['mtbf_hours'] = ui_config.get('mtbf_hours', 24.0)
+                st.session_state['mttr_minutes'] = ui_config.get('mttr_minutes', 30.0)
+                st.session_state['failure_prob'] = ui_config.get('failure_prob', 0.02)
+                st.session_state['arrival_rate'] = ui_config.get('arrival_rate', 0.1)
+                st.session_state['priority_boost'] = ui_config.get('priority_boost', 0)
+                st.session_state['due_reduction'] = ui_config.get('due_reduction', 0.7)
                 # 恢复启发式算法对比选项
                 if 'compare_heuristics' not in st.session_state:
                     st.session_state['compare_heuristics'] = ui_config.get('compare_heuristics', True)
@@ -1866,10 +1896,16 @@ def main():
                     st.session_state['arrival_max'] = 50
                 if 'max_steps_single' not in st.session_state:
                     st.session_state['max_steps_single'] = 1500
-                if 'enable_failure' not in st.session_state:
-                    st.session_state['enable_failure'] = False
-                if 'enable_emergency' not in st.session_state:
-                    st.session_state['enable_emergency'] = False
+                # 初始化动态环境配置开关（首次运行默认为False）
+                st.session_state['enable_failure'] = False
+                st.session_state['enable_emergency'] = False
+                # 初始化动态环境具体参数配置为默认值
+                st.session_state['mtbf_hours'] = 24.0
+                st.session_state['mttr_minutes'] = 30.0
+                st.session_state['failure_prob'] = 0.02
+                st.session_state['arrival_rate'] = 0.1
+                st.session_state['priority_boost'] = 0
+                st.session_state['due_reduction'] = 0.7
                 if 'compare_heuristics' not in st.session_state:
                     st.session_state['compare_heuristics'] = True
             
@@ -2867,7 +2903,7 @@ def main():
                 if compare_heuristics:
                     heuristic_results = {}
                     
-                    for heuristic in ['FIFO', 'EDD', 'SPT', 'ATC']:
+                    for heuristic in ['FIFO', 'EDD', 'SPT']:  # 暂时注释掉ATC
                         status_text.text(get_text("running_heuristic", lang, heuristic))
                         progress_bar.progress(0)
                         
@@ -3153,14 +3189,14 @@ def main():
                         key="ablation_base_seed"
                     )
 
-                enabled_failure = bool(st.session_state.get('enable_failure', False))
-                enabled_emergency = bool(st.session_state.get('enable_emergency', False))
-                ablation_ready = bool(enabled_failure or enabled_emergency)
-                if not ablation_ready:
-                    st.warning(get_text("warn_select_at_least_one_dynamic_event", lang))
-
-                if st.button(get_text("start_dynamic_event_ablation", lang), type="primary", use_container_width=True, disabled=(not ablation_ready)):
+                if st.button(get_text("start_dynamic_event_ablation", lang), type="primary", use_container_width=True):
                     try:
+                        # 🔧 在按钮回调内部校验动态事件开关（此时checkbox状态已同步到session_state）
+                        enabled_failure = bool(st.session_state.get('enable_failure', False))
+                        enabled_emergency = bool(st.session_state.get('enable_emergency', False))
+                        if not enabled_failure and not enabled_emergency:
+                            st.error(get_text("warn_select_at_least_one_dynamic_event", lang))
+                            st.stop()
                         # 生成 seeds_used
                         if ablation_multi_seed:
                             seeds_used = [int(ablation_base_seed + i) for i in range(int(ablation_runs))]
@@ -3182,12 +3218,12 @@ def main():
                             disabled_runs = []
                             enabled_runs = []
 
-                            heuristic_disabled = {h: [] for h in ['FIFO', 'EDD', 'SPT', 'ATC']} if include_heuristics_ablation else {}
-                            heuristic_enabled = {h: [] for h in ['FIFO', 'EDD', 'SPT', 'ATC']} if include_heuristics_ablation else {}
+                            heuristic_disabled = {h: [] for h in ['FIFO', 'EDD', 'SPT']} if include_heuristics_ablation else {}  # 暂时注释掉ATC
+                            heuristic_enabled = {h: [] for h in ['FIFO', 'EDD', 'SPT']} if include_heuristics_ablation else {}  # 暂时注释掉ATC
 
                             progress_bar = st.progress(0)
                             status_text = st.empty()
-                            num_heuristics = 4 if include_heuristics_ablation else 0
+                            num_heuristics = 3 if include_heuristics_ablation else 0  # 暂时注释掉ATC，从4改为3
                             total_steps = len(seeds_used) * (2 + 2 * num_heuristics)
                             done = 0
 
@@ -3231,7 +3267,7 @@ def main():
                                 progress_bar.progress(done / total_steps)
 
                                 if include_heuristics_ablation:
-                                    for h in ['FIFO', 'EDD', 'SPT', 'ATC']:
+                                    for h in ['FIFO', 'EDD', 'SPT']:  # 暂时注释掉ATC
                                         h_stats, h_hist, h_score = run_heuristic_scheduling(
                                             h,
                                             orders_cfg,
@@ -3284,7 +3320,7 @@ def main():
                                 progress_bar.progress(done / total_steps)
 
                                 if include_heuristics_ablation:
-                                    for h in ['FIFO', 'EDD', 'SPT', 'ATC']:
+                                    for h in ['FIFO', 'EDD', 'SPT']:  # 暂时注释掉ATC
                                         h_stats, h_hist, h_score = run_heuristic_scheduling(
                                             h,
                                             orders_cfg,
@@ -3392,7 +3428,7 @@ def main():
 
                             h_dis = res.get('heuristic_disabled', {}) or {}
                             h_en = res.get('heuristic_enabled', {}) or {}
-                            for h in ['FIFO', 'EDD', 'SPT', 'ATC']:
+                            for h in ['FIFO', 'EDD', 'SPT']:  # 暂时注释掉ATC
                                 if h in h_dis and h_dis[h]:
                                     _append_row(h, "OFF", h_dis[h])
                                 if h in h_en and h_en[h]:
@@ -3422,7 +3458,7 @@ def main():
                             points = []
                             points += _collect_score_points('MARL (PPO)', 'OFF', disabled_runs)
                             points += _collect_score_points('MARL (PPO)', 'ON', enabled_runs)
-                            for h in ['FIFO', 'EDD', 'SPT', 'ATC']:
+                            for h in ['FIFO', 'EDD', 'SPT']:  # 暂时注释掉ATC
                                 if h in h_dis and h_dis[h]:
                                     points += _collect_score_points(h, 'OFF', h_dis[h])
                                 if h in h_en and h_en[h]:
@@ -3457,7 +3493,7 @@ def main():
 
                                 best_heur_on = None
                                 best_heur_name = None
-                                for h in ['FIFO', 'EDD', 'SPT', 'ATC']:
+                                for h in ['FIFO', 'EDD', 'SPT']:  # 暂时注释掉ATC
                                     v = _mean_of(h, 'ON')
                                     if best_heur_on is None or v > best_heur_on:
                                         best_heur_on = v
@@ -3491,7 +3527,7 @@ def main():
 
                                 st.subheader("按 seed 配对的提升（Pairwise Gains）")
 
-                                present_heur = [h for h in ['FIFO', 'EDD', 'SPT', 'ATC'] if h in df_points['algorithm'].unique()]
+                                present_heur = [h for h in ['FIFO', 'EDD', 'SPT'] if h in df_points['algorithm'].unique()]  # 暂时注释掉ATC
                                 baseline_options = ['最强启发式(ON)'] + present_heur
                                 baseline_choice = st.selectbox(
                                     "基线(ON)",
@@ -3673,7 +3709,7 @@ def main():
                         # 初始化对比结果存储
                         comparison_results = {}
 
-                        heuristic_baselines = {h: [] for h in ['FIFO', 'EDD', 'SPT', 'ATC']} if include_heuristics_comparison else {}
+                        heuristic_baselines = {h: [] for h in ['FIFO', 'EDD', 'SPT']} if include_heuristics_comparison else {}  # 暂时注释掉ATC
 
                         effective_runs = int(comparison_runs) if seed_mode else 1
                         seeds_used = [int(base_seed + i) for i in range(effective_runs)] if seed_mode else [int(base_seed)]
@@ -3681,7 +3717,7 @@ def main():
                         # 创建进度条
                         total_runs = len(selected_model_names) * effective_runs
                         if include_heuristics_comparison:
-                            total_runs += 4 * effective_runs
+                            total_runs += 3 * effective_runs  # 暂时注释掉ATC，从4改为3
                         progress_bar = st.progress(0)
                         status_text = st.empty()
                         
@@ -3747,7 +3783,7 @@ def main():
                                 comparison_results[model_name] = model_results
 
                         if include_heuristics_comparison:
-                            for h in ['FIFO', 'EDD', 'SPT', 'ATC']:
+                            for h in ['FIFO', 'EDD', 'SPT']:  # 暂时注释掉ATC
                                 for run_idx in range(effective_runs):
                                     current_seed = int(seeds_used[min(run_idx, len(seeds_used) - 1)])
                                     try:

@@ -25,6 +25,7 @@ if current_dir not in sys.path:
     sys.path.append(os.path.dirname(current_dir))
 
 from environments.w_factory_env import WFactoryEnv, calculate_slack_time
+from environments.w_factory_config import build_evaluation_config
 from evaluation import (
     STATIC_EVAL_CONFIG, 
     GENERALIZATION_CONFIG_1, GENERALIZATION_CONFIG_2, GENERALIZATION_CONFIG_3,
@@ -182,8 +183,7 @@ def debug_marl_actions(model_path: str, config: dict, max_steps: int = 600, dete
         return
 
     # 创建环境（默认启用确定性候选，保证调试可复现）
-    config_for_debug = dict(config) if isinstance(config, dict) else {}
-    config_for_debug.setdefault('deterministic_candidates', True)
+    config_for_debug = build_evaluation_config(config, {'deterministic_candidates': True})
     env = WFactoryEnv(config=config_for_debug)
     obs, info = env.reset(seed=seed)
 

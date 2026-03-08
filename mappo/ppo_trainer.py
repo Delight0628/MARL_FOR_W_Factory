@@ -17,6 +17,7 @@ import sys
 import time
 import random
 import socket
+import threading
 import numpy as np
 import tensorflow as tf
 import gymnasium as gym
@@ -499,7 +500,7 @@ class SimplePPOTrainer:
                 - batch: 训练批次字典或None（失败时）
         """
         # 核心设计：统一MDP
-        # 1. 同一回合所有worker使用相同订单配置（避免梯度冲突）
+        # 1. 同一回合所有worker使用相同的订单配置（避免梯度冲突）
         # 2. 回合间轮换任务类型（BASE_ORDERS vs 随机订单）
         # 3. 每个新回合重新生成随机订单（保证泛化）
         
@@ -1021,8 +1022,7 @@ class SimplePPOTrainer:
         
         # 评估步长对齐环境超时
         eval_config['MAX_SIM_STEPS'] = self.max_steps_for_eval
-        # 训练期评估强制确定性候选，保证可复现
-        eval_config['deterministic_candidates'] = True
+        eval_config = build_evaluation_config(eval_config, {'deterministic_candidates': True})
         
         env = make_parallel_env(eval_config)
         
@@ -1226,9 +1226,32 @@ class SimplePPOTrainer:
         # 🔧 初始化用于课程学习毕业检查的性能指标，毕业检查将使用上一个回合的准确数据
         last_kpi_results = {}
         last_current_score = 0.0
+ 
+        heartbeat_interval_s = int(os.environ.get('TRAIN_HEARTBEAT_INTERVAL_S', '300'))
+        _hb_stop_event = threading.Event()
+ 
+        def _heartbeat_loop():
+            while not _hb_stop_event.wait(heartbeat_interval_s):
+                now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                ep = st = -1
+                try:
+                    ep = int(getattr(self, '_heartbeat_episode', -1))
+                except Exception:
+                    pass
+                try:
+                    st = int(getattr(self, 'total_steps', 0))
+                except Exception:
+                    pass
+                print(f"[heartbeat] {now} episode={ep} total_steps={st}", flush=True)
+ 
+        _hb_thread = None
+        if heartbeat_interval_s > 0:
+            _hb_thread = threading.Thread(target=_heartbeat_loop, daemon=True)
+            _hb_thread.start()
         
         try:
             for episode in range(max_episodes):
+                self._heartbeat_episode = episode + 1
                 iteration_start_time = time.time()
                 
                 # --- 核心创新：基础训练 + 随机领域强化 逻辑 ---
@@ -1953,6 +1976,11 @@ class SimplePPOTrainer:
             return None
         
         finally:
+            try:
+                _hb_stop_event.set()
+            except Exception:
+                pass
+
             # 10-27-16-30 训练收尾：优雅关闭进程池，释放系统资源
             try:
                 if hasattr(self, 'pool') and self.pool:

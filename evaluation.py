@@ -30,7 +30,7 @@ if current_dir not in sys.path:
 from environments.w_factory_env import WFactoryEnv
 from environments.w_factory_config import (
     get_total_parts_count, SIMULATION_TIME, BASE_ORDERS,
-    calculate_episode_score, EVALUATION_CONFIG
+    calculate_episode_score, EVALUATION_CONFIG, build_evaluation_config
 )
 # 10201530 新增：导入gym以识别MultiDiscrete动作空间
 import gymnasium as gym
@@ -96,7 +96,7 @@ def load_actor_model_robust(model_path: str):
 
             # 新增：与当前环境维度做一致性对比，若不一致则直接报错并中止
             try:
-                _cmp_env = WFactoryEnv(config=EVALUATION_CONFIG)
+                _cmp_env = WFactoryEnv(config=build_evaluation_config())
                 first_agent = _cmp_env.possible_agents[0]
                 cur_state_dim = int(_cmp_env.observation_space(first_agent).shape[0])
                 cur_action_space = _cmp_env.action_space(first_agent)
@@ -434,10 +434,7 @@ def evaluate_marl_model(model_path: str, config: dict = STATIC_EVAL_CONFIG, gene
 
     # 🔧 关键修复 V2: 合并来自优化器的基础配置和评估场景的特定配置
     # 优先使用测试场景配置，然后是通用的评估配置，最后是可能来自训练器的覆盖配置
-    final_config_for_eval = copy.deepcopy(EVALUATION_CONFIG)
-    final_config_for_eval.update(config)
-    if env_config_overrides:
-        final_config_for_eval.update(env_config_overrides)
+    final_config_for_eval = build_evaluation_config(config, env_config_overrides)
 
     env = WFactoryEnv(config=final_config_for_eval)
     
@@ -449,7 +446,7 @@ def evaluate_marl_model(model_path: str, config: dict = STATIC_EVAL_CONFIG, gene
 
     start_time = time.time()
     for i in iterator:
-        final_stats, score, history = run_single_episode(env, marl_policy, seed=i, config=config)
+        final_stats, score, history = run_single_episode(env, marl_policy, seed=i, config=final_config_for_eval)
         all_kpis.append(final_stats)
         all_scores.append(score)
         if history is not None:
@@ -639,8 +636,7 @@ def evaluate_heuristic(heuristic_name: str, config: dict = STATIC_EVAL_CONFIG, g
     first_episode_history = None
 
     # 合并配置，确保评估时使用确定性候选
-    final_config_for_eval = copy.deepcopy(EVALUATION_CONFIG)
-    final_config_for_eval.update(config)
+    final_config_for_eval = build_evaluation_config(config)
     
     env = WFactoryEnv(config=final_config_for_eval)
     
@@ -652,7 +648,7 @@ def evaluate_heuristic(heuristic_name: str, config: dict = STATIC_EVAL_CONFIG, g
 
     start_time = time.time()
     for i in iterator:
-        final_stats, score, history = run_single_episode(env, heuristic_policy, seed=i, config=config)
+        final_stats, score, history = run_single_episode(env, heuristic_policy, seed=i, config=final_config_for_eval)
         all_kpis.append(final_stats)
         all_scores.append(score)
         if history is not None:

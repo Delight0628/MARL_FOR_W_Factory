@@ -3,6 +3,84 @@ import pandas as pd
 from typing import List, Dict, Any
 import os
 
+
+_ZH_EN_MAP = {
+    "调度甘特图": "Scheduling Gantt Chart",
+    "方法": "Method",
+    "配置": "Scenario",
+    "模拟时间": "Simulated Time",
+    "分钟": "min",
+    "工作站": "Workstation",
+    "产品": "Product",
+    "零件ID": "Part ID",
+    "订单ID": "Order ID",
+    "开始时间": "Start Time",
+    "结束时间": "Finish Time",
+    "持续时间": "Duration",
+    "没有可用于生成甘特图的加工历史数据。": "No processing history data available to generate a Gantt chart.",
+    "静态评估": "Static Evaluation",
+    "泛化测试1-高压力短交期": "Generalization Test 1 - High Pressure & Short Due Dates",
+    "泛化测试2-混合优先级": "Generalization Test 2 - Mixed Priorities",
+    "泛化测试3-大批量长周期": "Generalization Test 3 - Large Batch & Long Horizon",
+    "黑胡桃木餐桌": "Black Walnut Dining Table",
+    "橡木书柜": "Oak Bookcase",
+    "松木床架": "Pine Bed Frame",
+    "樱桃木椅子": "Cherry Wood Chair",
+    "组装台": "Assembly Station",
+    "砂光机": "Sanding Machine",
+    "带锯机": "Band Saw",
+    "包装台": "Packaging Station",
+    "五轴加工中心": "5-Axis Machining Center",
+}
+
+
+def _translate_zh_to_en(text: str) -> str:
+    if text is None:
+        return text
+    s = str(text)
+    for zh in sorted(_ZH_EN_MAP.keys(), key=len, reverse=True):
+        en = _ZH_EN_MAP[zh]
+        # 直接替换明文中文
+        s = s.replace(zh, en)
+        # 同时替换Plotly HTML中常见的unicode转义形式（例如：\u8c03\u5ea6\u7518\u7279\u56fe）
+        try:
+            zh_escaped = zh.encode("unicode_escape").decode("ascii")
+            en_escaped = en.encode("unicode_escape").decode("ascii")
+            s = s.replace(zh_escaped, en_escaped)
+        except Exception:
+            pass
+    return s
+
+
+def translate_plotly_html_inplace(file_path: str) -> bool:
+    if not os.path.exists(file_path):
+        return False
+    if not file_path.lower().endswith(".html"):
+        return False
+    with open(file_path, "r", encoding="utf-8") as f:
+        content = f.read()
+    new_content = _translate_zh_to_en(content)
+    if new_content == content:
+        return True
+    with open(file_path, "w", encoding="utf-8") as f:
+        f.write(new_content)
+    return True
+
+
+def translate_plotly_htmls_under_dir(root_dir: str) -> int:
+    if not root_dir or not os.path.isdir(root_dir):
+        return 0
+    changed = 0
+    for dirpath, _, filenames in os.walk(root_dir):
+        for name in filenames:
+            if not name.lower().endswith(".html"):
+                continue
+            fp = os.path.join(dirpath, name)
+            ok = translate_plotly_html_inplace(fp)
+            if ok:
+                changed += 1
+    return changed
+
 def generate_gantt_chart(history: List[Dict[str, Any]], method_name: str, config_name: str, output_dir: str = None, run_name: str = None):
     """
     根据加工历史生成交互式甘特图。
@@ -14,11 +92,23 @@ def generate_gantt_chart(history: List[Dict[str, Any]], method_name: str, config
         output_dir (str, optional): 保存文件的目录. Defaults to None.
     """
     if not history:
-        print(f"[{method_name} - {config_name}] 没有可用于生成甘特图的加工历史数据。", flush=True)
+        msg = _translate_zh_to_en("没有可用于生成甘特图的加工历史数据。")
+        print(f"[{method_name} - {_translate_zh_to_en(config_name)}] {msg}", flush=True)
         return
 
     # 将历史数据转换为Pandas DataFrame
     df = pd.DataFrame(history)
+
+    # 将中文资源/产品/配置名翻译为英文，保证图上显示一致
+    try:
+        if 'Resource' in df.columns:
+            df['Resource'] = df['Resource'].map(_translate_zh_to_en)
+        if 'Product' in df.columns:
+            df['Product'] = df['Product'].map(_translate_zh_to_en)
+        if 'Task' in df.columns:
+            df['Task'] = df['Task'].map(_translate_zh_to_en)
+    except Exception:
+        pass
     
     # 🔧 关键修复：将数值时间转换为字符串，避免被Plotly误认为Unix时间戳
     # 同时创建数值列用于正确排序
@@ -49,22 +139,23 @@ def generate_gantt_chart(history: List[Dict[str, Any]], method_name: str, config
             fillcolor=color_map[row['Product']],
             line=dict(color=color_map[row['Product']], width=2),
             hovertemplate=f"<b>{row['Task']}</b><br>" +
-                         f"工作站: {row['Resource']}<br>" +
-                         f"产品: {row['Product']}<br>" +
-                         f"零件ID: {row['Part ID']}<br>" +
-                         f"订单ID: {row['Order ID']}<br>" +
-                         f"开始时间: {row['Start']:.1f}分钟<br>" +
-                         f"结束时间: {row['Finish']:.1f}分钟<br>" +
-                         f"持续时间: {row['Duration']:.1f}分钟<extra></extra>",
+                         f"Workstation: {row['Resource']}<br>" +
+                         f"Product: {row['Product']}<br>" +
+                         f"Part ID: {row['Part ID']}<br>" +
+                         f"Order ID: {row['Order ID']}<br>" +
+                         f"Start Time: {row['Start']:.1f} min<br>" +
+                         f"Finish Time: {row['Finish']:.1f} min<br>" +
+                         f"Duration: {row['Duration']:.1f} min<extra></extra>",
             name=row['Product'],
             showlegend=row['Product'] not in [trace.name for trace in fig.data]  # 只显示一次图例
         ))
     
     # 更新图表布局
+    config_name_en = _translate_zh_to_en(config_name)
     fig.update_layout(
-        title=f"调度甘特图 - 方法: {method_name} | 配置: {config_name}",
-        xaxis_title="模拟时间 (分钟)",
-        yaxis_title="工作站",
+        title=f"Scheduling Gantt Chart - Method: {method_name} | Scenario: {config_name_en}",
+        xaxis_title="Simulated Time (min)",
+        yaxis_title="Workstation",
         font=dict(
             family="Arial, sans-serif",
             size=12,
